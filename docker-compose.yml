@@ -1,0 +1,290 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: know-rag-backend
+    environment:
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://know_rag:know_rag@postgres:5432/know_rag}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      PYTHONPATH: /app:/app/ragflow_vendor
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_LLM_MODEL: ${OLLAMA_LLM_MODEL:-qwen2.5:3b}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-bge-m3}
+      OLLAMA_EMBEDDING_DIMENSION: ${OLLAMA_EMBEDDING_DIMENSION:-1024}
+      AUTO_EMBED_AFTER_PARSE: ${AUTO_EMBED_AFTER_PARSE:-false}
+      HYBRID_VECTOR_WEIGHT: ${HYBRID_VECTOR_WEIGHT:-0.7}
+      HYBRID_KEYWORD_WEIGHT: ${HYBRID_KEYWORD_WEIGHT:-0.3}
+      HYBRID_FUSION_STRATEGY: ${HYBRID_FUSION_STRATEGY:-rrf}
+      RRF_K: ${RRF_K:-60}
+      RRF_VECTOR_WEIGHT: ${RRF_VECTOR_WEIGHT:-1.0}
+      RRF_KEYWORD_WEIGHT: ${RRF_KEYWORD_WEIGHT:-1.0}
+      EMBEDDING_CONTENT_MAX_CHARS: ${EMBEDDING_CONTENT_MAX_CHARS:-6000}
+      DEFAULT_EMBEDDING_TOP_K: ${DEFAULT_EMBEDDING_TOP_K:-10}
+      DEFAULT_SCORE_THRESHOLD: ${DEFAULT_SCORE_THRESHOLD:-0.3}
+      KEYWORD_SEARCH_BACKEND: ${KEYWORD_SEARCH_BACKEND:-elasticsearch}
+      ELASTICSEARCH_URL: ${ELASTICSEARCH_URL:-http://elasticsearch:9200}
+      ELASTICSEARCH_INDEX: ${ELASTICSEARCH_INDEX:-know_rag_chunks}
+      ELASTICSEARCH_TIMEOUT_SECONDS: ${ELASTICSEARCH_TIMEOUT_SECONDS:-10}
+      ELASTICSEARCH_FALLBACK_TO_SQL: ${ELASTICSEARCH_FALLBACK_TO_SQL:-false}
+      DEFAULT_CHUNK_SIZE: ${DEFAULT_CHUNK_SIZE:-512}
+      DEFAULT_CHUNK_OVERLAP: ${DEFAULT_CHUNK_OVERLAP:-80}
+      CHUNK_STRATEGY: ${CHUNK_STRATEGY:-auto}
+      CHUNK_SEPARATORS: "${CHUNK_SEPARATORS:-\\n\\n|\\n|。|.|；|;|，|,| }"
+      ENABLE_PARENT_CHILD_CHUNKING: ${ENABLE_PARENT_CHILD_CHUNKING:-false}
+      PARENT_CHUNK_SIZE: ${PARENT_CHUNK_SIZE:-4096}
+      CHILD_CHUNK_SIZE: ${CHILD_CHUNK_SIZE:-384}
+      CHILD_CHUNK_OVERLAP: ${CHILD_CHUNK_OVERLAP:-64}
+      MAX_FILE_SIZE_MB: ${MAX_FILE_SIZE_MB:-30}
+      LOCAL_STORAGE_DIR: ${LOCAL_STORAGE_DIR:-/data/files}
+      LOCAL_CACHE_DIR: ${LOCAL_CACHE_DIR:-/data/cache}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-minio}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-know-rag}
+      MINIO_SECURE: ${MINIO_SECURE:-false}
+      PDF_PARSER_PREFERENCE: ${PDF_PARSER_PREFERENCE:-auto}
+      DOCUMENT_PARSER_ENGINE: ${DOCUMENT_PARSER_ENGINE:-auto}
+      PARSER_PRIORITY: ${PARSER_PRIORITY:-mineru,ragflow,legacy}
+      # MinerU is now managed by docker-compose.  CPU profile is stable and
+      # uses pipeline; GPU profile is optional and requires starting the gpu
+      # service with: docker compose --profile gpu up -d --build.
+      MINERU_RUNTIME_PROFILE: ${MINERU_RUNTIME_PROFILE:-cpu}
+      MINERU_BASE_URL: ${MINERU_BASE_URL:-http://mineru-cpu:8000}
+      MINERU_CPU_BASE_URL: ${MINERU_CPU_BASE_URL:-http://mineru-cpu:8000}
+      MINERU_GPU_BASE_URL: ${MINERU_GPU_BASE_URL:-http://mineru-gpu:8000}
+      MINERU_CPU_BACKEND: ${MINERU_CPU_BACKEND:-pipeline}
+      MINERU_GPU_BACKEND: ${MINERU_GPU_BACKEND:-vlm-auto-engine}
+      MINERU_CPU_PARSE_METHOD: ${MINERU_CPU_PARSE_METHOD:-auto}
+      MINERU_GPU_PARSE_METHOD: ${MINERU_GPU_PARSE_METHOD:-auto}
+      MINERU_PROFIL: ${MINERU_PROFILE:-cpu}
+      MINERU_API_KEY: ${MINERU_API_KEY:-}
+      MINERU_PARSE_ENDPOINT: ${MINERU_PARSE_ENDPOINT:-/file_parse}
+      MINERU_SUPPORTED_EXTENSIONS: ${MINERU_SUPPORTED_EXTENSIONS:-pdf,png,jpg,jpeg,webp,doc,docx,ppt,pptx,xls,xlsx,html,txt,md,json,epub}
+      MINERU_BACKEND: ${MINERU_BACKEND:-pipeline}
+      MINERU_PARSE_METHOD: ${MINERU_PARSE_METHOD:-auto}
+      MINERU_LANG: ${MINERU_LANG:-ch}
+      MINERU_ENABLE_FORMULA: ${MINERU_ENABLE_FORMULA:-true}
+      MINERU_ENABLE_TABLE: ${MINERU_ENABLE_TABLE:-true}
+      MINERU_TIMEOUT_SECONDS: ${MINERU_TIMEOUT_SECONDS:-300}
+      MINERU_FALLBACK_TO_DEEPDOC: ${MINERU_FALLBACK_TO_DEEPDOC:-true}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-change-me}
+      KNOW_RAG_SERVICE_TOKEN: ${KNOW_RAG_SERVICE_TOKEN:-}
+      LOGIN_CAPTCHA_ENABLED: ${LOGIN_CAPTCHA_ENABLED:-true}
+      LOGIN_CAPTCHA_TTL_SECONDS: ${LOGIN_CAPTCHA_TTL_SECONDS:-300}
+      DEEPDOC_MODEL_DIR: ${DEEPDOC_MODEL_DIR:-/data/models/deepdoc}
+      DEEPDOC_LAYOUT_MODEL: ${DEEPDOC_LAYOUT_MODEL:-}
+      DEEPDOC_TSR_MODEL: ${DEEPDOC_TSR_MODEL:-}
+      DEEPDOC_XGB_MODEL: ${DEEPDOC_XGB_MODEL:-}
+      DEEPDOC_OCR_ENGINE: ${DEEPDOC_OCR_ENGINE:-auto}
+      DEEPDOC_AUTO_DOWNLOAD: ${DEEPDOC_AUTO_DOWNLOAD:-1}
+      DEEPDOC_HF_REPO: ${DEEPDOC_HF_REPO:-InfiniFlow/deepdoc}
+      DEEPDOC_XGB_HF_REPO: ${DEEPDOC_XGB_HF_REPO:-InfiniFlow/text_concat_xgb_v1.0}
+      DEEPDOC_DOWNLOAD_TIMEOUT: ${DEEPDOC_DOWNLOAD_TIMEOUT:-60}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+      DEEPDOC_SERVICE_URL: ${DEEPDOC_SERVICE_URL:-}
+      DEEPDOC_SCORE_THRESHOLD: ${DEEPDOC_SCORE_THRESHOLD:-0.35}
+      DEEPDOC_XGB_MERGE_THRESHOLD: ${DEEPDOC_XGB_MERGE_THRESHOLD:-0.52}
+      # MinerU output is a shared container path.  Do not set this to a Windows
+      # host path when MinerU is dockerized.
+      MINERU_OUTPUT_DIR: ${MINERU_OUTPUT_DIR:-/data/cache}
+      CLEANUP_PARSE_CACHE_AFTER_PARSE: ${CLEANUP_PARSE_CACHE_AFTER_PARSE:-true}
+      MINERU_SEND_OUTPUT_DIR: ${MINERU_SEND_OUTPUT_DIR:-true}
+      MINERU_LEGACY_OUTPUT_DIR: ${MINERU_LEGACY_OUTPUT_DIR:-/data/cache/output}
+      CLEANUP_MINERU_LEGACY_OUTPUT_AFTER_PARSE: ${CLEANUP_MINERU_LEGACY_OUTPUT_AFTER_PARSE:-true}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+      - minio
+      - elasticsearch
+      - mineru-cpu
+    volumes:
+      - ./cache:/data/cache
+      - know-rag-models:/data/models
+    networks:
+      - know-rag-net
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: know-rag-frontend
+    ports:
+      - "5174:5174"
+    depends_on:
+      - backend
+    networks:
+      - know-rag-net
+  mcp:
+    build:
+      context: ./backend
+    container_name: know-rag-mcp
+    entrypoint: ["python", "-m", "app.integrations.mcp.http_server"]
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app:/app/ragflow_vendor
+      KNOW_RAG_API_BASE: http://backend:8000
+      KNOW_RAG_API_TOKEN: ${KNOW_RAG_SERVICE_TOKEN:-}
+      KNOW_RAG_USERNAME: ${ADMIN_USERNAME:-admin}
+      KNOW_RAG_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 8010
+      MCP_MOUNT_PATH: /mcp
+      MCP_TRANSPORT: streamable-http
+      DEEPDOC_AUTO_DOWNLOAD: "0"
+    ports:
+      - "8010:8010"
+    depends_on:
+      - backend
+    networks:
+      - know-rag-net
+  gateway:
+    image: nginx:1.27-alpine
+    container_name: know-rag-gateway
+    ports:
+      - "127.0.0.1:8483:8080"
+    volumes:
+      - ./docker/nginx/know_rag_gateway.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - backend
+      - mcp
+    networks:
+      - know-rag-net
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: know-rag-postgres
+    environment:
+      POSTGRES_DB: know_rag
+      POSTGRES_USER: know_rag
+      POSTGRES_PASSWORD: know_rag
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - know-rag-postgres-data:/var/lib/postgresql/data
+    networks:
+      - know-rag-net
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.5
+    container_name: know-rag-qdrant
+    profiles: ["qdrant"]
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - know-rag-qdrant-data:/qdrant/storage
+    networks:
+      - know-rag-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: know-rag-redis
+    ports:
+      - "127.0.0.1:6380:6379"
+    volumes:
+      - know-rag-redis-data:/data
+    networks:
+      - know-rag-net
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    container_name: know-rag-elasticsearch
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      - know-rag-elasticsearch-data:/usr/share/elasticsearch/data
+    networks:
+      - know-rag-net
+
+  mineru-cpu:
+    build:
+      context: ./docker/mineru
+      args:
+        MINERU_PIP_SPEC: ${MINERU_PIP_SPEC:-mineru[core]}
+    container_name: know-rag-mineru-cpu
+    environment:
+      MINERU_RUNTIME_PROFILE: cpu
+      MINERU_BACKEND: ${MINERU_CPU_BACKEND:-pipeline}
+      MINERU_PARSE_METHOD: ${MINERU_CPU_PARSE_METHOD:-auto}
+      MINERU_OUTPUT_DIR: /data/cache
+      MINERU_API_COMMAND: ${MINERU_CPU_API_COMMAND:-}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+      HF_HOME: /data/models/huggingface
+    ports:
+      - "127.0.0.1:8001:8000"
+    volumes:
+      - ./cache:/data/cache
+      - know-rag-mineru-models:/data/models
+    networks:
+      - know-rag-net
+
+  mineru-gpu:
+    build:
+      context: ./docker/mineru
+      args:
+        MINERU_PIP_SPEC: ${MINERU_PIP_SPEC:-mineru[core]}
+    container_name: know-rag-mineru-gpu
+    profiles: ["gpu"]
+    environment:
+      MINERU_RUNTIME_PROFILE: gpu
+      MINERU_BACKEND: ${MINERU_GPU_BACKEND:-vlm-auto-engine}
+      MINERU_PARSE_METHOD: ${MINERU_GPU_PARSE_METHOD:-auto}
+      MINERU_OUTPUT_DIR: /data/cache
+      MINERU_API_COMMAND: ${MINERU_GPU_API_COMMAND:-}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+      HF_HOME: /data/models/huggingface
+    ports:
+      - "127.0.0.1:8002:8000"
+    volumes:
+      - ./cache:/data/cache
+      - know-rag-mineru-models:/data/models
+    networks:
+      - know-rag-net
+    # Uncomment on Linux hosts with NVIDIA Container Toolkit.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  minio:
+    image: minio/minio:latest
+    container_name: know-rag-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - know-rag-minio-data:/data
+    networks:
+      - know-rag-net
+
+volumes:
+  know-rag-postgres-data:
+  know-rag-redis-data:
+  know-rag-cache:
+  know-rag-minio-data:
+  know-rag-qdrant-data:
+  know-rag-models:
+  know-rag-elasticsearch-data:
+  know-rag-mineru-models:
+
+networks:
+  know-rag-net:
+    driver: bridge

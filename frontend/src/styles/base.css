@@ -1,0 +1,116 @@
+/* ── Base Reset & Typography ── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  font-family: Inter, "SF Pro Display", -apple-system, BlinkMacSystemFont,
+    "Microsoft YaHei", "Segoe UI", Roboto, Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--t-primary);
+  background: var(--c-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  min-height: 100vh;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--c-primary);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  color: var(--t-primary);
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+h1 { font-size: 26px; letter-spacing: -0.01em; }
+h2 { font-size: 20px; }
+h3 { font-size: 17px; }
+h4 { font-size: 15px; }
+
+p {
+  color: var(--t-secondary);
+  line-height: 1.7;
+}
+
+small {
+  font-size: 13px;
+  color: var(--t-muted);
+}
+
+code {
+  font-family: "SF Mono", "Cascadia Code", Consolas, Monaco, monospace;
+  font-size: 0.875em;
+  background: var(--c-surface-alt);
+  border: 1px solid var(--c-border-light);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--t-secondary);
+}
+
+pre {
+  font-family: "SF Mono", "Cascadia Code", Consolas, Monaco, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* ── Selection ── */
+::selection {
+  background: var(--c-primary-light);
+  color: var(--c-primary-dark);
+}
+
+/* ── Utilities ── */
+.text-muted { color: var(--t-muted); }
+.text-secondary { color: var(--t-secondary); }
+.text-success { color: var(--s-success); }
+.text-warning { color: var(--s-warning); }
+.text-error { color: var(--s-error); }
+.text-info { color: var(--s-info); }
+
+.font-mono {
+  font-family: "SF Mono", "Cascadia Code", Consolas, Monaco, monospace;
+  font-size: 13px;
+}
+
+/* Legacy compatibility */
+.muted { color: var(--t-muted); }
+.error { color: var(--s-error); }
+.ok { color: var(--s-success); }
+.warning { color: var(--s-warning); }

@@ -1,0 +1,65 @@
+/* ── Design Tokens ── */
+:root {
+  /* Brand */
+  --c-primary: #1f7a5c;
+  --c-primary-hover: #18634a;
+  --c-primary-light: #eaf6f1;
+  --c-primary-dark: #155e46;
+
+  /* Surfaces */
+  --c-bg: #f4f6f9;
+  --c-surface: #ffffff;
+  --c-surface-alt: #f8fafc;
+  --c-border: #e5e7eb;
+  --c-border-light: #f0f2f5;
+
+  /* Text */
+  --t-primary: #0f172a;
+  --t-secondary: #475569;
+  --t-muted: #94a3b8;
+  --t-inverse: #ffffff;
+
+  /* Status */
+  --s-success: #10b981;
+  --s-success-bg: #ecfdf5;
+  --s-success-border: #a7f3d0;
+  --s-warning: #f59e0b;
+  --s-warning-bg: #fffbeb;
+  --s-warning-border: #fde68a;
+  --s-error: #ef4444;
+  --s-error-bg: #fef2f2;
+  --s-error-border: #fecaca;
+  --s-info: #3b82f6;
+  --s-info-bg: #eff6ff;
+  --s-info-border: #bfdbfe;
+
+  /* Geometry */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 20px;
+  --r-full: 9999px;
+
+  /* Shadows */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.03);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.03);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.08);
+  --shadow-xl: 0 20px 48px rgba(0, 0, 0, 0.12);
+
+  /* Sidebar */
+  --sidebar-width: 260px;
+  --sidebar-bg: #102033;
+  --sidebar-text: #c8d4e3;
+  --sidebar-active-bg: var(--c-primary);
+  --sidebar-active-text: #ffffff;
+
+  /* Header */
+  --header-height: 60px;
+  --header-bg: var(--c-surface);
+  --header-border: var(--c-border);
+
+  /* Content */
+  --content-max-width: 1400px;
+  --content-padding: 32px;
+}

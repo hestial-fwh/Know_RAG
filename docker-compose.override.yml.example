@@ -1,0 +1,10 @@
+services:
+  backend:
+    volumes:
+      - ./backend/app:/app/app
+    environment:
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+
+  frontend:
+    volumes:
+      - ./frontend/src:/app/src
