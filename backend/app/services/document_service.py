@@ -156,9 +156,25 @@ def mark_document_failed(db: Session, doc_id: str, message: str) -> None:
     document = db.get(Document, doc_id)
     if document is None:
         return
+    preserved_chunk_count = int(
+        db.scalar(
+            select(func.count())
+            .select_from(Chunk)
+            .where(Chunk.document_id == document.id)
+        )
+        or 0
+    )
     document.parse_status = "failed"
     document.error_message = message[:300]
-    db.query(Chunk).filter(Chunk.document_id == document.id).delete(synchronize_session=False)
+    document.metadata_json = sanitize_json_for_postgres(
+        {
+            **(document.metadata_json or {}),
+            "latest_parse_status": "failed",
+            "latest_parse_error": message[:300],
+            "previous_chunks_preserved": preserved_chunk_count > 0,
+            "chunk_count": preserved_chunk_count,
+        }
+    )
     update_knowledge_base_chunk_count(db, document.knowledge_base_id)
     db.commit()
 
@@ -656,6 +672,79 @@ async def parse_document(
             db.commit()
             db.refresh(document)
 
+            if parsed_metadata.get("content_available") is False:
+                fallback_reason = sanitize_text_for_postgres(
+                    str(parsed_metadata.get("fallback_reason") or "未抽取到可用正文")
+                )[:500]
+                existing_chunk_count = int(
+                    db.scalar(
+                        select(func.count())
+                        .select_from(Chunk)
+                        .where(Chunk.document_id == document.id)
+                    )
+                    or 0
+                )
+                document.metadata_json = sanitize_json_for_postgres(
+                    {
+                        **(document.metadata_json or {}),
+                        "chunk_store_status": "skipped_non_indexable_fallback",
+                        "latest_parse_content_available": False,
+                        "latest_parse_indexable": False,
+                        "previous_chunks_preserved": existing_chunk_count > 0,
+                        "chunk_count": existing_chunk_count,
+                    }
+                )
+                document.parse_status = "parsed_with_fallback"
+                document.error_message = fallback_reason
+                document.processed_at = datetime.now(timezone.utc)
+                document.enable_status = document.enable_status or "enabled"
+                record_audit(
+                    db,
+                    actor,
+                    action,
+                    "document",
+                    document.id,
+                    result_summary={
+                        "document_id": document.id,
+                        "knowledge_base_id": document.knowledge_base_id,
+                        "file_name": document.file_name,
+                        "parse_status": "parsed_with_fallback",
+                        "fallback_reason": fallback_reason,
+                        "previous_chunks_preserved": existing_chunk_count > 0,
+                    },
+                )
+                db.commit()
+                db.refresh(document)
+                warning_message = f"文档仅作为附件保留，未生成可检索切片：{fallback_reason}"
+                if task_id:
+                    parse_task_service.update_task(
+                        db,
+                        task_id,
+                        status="completed",
+                        stage="done",
+                        progress=100,
+                        completed_steps=7,
+                        stats={
+                            "document": document_to_dict(db, document),
+                            "chunk_store_status": "skipped_non_indexable_fallback",
+                            "previous_chunks_preserved": existing_chunk_count > 0,
+                        },
+                        error_message=warning_message,
+                    )
+                    parse_task_service.add_event(
+                        db,
+                        task_id,
+                        "task_finished_with_warning",
+                        "done",
+                        warning_message,
+                        {
+                            "document_id": document.id,
+                            "content_available": False,
+                            "indexable": False,
+                        },
+                    )
+                return success_response(document_to_dict(db, document), warning_message)
+
             chunk_count = 0
             try:
                 chunk_count = rebuild_document_chunks(db, document, parsed_document)
@@ -666,16 +755,25 @@ async def parse_document(
 
                 document = db.get(Document, doc_id)
                 if document is not None:
+                    preserved_chunk_count = int(
+                        db.scalar(
+                            select(func.count())
+                            .select_from(Chunk)
+                            .where(Chunk.document_id == document.id)
+                        )
+                        or 0
+                    )
                     metadata = sanitize_json_for_postgres(
                         {
                             **(document.metadata_json or {}),
                             "chunk_store_status": "failed",
                             "chunk_store_error": chunk_error,
-                            "chunk_count": 0,
+                            "chunk_count": preserved_chunk_count,
+                            "previous_chunks_preserved": preserved_chunk_count > 0,
                         }
                     )
                     document.metadata_json = metadata
-                    document.parse_status = "parsed"
+                    document.parse_status = "chunk_failed"
                     document.error_message = warning_message[:1000]
                     document.processed_at = datetime.now(timezone.utc)
                     document.enable_status = document.enable_status or "enabled"
@@ -691,8 +789,8 @@ async def parse_document(
                         parse_task_service.update_task(
                             task_db,
                             task_id,
-                            status="completed",
-                            stage="done",
+                            status="failed",
+                            stage="failed",
                             progress=100,
                             completed_steps=7,
                             stats={
@@ -705,7 +803,7 @@ async def parse_document(
                         parse_task_service.add_event(
                             task_db,
                             task_id,
-                            "stage_failed_nonblocking",
+                            "stage_failed",
                             "chunk",
                             warning_message,
                             {
@@ -728,7 +826,7 @@ async def parse_document(
                             },
                         )
 
-                return success_response(document_to_dict(db, document), warning_message)
+                return error_response(warning_message)
 
             if task_id:
                 chunk_rows = (
@@ -806,6 +904,36 @@ async def parse_document(
 
             db.commit()
             db.refresh(document)
+
+            # Elasticsearch replacement is intentionally post-commit: a DB
+            # rebuild failure must leave the last known-good keyword index in
+            # place.  The sync helper is best-effort and locally retryable.
+            try:
+                from app.services.keyword_index_service import sync_document_index
+
+                indexed_count = sync_document_index(db, document)
+                document.metadata_json = sanitize_json_for_postgres(
+                    {
+                        **(document.metadata_json or {}),
+                        "keyword_index_status": "synced",
+                        "keyword_index_chunk_count": indexed_count,
+                    }
+                )
+                db.commit()
+                db.refresh(document)
+            except Exception as exc:
+                db.rollback()
+                document = db.get(Document, doc_id)
+                if document is not None:
+                    document.metadata_json = sanitize_json_for_postgres(
+                        {
+                            **(document.metadata_json or {}),
+                            "keyword_index_status": "pending_retry",
+                            "keyword_index_error": sanitize_text_for_postgres(str(exc))[:500],
+                        }
+                    )
+                    db.commit()
+                    db.refresh(document)
 
         except ValueError as exc:
             db.rollback()

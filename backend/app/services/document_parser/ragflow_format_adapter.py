@@ -793,7 +793,7 @@ def parse_markdown(path: Path) -> ParsedDocument:
             if block:
                 blocks.append(block)
 
-    return _finalize(
+    parsed = _finalize(
         blocks,
         "native_markdown_ordered",
         {
@@ -802,6 +802,11 @@ def parse_markdown(path: Path) -> ParsedDocument:
             "markdown_table_eof_safe": True,
         },
     )
+    # Preserve the uploaded Markdown byte-for-byte after UTF-8 decoding.  The
+    # block projection is still used for previews and media/table enrichment,
+    # but must not become the canonical splitting source.
+    parsed.source_content = text
+    return parsed
 
 
 def parse_epub(path: Path) -> ParsedDocument:
@@ -905,7 +910,31 @@ def parse_archive(path: Path) -> ParsedDocument:
 
 def parse_binary_fallback(path: Path, *, parser: str, reason: str) -> ParsedDocument:
     text = f"附件文件：{path.name}\n文件类型：{path.suffix.lower().lstrip('.')}\n说明：{reason}"
-    return ParsedDocument.from_text(_clean(text), metadata={"parser": parser, "file_type": path.suffix.lower().lstrip(".")})
+    parsed = ParsedDocument.from_text(
+        _clean(text),
+        metadata={
+            "parser": parser,
+            "file_type": path.suffix.lower().lstrip("."),
+            "fallback_used": True,
+            "fallback_kind": "attachment_placeholder",
+            "fallback_reason": reason,
+            "content_available": False,
+            "indexable": False,
+        },
+    )
+    for block in parsed.blocks:
+        block.metadata.update(
+            {
+                "fallback_used": True,
+                "fallback_kind": "attachment_placeholder",
+                "fallback_reason": reason,
+                "content_available": False,
+                "indexable": False,
+                "skip_embedding_recommended": True,
+                "skip_reason": "attachment_placeholder",
+            }
+        )
+    return parsed
 
 
 def parse_document_with_ragflow(path: Path, *, file_type: str, knowledge_base_id: str, document_id: str) -> ParsedDocument:

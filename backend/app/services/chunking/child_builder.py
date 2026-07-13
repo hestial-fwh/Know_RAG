@@ -320,7 +320,7 @@ class ChildBuilder:
 
             if ntype in {"text", "equation"}:
                 raw_text = clean_chunk_content_for_storage(getattr(block, "text", "") or getattr(block, "index_text", lambda: "")(), chunk_type="text")
-                if not raw_text or is_low_information_text(raw_text):
+                if not raw_text or (ntype == "text" and is_low_information_text(raw_text)):
                     continue
 
                 if is_code_block_block(block):

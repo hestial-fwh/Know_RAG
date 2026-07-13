@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import uuid4
 
 
 @dataclass
@@ -44,8 +45,19 @@ class ChunkDraft:
     metadata: dict[str, Any] = field(default_factory=dict)
     flags: dict[str, Any] = field(default_factory=dict)
     image_info: dict[str, Any] | None = None
+    table_info: dict[str, Any] | None = None
+    draft_ref: str = ""
+    parent_ref: str | None = None
+    prev_ref: str | None = None
+    next_ref: str | None = None
+    chunk_index: int = 0
     # Internal ordering
     order_index: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.draft_ref:
+            prefix = "parent" if self.chunk_type == "parent_text" else "child"
+            self.draft_ref = f"{prefix}:{uuid4().hex}"
 
 
 @dataclass
@@ -94,3 +106,4 @@ class ChildDraft(ChunkDraft):
     bound_caption: str = ""
     bound_caption_block_order: int | None = None
     bound_caption_kind: str = ""
+    skip_embedding_recommended: bool = False

@@ -114,6 +114,12 @@ protected patterns 当前保护 fenced code block、Markdown 表格、Markdown �
 
 parent-child chunking 已实现但默认关闭。开启 `ENABLE_PARENT_CHILD_CHUNKING=true` 后会生成 `parent_text` 和 `text` 两类 chunk；embedding 仍只处理 `chunk_type='text'` 的切片。
 
+所有格式现在统一经过 Canonical Markdown 切分链路；`enable_parent_child` 仅控制是否持久化父上下文，不再切换到另一套按 block 独立切分实现。切片元数据中的 `coordinate_space=normalized_canonical_markdown` 表示 `start_at/end_at` 属于规范化 Markdown 坐标，不等同于原文件字节或页内坐标。
+
+重解析会先在内存中完整构建并校验新切片，非空后才在数据库事务内替换旧切片。解析器失败、空切分或切片入库失败不会清空最后一版可用切片。关键词索引在数据库提交成功后执行“先写入新 chunk id、再清理旧 chunk id”的同步，失败会记录 `keyword_index_status=pending_retry`。
+
+不支持格式的附件占位不会进入切片、关键词索引或向量索引，文档状态为 `parsed_with_fallback`；支持格式的解析器运行异常则标记为失败。Native Markdown 原文通过独立的 `source_content` 字段贯穿 parse/reflow/canonical 链路。
+
 重新解析文档时会删除该文档旧 chunks 和旧 `chunk_embeddings`，再生成新 chunks。若 `AUTO_EMBED_AFTER_PARSE=true`，会在新 chunks 生成后重新向量化。
 ## WeKnora 对齐 Phase C
 

@@ -19,6 +19,9 @@ const statusText: Record<string, string> = {
   failed: '解析失败'
 }
 
+statusText.parsed_with_fallback = '已保留为附件（无可检索正文）'
+statusText.chunk_failed = '解析完成，切片失败'
+
 function fileSize(size: number) {
   if (size < 1024) return `${size} B`
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`

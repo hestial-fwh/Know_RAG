@@ -321,4 +321,5 @@ def reflow_parsed_document(document: ParsedDocument) -> ParsedDocument:
         content=sanitize_text_for_postgres(content),
         blocks=blocks,
         metadata=sanitize_json_for_postgres({**(document.metadata or {}), **meta}),
+        source_content=document.source_content,
     )

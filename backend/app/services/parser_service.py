@@ -170,14 +170,12 @@ def _parse_with_ragflow(path: Path, document: Document, suffix: str) -> ParsedDo
         parsed.metadata["document_parser_engine"] = _document_parser_engine(document)
         return parsed
     except Exception as exc:
-        fallback = parse_binary_fallback(path, parser="parser_adapter_fallback", reason=str(exc))
-        fallback.metadata["parser_adapter_error"] = str(exc)[:1000]
-        fallback.metadata["parser_requested"] = _document_parser_engine(document)
-        fallback.metadata["parser_actual"] = fallback.metadata.get("parser", "parser_adapter_fallback")
-        fallback.metadata["fallback_used"] = True
-        fallback.metadata["fallback_reason"] = str(exc)[:1000]
-        fallback.metadata["document_parser_engine"] = _document_parser_engine(document)
-        return fallback
+        # A supported format failing at runtime is a real parse failure, not an
+        # unsupported attachment.  Returning searchable placeholder text here
+        # used to make the document look successfully parsed and polluted BM25
+        # and embedding inputs with the exception message.
+        reason = sanitize_text_for_postgres(str(exc))[:1000] or "document parser failed"
+        raise ValueError(f"文档解析器执行失败：{reason}") from exc
 
 
 def _fallback_to_ragflow(

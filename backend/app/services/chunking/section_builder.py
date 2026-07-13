@@ -6,6 +6,8 @@ ParsedBlock objects.  No database dependency.
 
 from __future__ import annotations
 
+import html
+import re
 from typing import Any
 
 from app.services.chunker.heading_utils import (
@@ -69,7 +71,9 @@ def is_noise_block(block: Any) -> bool:
     )
     if role in _NOISE_BLOCK_TYPES or is_page_noise_text(text):
         return True
-    if is_url_or_path_only_text(text):
+    # Media blocks commonly have no inline text; their caption/OCR semantics
+    # live in metadata and must not be classified as empty transport noise.
+    if normalized_child_type(block) == "text" and text and is_url_or_path_only_text(text):
         return True
     return False
 
@@ -255,10 +259,9 @@ def block_page_no(block: Any, content_hint: str = "") -> int | None:
 
 def _block_index_content(block: Any, file_type: str) -> str:
     """Build semantic index content for visual/table blocks (no URLs in content)."""
-    from app.services.content_cleaning import _plain_text_from_html as _html_to_text
     meta = getattr(block, "metadata", None) or {}
     if getattr(block, "block_type", "") == "table":
-        table_text = getattr(block, "text", "") or _html_to_text(getattr(block, "table_html", ""))
+        table_text = getattr(block, "text", "") or _plain_text_from_html(getattr(block, "table_html", ""))
         subtype = _first_text_deep(meta, ["table_subtype"])
         label = "表格内容"
         if subtype in {"pseudo_table", "layout_text"}:
@@ -330,9 +333,8 @@ def block_parent_text(block: Any, file_type: str) -> str:
     # Table
     if getattr(block, "block_type", "") == "table" or rtype in _TABLE_LIKE_RAW_TYPES:
         caption = _first_text_deep(meta, ["caption", "table_caption", "title", "image_caption"])
-        from app.services.content_cleaning import _plain_text_from_html as _html_to_text
         table_text = clean_chunk_content_for_storage(
-            getattr(block, "text", "") or _html_to_text(getattr(block, "table_html", "")),
+            getattr(block, "text", "") or _plain_text_from_html(getattr(block, "table_html", "")),
             chunk_type="table",
         )
         preview = _short_preview(table_text, 320)
@@ -493,3 +495,13 @@ def make_structured_sections(
         if has_semantic:
             filtered.append(section)
     return filtered
+def _plain_text_from_html(value: str) -> str:
+    text = re.sub(r"(?i)</(?:td|th)>\s*<(?:td|th)[^>]*>", " | ", value or "")
+    text = re.sub(r"(?i)</(?:tr|p|div|li|table)>", "\n", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html.unescape(text)
+    return "\n".join(
+        re.sub(r"[ \t]+", " ", line).strip()
+        for line in text.splitlines()
+        if line.strip()
+    )

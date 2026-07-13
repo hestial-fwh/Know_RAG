@@ -322,5 +322,23 @@ def parse_archive_document(path: Path) -> ParsedDocument:
 
 def parse_binary_fallback(path: Path, *, parser: str = "binary_fallback", reason: str = "当前格式仅保存原文件，未抽取结构化内容") -> ParsedDocument:
     text = sanitize_text_for_postgres(f"附件文件：{path.name}\n文件类型：{path.suffix.lower().lstrip('.') or 'unknown'}\n说明：{reason}")
-    block = ParsedBlock(block_type="text", text=text, order_index=0, metadata={"parser": parser, "fallback_reason": reason, "file_name": path.name})
-    return ParsedDocument(content=text, blocks=[block], metadata={"parser": parser, "fallback_reason": reason})
+    fallback_meta = {
+        "parser": parser,
+        "fallback_used": True,
+        "fallback_kind": "attachment_placeholder",
+        "fallback_reason": reason,
+        "content_available": False,
+        "indexable": False,
+    }
+    block = ParsedBlock(
+        block_type="text",
+        text=text,
+        order_index=0,
+        metadata={
+            **fallback_meta,
+            "file_name": path.name,
+            "skip_embedding_recommended": True,
+            "skip_reason": "attachment_placeholder",
+        },
+    )
+    return ParsedDocument(content=text, blocks=[block], metadata=fallback_meta)

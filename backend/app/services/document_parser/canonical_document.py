@@ -463,8 +463,13 @@ def build_canonical_document(
     # Native Markdown is the authoritative source.  Rebuilding it from parsed
     # blocks can lose blank lines/fences/tables, exactly the bug this layer is
     # intended to prevent.
-    if source_format in {"md", "markdown"} and _preserve_text(parsed_document.content).strip():
-        markdown = _preserve_text(parsed_document.content)
+    authoritative_source = (
+        parsed_document.source_content
+        if parsed_document.source_content is not None
+        else parsed_document.content
+    )
+    if source_format in {"md", "markdown"} and _preserve_text(authoritative_source).strip():
+        markdown = _preserve_text(authoritative_source)
         return CanonicalDocument(
             markdown_content=markdown,
             assets=assets,

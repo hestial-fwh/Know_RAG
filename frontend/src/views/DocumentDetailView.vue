@@ -31,6 +31,9 @@ const statusText: Record<string, string> = {
   failed: '解析失败'
 }
 
+statusText.parsed_with_fallback = '已保留为附件（无可检索正文）'
+statusText.chunk_failed = '解析完成，切片失败'
+
 const stats = computed(() => doc.value?.parse_statistics || {})
 const chunkTypeCounts = computed(() => stats.value.chunk_type_counts || {})
 const actualParser = computed(() => stats.value.parser_actual || stats.value.parser || '-')

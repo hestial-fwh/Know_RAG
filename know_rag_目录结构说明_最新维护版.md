@@ -1,735 +1,1486 @@
-# Know_RAG 项目目录结构与文件功能说明
+# Know_RAG 项目目录结构与主链路维护手册（最新代码基线）
 
-> 来源：原始项目目录说明，并结合当前最新 `Old Structure First` 后端代码维护更新。
-> 说明：以下目录树排除了 `.git/`、`cache/`、`backend/.venv/`、`frontend/node_modules/`、`frontend/dist/`、`__pycache__/`、`.pytest_cache/` 等生成物或依赖目录，聚焦项目源码、配置、脚本、文档和测试文件。
+> **代码基线**：`know_rag (3).zip`  
+> **维护日期**：2026-07-07  
+> **用途**：用于后续项目维护、功能定位、主链路排查、代码重构和新人接手。  
+> **分析原则**：以本次上传代码的**真实调用关系**为准，不以历史设计文档或曾经存在的重构方案代替当前运行时事实。
 
-## 总体结构概览
+---
 
-- `backend/`：FastAPI 后端，当前父子切分采用 `Old Structure First`：保留 Old two-pass Parent/Child 结构骨架，在 Canonical Markdown + Asset Sidecar 上完成标题上下文传播、结构化 materialization、精确 overlap 去重和 Parent 完整性校验。
-- `frontend/`：Vue3/Vite 前端，包含知识库、文档、chunk、检索调试、配置等页面。
-- `docker/`：MinerU 与 Nginx Gateway 的容器配置。
-- `docs/`：架构、部署、数据库、检索、MinIO、MinerU、MCP 等文档。
-- `backend/ragflow_vendor/`：DeepDoc/RAGFlow 兼容代码，主要为解析能力提供本地依赖。
+## 0. 文档使用约定
 
-## 详细目录树
+### 0.1 文件状态标记
 
-```text
-know_rag/ — 项目根目录，包含 Docker 编排、后端、前端、文档与辅助说明。
-├── .claude/ — Claude Code / AI 辅助开发相关本地配置与技能。
-│   ├── skills/ — 本地技能目录。
-│   │   └── karpathy-guidelines/ — 用于 Claude Code 的编码风格/工程规范技能。
-│   │       └── SKILL.md — Claude Code 技能说明，用于约束 AI 辅助编码风格。
-│   └── settings.local.json — Claude Code 本地设置。
-├── backend/ — FastAPI 后端工程，负责认证、知识库、文档解析、chunk 构建、向量化、检索、MCP 对接。
-│   ├── app/ — 后端应用主包。
-│   │   ├── api/ — FastAPI 路由层，负责 HTTP API 入参校验与服务调用。
-│   │   │   ├── __init__.py — API 路由包初始化。
-│   │   │   ├── routes_auth.py — 认证接口，处理登录、注册、验证码/令牌校验与当前用户信息。
-│   │   │   ├── routes_chat.py — 聊天接口，调用 chat_service 完成基于知识库的对话请求。
-│   │   │   ├── routes_chunker_config.py — 切分配置接口，读取/更新父子块、chunk size、overlap 等运行时切分参数。
-│   │   │   ├── routes_chunks.py — chunk 管理接口，支持列表、详情、树形结构、启用/禁用、删除和向量化状态展示。
-│   │   │   ├── routes_documents.py — 文档接口，支持上传、列表、详情、解析、删除、批量向量化和批量状态查询。
-│   │   │   ├── routes_faq.py — FAQ 管理接口。
-│   │   │   ├── routes_files.py — 文件/媒体资源访问接口，用于回显 MinIO 或本地缓存中的图片资源。
-│   │   │   ├── routes_initialization.py — 系统初始化接口，用于初始化管理员或基础配置。
-│   │   │   ├── routes_knowledge_base.py — 知识库 CRUD 接口。
-│   │   │   ├── routes_mcp_placeholder.py — MCP 预留/占位接口。
-│   │   │   ├── routes_model_config.py — 模型配置接口，维护 embedding、LLM、VLM 等模型提供商与参数。
-│   │   │   ├── routes_parse_tasks.py — 解析任务接口，查询解析任务状态、事件流和进度。
-│   │   │   ├── routes_retrieval.py — 检索接口，提供 hybrid search、LLM context/flat chunks 等召回能力。
-│   │   │   └── routes_vector_store.py — 向量库配置接口，维护 pgvector/qdrant/milvus 等向量存储配置。
-│   │   ├── core/ — 后端核心基础设施，包括配置、日志、响应结构、安全认证。
-│   │   │   ├── __init__.py — core 包初始化。
-│   │   │   ├── config.py — 集中读取环境变量和运行时配置，包括数据库、模型、存储、公网 URL 等。
-│   │   │   ├── logging.py — 日志格式和日志级别配置。
-│   │   │   ├── response.py — 统一 API 响应结构 success_response/error_response。
-│   │   │   └── security.py — JWT、密码哈希、当前用户依赖和鉴权工具。
-│   │   ├── db/ — 数据库模型、连接会话与 Alembic 迁移。
-│   │   │   ├── migrations/ — Alembic 数据库迁移目录。
-│   │   │   │   ├── versions/ — 按阶段维护的数据库版本迁移脚本。
-│   │   │   │   │   ├── 0001_initial.py — Alembic 迁移脚本，用于创建或升级数据库表结构。
-│   │   │   │   │   ├── 0002_documents_chunks_phase3.py — Alembic 迁移脚本，用于创建或升级数据库表结构。
-│   │   │   │   │   ├── 0003_embedding_retrieval_phase4.py — Alembic 迁移脚本，用于创建或升级数据库表结构。
-│   │   │   │   │   ├── 0004_ensure_chunk_embeddings.py — Alembic 迁移脚本，用于创建或升级数据库表结构。
-│   │   │   │   │   ├── 0005_weknora_alignment_phase_a.py — Alembic 迁移脚本，用于创建或升级数据库表结构。
-│   │   │   │   │   ├── 0006_chunker_config.py — Alembic 迁移脚本，用于创建或升级数据库表结构。
-│   │   │   │   │   ├── 0007_retrieval_rrf_phase_d.py — Alembic 迁移脚本，用于创建或升级数据库表结构。
-│   │   │   │   │   ├── 0008_parse_workbench_phase_z.py — Alembic 迁移脚本，用于创建或升级数据库表结构。
-│   │   │   │   │   └── 0009_parse_eval_plugin_phase_aa.py — Alembic 迁移脚本，用于创建或升级数据库表结构。
-│   │   │   │   ├── env.py — Alembic 迁移运行环境，加载模型和数据库连接。
-│   │   │   │   ├── README.md — Alembic 迁移目录说明。
-│   │   │   │   └── script.py.mako — Alembic 新迁移脚本模板。
-│   │   │   ├── __init__.py — db 包初始化。
-│   │   │   ├── models.py — SQLAlchemy ORM 模型，定义 users、knowledge_bases、documents、chunks、chunk_embeddings、配置表等。
-│   │   │   └── session.py — 数据库 engine、SessionLocal 和 get_db 依赖。
-│   │   ├── integrations/ — 外部集成模块。
-│   │   │   ├── mcp/ — MCP Server 集成，向云端 Agent 暴露 Know_RAG 检索工具。
-│   │   │   │   ├── __init__.py — MCP 包初始化。
-│   │   │   │   ├── http_client.py — MCP 服务调用 backend API 的 HTTP Client。
-│   │   │   │   ├── http_server.py — MCP HTTP/Streamable HTTP 服务入口。
-│   │   │   │   ├── README.md — MCP 集成说明。
-│   │   │   │   ├── schemas.py — MCP 工具入参/出参 schema。
-│   │   │   │   ├── server.py — MCP Server 注册、生命周期与工具暴露。
-│   │   │   │   └── tools.py — MCP 工具实现，主要封装 Know_RAG 检索、flat chunks 返回和接口调用。
-│   │   │   └── __init__.py — Python 源文件。 
-│   │   ├── plugins/ — 插件式扩展功能目录。
-│   │   │   └── parse_eval/ — 解析质量评估插件，用于对解析结果进行诊断、报告和前端展示。
-│   │   │       ├── __init__.py — parse_eval 插件包初始化。
-│   │   │       ├── diagnostics.py — 解析结果诊断规则，发现空块、短块、图片/表格问题等。
-│   │   │       ├── models.py — 解析评估插件数据模型。
-│   │   │       ├── README.md — 解析评估插件说明。
-│   │   │       ├── report_builder.py — 解析质量评估报告构建。
-│   │   │       ├── router.py — parse_eval 插件 API 路由。
-│   │   │       ├── service.py — 解析评估任务服务逻辑。
-│   │   │       └── templates.py — 评估报告模板和输出格式。
-│   │   ├── schemas/ — Pydantic 请求/响应数据结构定义。
-│   │   │   ├── __init__.py — schemas 包初始化。
-│   │   │   ├── auth.py — 认证相关请求/响应模型。
-│   │   │   ├── chat.py — 聊天请求/响应模型。
-│   │   │   ├── chunk.py — chunk 列表、详情、树形结构和向量状态响应模型。
-│   │   │   ├── chunker_config.py — 切分配置请求/响应模型。
-│   │   │   ├── document.py — 文档上传、解析、状态和详情响应模型。
-│   │   │   ├── faq.py — FAQ 请求/响应模型。
-│   │   │   ├── knowledge_base.py — 知识库 CRUD 请求/响应模型。
-│   │   │   ├── mcp_placeholder.py — MCP 占位功能请求/响应模型。
-│   │   │   ├── model_config.py — 模型配置请求/响应模型。
-│   │   │   ├── retrieval.py — 检索、父子上下文、LLM context、flat chunks 等响应模型。
-│   │   │   └── vector_store.py — 向量库配置请求/响应模型。
-│   │   ├── scripts/ — 后端启动或维护辅助脚本。
-│   │   │   ├── __init__.py — 脚本包初始化。
-│   │   │   └── bootstrap_deepdoc_models.py — 启动时准备/下载 DeepDoc 模型资源。
-│   │   ├── services/ — 后端核心业务服务层。
-│   │   │   ├── chunker/ — 通用文本切分器，负责标题、递归、Markdown、父子块等基础切分算法。
-│   │   │   │   ├── __init__.py — chunker 包初始化，暴露 split_document 等统一入口。
-│   │   │   │   ├── boundary_utils.py — 切分边界工具，处理标点开头、非法边界和边界修正。
-│   │   │   │   ├── canonical_parent_child.py — 当前父子切分计划核心：基于 Canonical Markdown 调用 Old two-pass Parent/Child Skeleton，传播全局标题上下文，完成 Text/Table/Image materialization、精确 overlap 影子去重和 0/1 Child Parent 完整性校验；生产主链路不再自动执行 Short Sibling Merge。
-│   │   │   │   ├── chunk_postprocess.py — 切分后处理，合并短块、清理 skip 标记、修复最终 chunk metadata。
-│   │   │   │   ├── heading_splitter.py — 标题感知切分器，按标题层级构造 heading_path 和章节边界。
-│   │   │   │   ├── heading_utils.py — 标题、caption、页眉噪声、章节路径、continuation header 等识别工具。
-│   │   │   │   ├── heuristic_splitter.py — 启发式切分器，按段落、句子和长度进行基础分割。
-│   │   │   │   ├── markdown_splitter.py — Markdown 切分器，识别标题、列表、代码块、孤立短块并做结构保持。
-│   │   │   │   ├── models.py — 切分器配置与中间结构数据模型。
-│   │   │   │   ├── parent_child_splitter.py — Old two-pass Parent/Child Skeleton 入口：先生成 Parent Candidate，再在 Parent 内切 Child，决定稳定的父子结构骨架。
-│   │   │   │   ├── protected_patterns.py — 保护 fenced code、Markdown/HTML table、HTML pre/code、inline HTML、Markdown link/image、LaTeX 与 HTML entity；当前已增强 `<sup>/<sub>` 和 inline/block LaTeX 保护。
-│   │   │   │   ├── recursive_splitter.py — 递归文本切分器，按分隔符优先级和安全边界生成子块。
-│   │   │   │   ├── service.py — 统一切分器入口，根据配置选择 heading/recursive/legacy 等模式。
-│   │   │   │   ├── text_unit.py — 文本单元抽象和句段级处理工具。
-│   │   │   │   └── weknora_splitter.py — 底层父子候选切分能力与历史参考实现，由父子切分层间接使用；当前不是独立主链路。
-│   │   │   ├── chunking/ — 结构化 chunk 构建流水线，负责 section、parent、child、图片/表格、持久化与短块后处理。
-│   │   │   │   ├── __init__.py — chunking 包初始化。
-│   │   │   │   ├── child_builder.py — 构建 child chunk 草稿，处理 text/table/image/equation 等子块内容、短块与 skip 规则。
-│   │   │   │   ├── chunk_draft.py — ParentDraft、ChildDraft、ChunkDraft 等 chunk 草稿数据结构。
-│   │   │   │   ├── chunk_linker.py — 为同一文档内 chunk 建立前后关系、parent-child 关系和顺序索引。
-│   │   │   │   ├── chunk_persistence.py — 将 chunk 草稿写入数据库，负责 metadata 清理、skip 标记兜底和 chunk_embeddings 清理。
-│   │   │   │   ├── code_context_merger.py — 代码块与上下文短说明合并逻辑，避免代码说明被拆成孤立 chunk。
-│   │   │   │   ├── image_chunk_builder.py — 图片 chunk 构建逻辑，绑定 image_url、caption/OCR/VLM 描述和相邻短说明。
-│   │   │   │   ├── metadata_builder.py — chunk metadata 构造器，统一写入 page、heading、block_type、content_kind 等字段。
-│   │   │   │   ├── parent_builder.py — 父块构造逻辑，生成 parent_text 内容和 parent metadata。
-│   │   │   │   ├── rebuild_service.py — 结构化父子 chunk 重建流水线，协调 section、parent、child、link、persist。
-│   │   │   │   ├── section_builder.py — 从 ParsedBlock 构建结构化 section，识别标题、噪声、图片、表格、公式和上下文路径。
-│   │   │   │   └── table_chunk_builder.py — 表格 chunk 构建逻辑，保留 table_html/table_markdown 并生成可检索文本。
-│   │   │   ├── context/ — 知识上下文/引用上下文构建服务。
-│   │   │   │   ├── __init__.py — context 包初始化。
-│   │   │   │   ├── knowledge_context_service.py — 知识上下文服务，构建基于检索结果的上下文对象。
-│   │   │   │   └── schemas.py — 上下文构建相关数据结构。
-│   │   │   ├── document_parser/ — 文档解析适配层，接入 MinerU、DeepDoc/RAGFlow、本地 DOCX/通用解析等。
-│   │   │   │   ├── __init__.py — document_parser 包初始化。
-│   │   │   │   ├── block_reflow.py — 解析后 block 重排与结构修复，优化标题、正文、图表说明等顺序。
-│   │   │   │   ├── canonical_document.py — 父子切分前统一中间层，将 ParsedDocument/ParsedBlock 转换为 Canonical Markdown + Asset Sidecar；负责标题/表格/图片引用规范化、Parser Noise Gate、连续页码噪声过滤及图片 OCR/VLM/page/bbox 资产保存。
-│   │   │   │   ├── deepdoc_local_ocr.py — DeepDoc 本地 OCR 调用适配。
-│   │   │   │   ├── deepdoc_runtime.py — DeepDoc 模型目录、运行时准备与健康检查。
-│   │   │   │   ├── docx_multimodal.py — DOCX 多模态解析，提取文本、图片和表格。
-│   │   │   │   ├── generic_parsers.py — 通用文件解析器，处理纯文本、CSV 等基础格式。
-│   │   │   ├── markdown_ordered.py — 原生保序 Markdown 解析器，按原始顺序识别 heading、text、table、code 和 HTML table，支持 EOF 无换行表格并避免表格被移动到文档末尾。
-│   │   │   │   ├── media_storage.py — 解析过程中的图片/媒体裁剪文件存储与 URL 生成。
-│   │   │   │   ├── mineru_adapter.py — MinerU HTTP/本地输出适配器，将 MinerU 结果转换为 ParsedDocument/ParsedBlock。
-│   │   │   │   ├── pdf_ragflow_advanced.py — RAGFlow/DeepDoc 高级 PDF 解析适配。
-│   │   │   │   ├── pdf_ragflow_lite.py — 轻量 PDF 解析适配。
-│   │   │   │   ├── ragflow_deepdoc_adapter.py — RAGFlow DeepDoc 解析结果适配为项目内部 block 结构。
-│   │   │   │   ├── ragflow_format_adapter.py — RAGFlow 格式化结果转换适配；Markdown 入口改为调用原生保序解析器，并修正 ragflow_vendor 目录定位。
-│   │   │   │   └── types.py — ParsedDocument、ParsedBlock、ImageInfo 等解析结果类型定义。
-│   │   │   ├── embedding/ — embedding 输入文本构造等向量化前置处理。
-│   │   │   │   ├── __init__.py — embedding 子包初始化。
-│   │   │   │   └── embedding_content_builder.py — 根据 chunk 类型和 metadata 构造最终送入 embedding 模型的文本，过滤低信息内容。
-│   │   │   ├── ocr/ — OCR 文本修复、标识符规范化与模板化修复模块。
-│   │   │   │   ├── templates/ — 面向特定文档类型的 OCR 修复模板。
-│   │   │   │   │   ├── __init__.py — OCR 模板包初始化。
-│   │   │   │   │   ├── base.py — OCR 文本修复模板基类和通用接口。
-│   │   │   │   │   └── scanned_contract_ocr.py — 扫描合同类 OCR 修复模板。
-│   │   │   │   ├── __init__.py — OCR 包初始化。
-│   │   │   │   ├── identifier.py — OCR 文本中的编号、标识符、公式编号等识别和规范化。
-│   │   │   │   └── text_repair.py — OCR 文本修复，包括错字、空格、换行和识别噪声处理。
-│   │   │   ├── storage/ — 对象存储/文件存储适配层。
-│   │   │   │   ├── __init__.py — storage 包初始化。
-│   │   │   │   └── minio_storage.py — MinIO 对象存储封装，负责文件上传、删除和 public URL/relative path 生成。
-│   │   │   ├── __init__.py — 后端业务服务模块。 
-│   │   │   ├── audit_service.py — 审计日志服务，记录用户操作和系统事件。
-│   │   │   ├── auth_service.py — 认证业务逻辑，处理用户注册、登录、密码校验和 token 生成。
-│   │   │   ├── batch_vectorize_service.py — 批量向量化任务服务，支持批量处理、进度统计和状态查询。
-│   │   │   ├── captcha_service.py — 验证码生成、缓存与校验服务。
-│   │   │   ├── chat_service.py — 聊天业务服务，调用检索与模型生成回答。
-│   │   │   ├── chunk_service.py — Chunk rebuild/persist 编排入口；父子模式调用 Canonical Document → Old Structure First 计划，非父子模式仍走兼容 Block Path，最终统一完成邻接关系、skip flags、数据库写入和索引。
-│   │   │   ├── chunker_config_service.py — 切分配置服务，从数据库读取并转换为运行时 ChunkerConfig。
-│   │   │   ├── content_cleaning.py — 内容清洗与低信息判断规则，负责 URL/HTML/页眉/短块/占位内容过滤与 skip metadata 清理。
-│   │   │   ├── document_service.py — 文档上传、解析、删除、重新解析和文档状态维护核心服务。
-│   │   │   ├── embedding_service.py — embedding 运行时选择、文本向量生成、chunk_embeddings 写入和外部向量库同步。
-│   │   │   ├── faq_service.py — FAQ 业务逻辑。
-│   │   │   ├── keyword_index_service.py — Elasticsearch/BM25 关键词索引写入、删除和检索服务。
-│   │   │   ├── knowledge_base_service.py — 知识库 CRUD、权限校验和统计维护。
-│   │   │   ├── llm_context_builder.py — 把 retrieval 结果转换为云端可消费的 flat chunks 或 legacy LLM context。
-│   │   │   ├── mcp_placeholder_service.py — MCP 预留功能业务逻辑。
-│   │   │   ├── model_config_service.py — 模型配置业务逻辑，维护 embedding/LLM/VLM 供应商、模型名、base_url 等。
-│   │   │   ├── ollama_service.py — Ollama 本地模型服务封装。
-│   │   │   ├── parse_task_service.py — 解析任务事件、状态、进度和日志维护服务。
-│   │   │   ├── parser_service.py — 解析器选择与统一调用入口；Markdown 固定路由到 native_markdown，其他格式按配置选择 MinerU、DeepDoc/RAGFlow 等引擎。
-│   │   │   ├── retrieval_service.py — 混合检索核心服务，执行 pgvector 向量检索、ES 关键词检索、RRF/加权融合和父子上下文组织。
-│   │   │   ├── vector_store_adapters.py — 外部向量库适配器，封装 Qdrant/Milvus 等外部 provider 的 upsert/search。
-│   │   │   ├── vector_store_service.py — 向量库配置业务服务。
-│   │   │   └── vision_service.py — 视觉语言模型/VLM 调用封装，用于图片描述或图像理解。
-│   │   ├── utils/ — 通用工具函数。
-│   │   │   ├── __init__.py — utils 包初始化。
-│   │   │   ├── files.py — 文件名、扩展名、目录创建和文件校验工具。
-│   │   │   ├── ids.py — 统一 ID 生成工具。
-│   │   │   ├── text.py — 文本清洗、JSON 安全化、Postgres NUL 字符清理等工具。
-│   │   │   └── tokens.py — token 估算与文本长度预算工具。
-│   │   ├── __init__.py — 后端 app 包初始化文件。
-│   │   └── main.py — FastAPI 应用入口，注册中间件、异常处理、API 路由和 parse_eval 插件。
-│   ├── ragflow_vendor/ — 从 RAGFlow/DeepDoc 引入的解析依赖适配代码。
-│   │   ├── api/ — RAGFlow API 兼容桩代码。
-│   │   │   ├── db/ — RAGFlow DB 服务兼容包。
-│   │   │   │   ├── joint_services/ — 目录。
-│   │   │   │   │   ├── __init__.py — RAGFlow 租户模型服务兼容桩。
-│   │   │   │   │   └── tenant_model_service.py — RAGFlow 租户模型服务兼容桩。
-│   │   │   │   ├── services/ — 目录。
-│   │   │   │   │   ├── __init__.py — RAGFlow LLM 服务兼容桩。
-│   │   │   │   │   └── llm_service.py — RAGFlow LLM 服务兼容桩。
-│   │   │   │   └── __init__.py — RAGFlow API 兼容包初始化或占位。
-│   │   │   └── __init__.py — RAGFlow API 兼容包初始化或占位。
-│   │   ├── common/ — RAGFlow 公共配置、常量与工具。
-│   │   │   ├── __init__.py — common 包初始化。
-│   │   │   ├── config_utils.py — RAGFlow 配置工具兼容。
-│   │   │   ├── connection_utils.py — 连接工具兼容。
-│   │   │   ├── constants.py — RAGFlow 常量定义。
-│   │   │   ├── file_utils.py — 文件工具兼容。
-│   │   │   ├── misc_utils.py — 杂项工具兼容。
-│   │   │   ├── settings.py — RAGFlow 设置兼容。
-│   │   │   └── token_utils.py — token 工具兼容。
-│   │   ├── deepdoc/ — DeepDoc 文档解析与视觉模型代码。
-│   │   │   ├── parser/ — DeepDoc 各类文件解析器。
-│   │   │   │   ├── resume/ — DeepDoc 简历解析相关模块。
-│   │   │   │   │   ├── entities/ — 简历解析实体词表和识别规则。
-│   │   │   │   │   │   ├── res/ — 简历实体识别资源文件。
-│   │   │   │   │   │   │   ├── corp.tks.freq.json — DeepDoc 简历实体识别资源数据文件。
-│   │   │   │   │   │   │   ├── corp_baike_len.csv — DeepDoc 简历实体识别资源数据文件。
-│   │   │   │   │   │   │   ├── corp_tag.json — DeepDoc 简历实体识别资源数据文件。
-│   │   │   │   │   │   │   ├── good_corp.json — DeepDoc 简历实体识别资源数据文件。
-│   │   │   │   │   │   │   ├── good_sch.json — DeepDoc 简历实体识别资源数据文件。
-│   │   │   │   │   │   │   ├── school.rank.csv — DeepDoc 简历实体识别资源数据文件。
-│   │   │   │   │   │   │   └── schools.csv — DeepDoc 简历实体识别资源数据文件。
-│   │   │   │   │   │   ├── __init__.py — 简历实体包初始化。
-│   │   │   │   │   │   ├── corporations.py — 公司实体词典与识别规则。
-│   │   │   │   │   │   ├── degrees.py — 学历/学位实体词典。
-│   │   │   │   │   │   ├── industries.py — 行业实体词典。
-│   │   │   │   │   │   ├── regions.py — 地区实体词典。
-│   │   │   │   │   │   └── schools.py — 学校实体词典。
-│   │   │   │   │   ├── __init__.py — 简历解析包初始化。
-│   │   │   │   │   ├── step_one.py — 简历解析第一阶段规则。
-│   │   │   │   │   └── step_two.py — 简历解析第二阶段规则。
-│   │   │   │   ├── __init__.py — DeepDoc parser 包初始化。
-│   │   │   │   ├── docling_parser.py — Docling 解析器适配。
-│   │   │   │   ├── docx_parser.py — DOCX 解析器。
-│   │   │   │   ├── epub_parser.py — EPUB 解析器。
-│   │   │   │   ├── excel_parser.py — Excel 解析器。
-│   │   │   │   ├── figure_parser.py — 图片/图表解析器。
-│   │   │   │   ├── html_parser.py — HTML 解析器。
-│   │   │   │   ├── json_parser.py — JSON 解析器。
-│   │   │   │   ├── markdown_parser.py — Markdown 解析器。
-│   │   │   │   ├── mineru_parser.py — MinerU 解析器适配。
-│   │   │   │   ├── opendataloader_parser.py — OpenDataLoader 解析器适配。
-│   │   │   │   ├── paddleocr_parser.py — PaddleOCR 解析器适配。
-│   │   │   │   ├── pdf_parser.py — PDF 解析器。
-│   │   │   │   ├── ppt_parser.py — PPT 解析器。
-│   │   │   │   ├── tcadp_parser.py — TCADP 解析器。
-│   │   │   │   ├── txt_parser.py — TXT 解析器。
-│   │   │   │   └── utils.py — DeepDoc parser 工具函数。
-│   │   │   ├── vision/ — DeepDoc OCR、版面识别、表格结构识别等视觉模块。
-│   │   │   │   ├── __init__.py — DeepDoc vision 包初始化。
-│   │   │   │   ├── dla_cli.py — 版面分析 CLI。
-│   │   │   │   ├── layout_recognizer.py — 版面布局识别模型封装。
-│   │   │   │   ├── ocr.py — OCR 调用与文本识别。
-│   │   │   │   ├── operators.py — 视觉预处理/后处理算子。
-│   │   │   │   ├── postprocess.py — 视觉识别后处理。
-│   │   │   │   ├── recognizer.py — 通用视觉识别器基类。
-│   │   │   │   ├── seeit.py — 可视化调试工具。
-│   │   │   │   ├── t_ocr.py — OCR 测试入口。
-│   │   │   │   ├── t_recognizer.py — recognizer 测试入口。
-│   │   │   │   └── table_structure_recognizer.py — 表格结构识别模型封装。
-│   │   │   ├── __init__.py — DeepDoc 包初始化。
-│   │   │   ├── README.md — DeepDoc 说明文档。
-│   │   │   ├── README_tr.md — DeepDoc 说明文档。
-│   │   │   └── README_zh.md — DeepDoc 说明文档。
-│   │   └── rag/ — RAGFlow RAG 相关兼容代码。
-│   │       ├── app/ — RAGFlow 图片处理兼容模块。
-│   │       │   ├── __init__.py — RAGFlow 图片处理兼容模块。
-│   │       │   └── picture.py — RAGFlow 图片处理兼容模块。
-│   │       ├── nlp/ — RAGFlow NLP 包占位。
-│   │       │   └── __init__.py — RAGFlow RAG 兼容包初始化或占位。
-│   │       ├── prompts/ — RAGFlow prompt 生成兼容模块。
-│   │       │   ├── __init__.py — RAGFlow prompt 生成兼容模块。
-│   │       │   └── generator.py — RAGFlow prompt 生成兼容模块。
-│   │       ├── utils/ — RAGFlow RAG 工具函数。
-│   │       │   ├── __init__.py — RAGFlow RAG 工具函数。
-│   │       │   └── lazy_image.py — RAGFlow RAG 工具函数。
-│   │       └── __init__.py — RAGFlow RAG 兼容包初始化或占位。
-│   ├── scripts/ — 项目维护脚本。
-│   │   ├── check_parent_child_chunks.py — 检查父子 chunk 结构和数据质量的脚本。
-│   │   └── rebuild_keyword_index.py — 重建 Elasticsearch/BM25 关键词索引脚本。
-│   ├── tests/ — 后端单元测试和回归测试。
-│   │   ├── test_block_reflow_structure.py — 后端回归测试：验证 block reflow structure 相关逻辑。
-│   │   ├── test_canonical_overlap_shadow_dedup.py — Canonical overlap 影子重复去重回归测试。
-│   │   ├── test_canonical_parent_child_integration.py — Canonical 父子切分与 chunk_service 集成测试。
-│   │   ├── test_canonical_parent_child_unified.py — Canonical 父子切分统一链路测试。
-│   │   ├── test_canonical_pipeline_convergence.py — Canonical 噪声、Parent 收敛等历史问题回归测试。
-│   │   ├── test_canonical_short_sibling_merge.py — Short Merge helper 的历史兼容/实验测试；生产主链路当前不调用该 helper。
-│   │   ├── test_chunk_boundary_quality.py — 后端回归测试：验证 chunk boundary quality 相关逻辑。
-│   │   ├── test_chunk_persistence_not_drop_all.py — 后端回归测试：验证 chunk persistence not drop all 相关逻辑。
-│   │   ├── test_chunk_rebuild_fallback.py — 后端回归测试：验证 chunk rebuild fallback 相关逻辑。
-│   │   ├── test_chunk_rebuild_not_empty.py — 后端回归测试：验证 chunk rebuild not empty 相关逻辑。
-│   │   ├── test_chunker.py — 后端回归测试：验证 chunker 相关逻辑。
-│   │   ├── test_chunker_structure.py — 后端回归测试：验证 chunker structure 相关逻辑。
-│   │   ├── test_chunking_child_builder.py — 后端回归测试：验证 chunking child builder 相关逻辑。
-│   │   ├── test_chunking_drafts.py — 后端回归测试：验证 chunking drafts 相关逻辑。
-│   │   ├── test_chunking_linker.py — 后端回归测试：验证 chunking linker 相关逻辑。
-│   │   ├── test_chunking_metadata_builder.py — 后端回归测试：验证 chunking metadata builder 相关逻辑。
-│   │   ├── test_chunking_rebuild_service_smoke.py — 后端回归测试：验证 chunking rebuild service smoke 相关逻辑。
-│   │   ├── test_context_header_continuation.py — 后端回归测试：验证 context header continuation 相关逻辑。
-│   │   ├── test_document_chunk_store_metadata.py — 后端回归测试：验证 document chunk store metadata 相关逻辑。
-│   │   ├── test_embedding_content.py — 后端回归测试：验证 embedding content 相关逻辑。
-│   │   ├── test_embedding_structure_content.py — 后端回归测试：验证 embedding structure content 相关逻辑。
-│   │   ├── test_hybrid_result_mapping.py — 后端回归测试：验证 hybrid result mapping 相关逻辑。
-│   │   ├── test_markdown_ordered_tables.py — Markdown 保序表格解析回归测试，覆盖 EOF 无换行、多表格、代码块伪表格、无首尾竖线、HTML table、escaped pipe 等场景。
-│   │   ├── test_markdown_table_pipeline.py — Markdown 表格端到端链路回归测试，验证 ParsedBlock 顺序、章节上下文以及 table chunk 生成。
-│   │   ├── test_markdown_code_context_merge.py — 后端回归测试：验证 markdown code context merge 相关逻辑。
-│   │   ├── test_mineru_ocr.py — 后端回归测试：验证 mineru ocr 相关逻辑。
-│   │   ├── test_mineru_parser_engine.py — 后端回归测试：验证 mineru parser engine 相关逻辑。
-│   │   ├── test_old_structure_first_optimization.py — Old Structure First 专项测试，验证完整短块不被生产链路强制合并、HTML/LaTeX 原子保护、超长代码单行不字符硬切及 Parent 完整性。
-│   │   ├── test_orphan_short_chunks.py — 后端回归测试：验证 orphan short chunks 相关逻辑。
-│   │   ├── test_parse_quality_fix.py — 后端回归测试：验证 parse quality fix 相关逻辑。
-│   │   ├── test_retrieval_mapping.py — 后端回归测试：验证 retrieval mapping 相关逻辑。
-│   │   ├── test_rrf_fusion.py — 后端回归测试：验证 rrf fusion 相关逻辑。
-│   │   └── test_weknora_parent_child_reuse.py — WeKnora/父子切分参考链路回归测试。
-│   ├── weknora_chunker_py/ — WeKnora 切分策略参考实现和对照代码。
-│   │   ├── CODE_MAP.md — WeKnora 切分参考代码映射说明。
-│   │   ├── example_usage.py — WeKnora 切分器参考用法示例。
-│   │   ├── README.md — WeKnora 切分器参考实现说明。
-│   │   └── weknora_chunker_reference.py — WeKnora 切分策略参考实现。
-│   ├── alembic.ini — Alembic 数据库迁移配置。
-│   ├── Dockerfile — 后端 Docker 镜像构建文件。
-│   ├── entrypoint.sh — 后端容器启动入口，负责模型准备、迁移或服务启动前置动作。
-│   ├── OLD_STRUCTURE_FIRST_OPTIMIZATION.md — 当前 Old Structure First 优化说明，记录生产主链路撤出 Short Merge、保留精确重复去重及增强结构保护的设计决策。
-│   ├── pyproject.toml — Python 项目配置、依赖和工具配置。
-│   ├── requirements.txt — 后端 pip 依赖列表。
-│   └── uv.lock — uv 依赖锁定文件。
-├── docker/ — Docker 相关构建配置。
-│   ├── mineru/ — MinerU CPU 服务镜像构建与启动脚本。
-│   │   ├── Dockerfile — MinerU CPU 解析服务 Docker 镜像构建文件。
-│   │   └── entrypoint.sh — MinerU 容器启动脚本。
-│   └── nginx/ — Nginx Gateway 配置。
-│       └── know_rag_gateway.conf — Nginx Gateway 反向代理配置，统一代理 /api、/files、/mcp 等路径。
-├── docs/ — 项目设计、部署、接口、数据库、检索和阶段文档。
-│   ├── api.md — 后端 API 总览文档。
-│   ├── architecture.md — 系统总体架构文档。
-│   ├── backend.md — 后端模块说明。
-│   ├── backend_module_map.md — 后端模块映射说明。
-│   ├── backend_refactor_plan.md — 后端重构计划。
-│   ├── database.md — 数据库表结构和设计说明。
-│   ├── deployment.md — 部署说明。
-│   ├── elasticsearch_hybrid_search.md — Elasticsearch BM25 与 hybrid search 方案说明。
-│   ├── frontend.md — 前端结构说明。
-│   ├── mcp_reserved.md — MCP 预留能力说明。
-│   ├── mineru_docker.md — MinerU Docker 部署与使用说明。
-│   ├── minio_storage.md — MinIO 存储方案说明。
-│   ├── parse_quality_fix_readme.md — 解析质量修复说明。
-│   ├── parse_quality_optimization_notes.md — 解析质量优化笔记。
-│   ├── phase_g_multimodal_vector.md — 多模态向量阶段设计文档。
-│   ├── phase_h_deepdoc_api_test.md — DeepDoc API 测试阶段文档。
-│   ├── phase_n_full_format_upload.md — 多格式上传阶段文档。
-│   ├── security.md — 安全设计说明。
-│   └── weknora_alignment_report.md — 与 WeKnora 能力和链路对齐分析报告。
-├── frontend/ — Vue3/Vite 前端工程。
-│   ├── src/ — 前端源码目录。
-│   │   ├── api/ — 前端 API 请求封装。
-│   │   │   ├── auth.ts — 认证相关 API 封装。
-│   │   │   ├── chunks.ts — chunk 列表、树、详情、启用/禁用、删除和向量状态 API 封装。
-│   │   │   ├── client.ts — Axios/Fetch 基础客户端、token 注入和错误处理。
-│   │   │   ├── config.ts — 前端 API base URL 和运行时配置。
-│   │   │   ├── documents.ts — 文档上传、解析、删除、批量向量化和状态查询 API。
-│   │   │   ├── knowledgeBases.ts — 知识库 CRUD、详情统计和配置相关 API。
-│   │   │   ├── parseTasks.ts — 解析任务事件、进度和状态 API。
-│   │   │   └── retrieval.ts — 检索调试、搜索、LLM context/flat chunks API。
-│   │   ├── components/ — 前端通用组件。
-│   │   │   ├── common/ — 通用 UI 小组件。
-│   │   │   │   ├── EmptyState.vue — 空状态组件。
-│   │   │   │   ├── PageHeader.vue — 页面头部组件。
-│   │   │   │   ├── StatCard.vue — 统计卡片组件。
-│   │   │   │   └── StatusBadge.vue — 状态标签组件。
-│   │   │   └── README.md — 前端组件目录说明。
-│   │   ├── layouts/ — 页面布局组件。
-│   │   │   └── MainLayout.vue — 主布局组件，承载侧边栏/顶部导航/内容区域。
-│   │   ├── plugins/ — 前端插件模块。
-│   │   │   └── parse-eval/ — 解析质量评估插件前端页面和 API。
-│   │   │       ├── api.ts — 解析评估插件 API 封装。
-│   │   │       ├── eval.css — 解析评估插件样式。
-│   │   │       ├── ParseEvalDocumentView.vue — 解析评估文档详情页。
-│   │   │       ├── ParseEvalHomeView.vue — 解析评估首页。
-│   │   │       ├── ParseEvalRunView.vue — 解析评估运行详情页。
-│   │   │       └── routes.ts — 解析评估插件路由定义。
-│   │   ├── router/ — Vue Router 路由配置。
-│   │   │   └── index.ts — Vue Router 路由表，注册知识库、文档、chunk、配置、解析评估等页面。
-│   │   ├── styles/ — 前端基础样式、组件样式和设计变量。
-│   │   │   ├── base.css — 基础 reset 和全局布局样式。
-│   │   │   ├── components.css — 通用组件样式。
-│   │   │   └── tokens.css — 颜色、间距、字体等设计变量。
-│   │   ├── views/ — 业务页面视图。
-│   │   │   ├── ChunkDetailView.vue — chunk 详情页，展示内容、metadata、图片预览和向量状态。
-│   │   │   ├── ChunkerConfigView.vue — 切分配置页，配置父子块大小、overlap、模式、保护规则等。
-│   │   │   ├── ChunkListView.vue — chunk 列表/树形页，支持类型筛选、向量化状态筛选、规则跳过原因和图片预览。
-│   │   │   ├── DashboardView.vue — 系统首页/仪表盘。
-│   │   │   ├── DocumentDetailView.vue — 文档详情页，展示解析状态、chunk/向量统计、重新解析和向量化操作。
-│   │   │   ├── DocumentListView.vue — 文档列表页。
-│   │   │   ├── DocumentUploadView.vue — 文档上传页，支持解析模式、OCR/VLM、MinerU profile、批量上传等配置。
-│   │   │   ├── KnowledgeBaseDetailView.vue — 知识库详情页，展示文档、chunk、向量化统计和操作入口。
-│   │   │   ├── KnowledgeBaseFormView.vue — 知识库创建/编辑表单页。
-│   │   │   ├── KnowledgeBaseListView.vue — 知识库列表页。
-│   │   │   ├── LoginView.vue — 登录页，包含账号密码和验证码交互。
-│   │   │   ├── ModelConfigView.vue — 模型配置页，维护 embedding/LLM/VLM 模型供应商与参数。
-│   │   │   ├── ParseWorkbenchView.vue — 解析工作台，测试和对比文档解析质量。
-│   │   │   ├── PlaceholderView.vue — 占位页面，用于未实现或预留路由。
-│   │   │   ├── RetrievalConfigView.vue — 检索配置页，配置向量/关键词召回、RRF、top_k、阈值等。
-│   │   │   ├── SearchDebugView.vue — 检索调试页，展示 hybrid search、命中 chunk、父子上下文和返回结构。
-│   │   │   └── VectorStoreConfigView.vue — 向量库配置页，预留 pgvector/qdrant/milvus 等配置入口。
-│   │   ├── App.vue — 前端根组件。
-│   │   ├── main.ts — Vue 应用入口，挂载 App、Router 和全局样式。
-│   │   └── style.css — 全局样式入口。
-│   ├── Dockerfile — 前端 Docker 镜像构建文件。
-│   ├── index.html — Vite 前端 HTML 入口。
-│   ├── package-lock.json — 前端 npm 依赖锁定文件。
-│   ├── package.json — 前端 npm 依赖、脚本和项目信息。
-│   ├── tsconfig.json — TypeScript 编译配置。
-│   └── vite.config.ts — Vite 构建与开发服务器配置。
-├── .env — 本地运行环境变量，包含数据库、模型、对象存储、公网地址等配置。
-├── .env.example — 环境变量模板，用于复制生成本地 .env。
-├── docker-compose.override.yml.example — Compose override 示例，用于本地覆盖服务端口或环境变量。
-├── docker-compose.yml — 项目 Docker Compose 编排，定义 backend、frontend、postgres、redis、es、minio、mcp、gateway、mineru 等服务。
-├── know_rag_architecture_analysis.md — Know_RAG 架构分析文档。
-├── know_rag_parse_quality_optimization_plan.md — 解析质量优化方案文档。
-├── mcp接口.md — MCP 接口说明文档。
-├── README.md — 项目总览与启动说明。
-├── repair.md — 修复记录或问题处理说明。
-└── TODO.md — 待办事项记录。
-```
+| 标记 | 含义 |
+|---|---|
+| **[主链路]** | 当前真实请求或后台任务会经过的生产代码 |
+| **[核心算法]** | 决定解析、切分、检索或上下文效果的关键代码 |
+| **[支撑]** | 被主链路调用的公共服务、配置、存储或模型代码 |
+| **[兼容]** | 为旧接口、旧返回结构或旧实现保留，不是新功能优先修改位置 |
+| **[非当前主链路]** | 文件存在，但当前 dispatcher/路由没有直接走到 |
+| **[预留]** | 占位接口或未来扩展代码 |
+| **[Vendor/参考]** | 外部项目代码或对照实现，原则上不直接修改 |
 
-## 当前最新主链路：Old Structure First
-
-当前父子切分不再以“消灭所有短块”为目标，而是优先保证内容、结构和标题上下文稳定。真实运行路径为：
+### 0.2 当前运行时最重要的事实
 
 ```text
-Document API
-→ document_service.py
-→ parser_service.py
-→ ParsedDocument / ParsedBlock
-→ OCR / VLM Enhancement
-→ Block Reflow
-→ rebuild_document_chunks()
-→ build_canonical_document()
-→ Canonical Markdown + Asset Sidecar
-→ build_canonical_parent_child_plan()
-→ Old Two-pass Parent/Child Skeleton
-→ Global Heading Context
-→ Text / Table / Image Materialization
-→ Exact Overlap Shadow Dedup
-→ Parent 0/1 Integrity Validation
-→ Link Neighbors
-→ Persist
-→ Elasticsearch BM25 / Embedding
-→ Hybrid Retrieval
-→ LLM Context / MCP
+Document 解析完成
+└─ chunk_service.rebuild_document_chunks()
+   ├─ DB chunker_config.enable_parent_child = true
+   │  └─ Canonical Markdown + Old Structure First  【核心维护链路】
+   │
+   └─ DB chunker_config.enable_parent_child = false
+      └─ 按 ParsedBlock 直接物化/兼容切分      【兼容运行链路】
 ```
 
-### 1. Canonical Document
+**必须注意：**
 
-```text
-ParsedDocument / ParsedBlock
-→ canonical_document.py
-→ Canonical Markdown + Asset Sidecar
-```
-
-Canonical Markdown 保存标题、正文、表格、代码和 `asset://...` 图片位置；Asset Sidecar 保存图片 URL、OCR、VLM、page、bbox 等多模态信息。
-
-同时执行：
-
-```text
-Parser Noise Gate
-header / footer / page_number 过滤
-解析器连续数字噪声过滤
-```
-
-因此 `526 / 524 / 117` 等页面噪声不应进入有效 Child；原生 Markdown 中合法数字仍保留。
-
-### 2. Old Two-pass Parent/Child Skeleton
+1. 当前切分分支由 `runtime_config_from_db(db)` 读取数据库中的 `chunker_config` 决定。
+2. 因此，不能只看 `.env` 判断当前环境是否实际启用了父子切分。
+3. 本次压缩包不包含运行中的数据库状态，所以本文可以确认**代码如何分支**，但不能脱离数据库断言某个已部署实例当前一定走哪一条分支。
+4. 当前项目重点维护的父子切分方案是：
 
 ```text
 Canonical Markdown
-→ parent_child_splitter.py
-→ Parent Candidate
-→ Parent 内 Child Split
+→ 原 Old 两阶段 Parent/Child 骨架
+→ 全局 heading context 继承
+→ Text / Table / Image 物化
+→ 精确 overlap shadow 去重
+→ Parent 0/1 完整性校验
+→ 持久化
 ```
 
-结构骨架先确定，再做局部 materialization 和完整性处理。当前不再使用 Text Window Rebalance、Safe Unit Rebalance、Recursive Semantic Split、Tail Rebalance 或 Hybrid Pipeline 重写整份文档结构。
+5. `merge_short_text_siblings()` 仍保留在代码中，但**当前生产 `build_canonical_parent_child_plan()` 不调用它**；这是有意保持 Structure First，而不是遗漏。
 
-### 3. Global Heading Context
+---
+
+# 1. 项目总体目录树
+
+> 以下目录树省略 `.git/`、`frontend/node_modules/`、运行缓存等不需要维护的生成目录。
 
 ```text
-_apply_heading_context_to_source_children()
+know_rag/
+├─ .agents/                              # Agent/自动化辅助配置目录
+├─ .claude/                              # Claude Code 本地配置与 skills
+│  ├─ settings.local.json                # 本地 Claude Code 设置
+│  └─ skills/                            # 项目辅助技能
+│
+├─ backend/                              # 后端：FastAPI + SQLAlchemy + PostgreSQL + ES + 向量库
+│  ├─ app/                               # 后端业务源码
+│  ├─ scripts/                           # 后端维护脚本
+│  ├─ tests/                             # 后端测试
+│  ├─ ragflow_vendor/                    # RAGFlow/DeepDoc Vendor 代码 [Vendor/参考]
+│  ├─ weknora_chunker_py/                # WeKnora 切分参考实现 [Vendor/参考]
+│  ├─ OLD_STRUCTURE_FIRST_OPTIMIZATION.md# 当前切分优化策略说明
+│  ├─ alembic.ini                        # Alembic 配置
+│  ├─ Dockerfile                         # 后端镜像
+│  ├─ entrypoint.sh                      # 容器启动脚本
+│  ├─ pyproject.toml                     # Python 工程配置
+│  ├─ requirements.txt                   # pip 依赖
+│  └─ uv.lock                            # uv 锁定依赖
+│
+├─ frontend/                             # 前端：Vue 3 + Vite + TypeScript
+│  ├─ src/                               # 前端源码
+│  ├─ dist/                              # 构建产物，不作为源码维护
+│  ├─ Dockerfile                         # 前端镜像
+│  ├─ index.html                         # Vite 入口 HTML
+│  ├─ package.json                       # npm 依赖与命令
+│  ├─ package-lock.json                  # npm 锁文件
+│  ├─ tsconfig.json                      # TypeScript 配置
+│  └─ vite.config.ts                     # Vite 配置
+│
+├─ docker/                               # 基础设施容器配置
+│  ├─ mineru/                            # MinerU 服务相关配置
+│  └─ nginx/                             # Nginx 反向代理配置
+│
+├─ docs/                                 # 历史设计、部署、阶段性说明文档
+│
+├─ .env                                  # 当前本地环境变量（注意敏感信息）
+├─ .env.example                          # 环境变量模板
+├─ docker-compose.yml                    # 主编排文件
+├─ docker-compose.override.yml.example   # 本地覆盖模板
+├─ README.md                             # 项目入口说明
+├─ TODO.md                               # 待办事项
+├─ know_rag_architecture_analysis.md     # 历史架构分析
+├─ repair.md                             # 修复记录
+└─ 其他历史维护文档                      # 仅作参考，最新运行事实以本手册和代码为准
 ```
 
-在完整 source children 上传播 heading context，避免章节跨 Parent 后丢失标题路径。
+---
 
-### 4. Materialization
+# 2. 后端源码目录树与文件作用
 
-Source Child 按内容转为：
+## 2.1 `backend/app/` 总览
 
 ```text
-text
-table
-image
-code-like text
+backend/app/
+├─ main.py                               # FastAPI 应用入口、路由注册、启动初始化 [主链路]
+├─ api/                                  # HTTP API 路由层
+├─ core/                                 # 配置、安全、统一响应、日志
+├─ db/                                   # SQLAlchemy 模型、Session、Alembic migration
+├─ schemas/                              # Pydantic 请求/响应结构
+├─ services/                             # 核心业务服务
+├─ integrations/mcp/                     # 真正的 MCP Server 与 HTTP 适配层
+├─ plugins/parse_eval/                   # 解析效果评估插件
+├─ scripts/                              # 应用内辅助脚本
+└─ utils/                                # 通用工具
 ```
 
-图片通过：
+## 2.2 应用入口与 API 路由
 
 ```text
-asset://image-id
-→ Asset Sidecar
-→ caption + OCR + VLM + image_url + page + bbox
+backend/app/
+├─ main.py                               # 创建 FastAPI；挂载全部 router；启动时初始化 ES 索引
+│
+└─ api/
+   ├─ routes_auth.py                     # 注册、登录、当前用户等认证接口
+   ├─ routes_chat.py                     # Chat 接口
+   ├─ routes_chunker_config.py           # 切分配置读取/更新；影响运行时切分分支
+   ├─ routes_chunks.py                   # Chunk 列表、树、详情、启停、删除
+   ├─ routes_documents.py                # 文档上传、解析、重解析、向量化 [主链路]
+   ├─ routes_faq.py                      # FAQ 管理接口
+   ├─ routes_files.py                    # 文件访问接口
+   ├─ routes_initialization.py           # 系统初始化接口
+   ├─ routes_knowledge_base.py           # 知识库 CRUD
+   ├─ routes_mcp_placeholder.py          # 旧 MCP 占位 API [预留/非真实 MCP]
+   ├─ routes_model_config.py             # 模型配置管理
+   ├─ routes_parse_tasks.py              # 解析任务与事件查询
+   ├─ routes_retrieval.py                # 混合检索与 LLM Context [主链路]
+   └─ routes_vector_store.py             # 外部向量库配置与连通性测试
 ```
 
-构建 Image Child。
-
-### 5. 精确重复去重
-
-当前保留：
+### `main.py` 的职责
 
 ```text
-deduplicate_overlap_shadow_children()
+main.py
+├─ 创建 FastAPI app
+├─ 注册异常处理器
+├─ 注册 /api/v1 下的业务路由
+├─ 注册 parse_eval 插件路由
+├─ startup_initialize_services()
+│  └─ 在启用关键词检索时初始化 Elasticsearch index
+└─ /health 健康检查
 ```
 
-只删除满足真实 source span 重叠、相邻、边界严格包含且无独立语义的 overlap 影子块。
-
-当前生产主链路明确不执行：
+## 2.3 核心基础层
 
 ```text
-merge_short_text_siblings()
+backend/app/core/
+├─ config.py                              # Settings；读取环境变量；集中管理模型/存储/解析配置
+├─ logging.py                             # 日志配置
+├─ response.py                            # success_response / error_response 等统一响应
+└─ security.py                            # 密码哈希、JWT、当前用户认证
+
+backend/app/db/
+├─ models.py                              # 全部核心数据库表 ORM [支撑]
+├─ session.py                             # Engine、SessionLocal、get_db
+└─ migrations/
+   ├─ env.py                              # Alembic 运行环境
+   └─ versions/
+      ├─ 0001_initial.py                  # 初始用户/知识库等表
+      ├─ 0002_documents_chunks_phase3.py  # 文档与 Chunk
+      ├─ 0003_embedding_retrieval_phase4.py# Embedding/检索配置
+      ├─ 0004_ensure_chunk_embeddings.py  # ChunkEmbedding 修正
+      ├─ 0005_weknora_alignment_phase_a.py# WeKnora 对齐字段
+      ├─ 0006_chunker_config.py           # ChunkerConfig
+      ├─ 0007_retrieval_rrf_phase_d.py    # RRF 检索配置
+      ├─ 0008_parse_workbench_phase_z.py  # Parse Workbench
+      └─ 0009_parse_eval_plugin_phase_aa.py# 解析评估插件
 ```
 
-因此：
+### `models.py` 中的核心实体
+
+| ORM 类 | 作用 |
+|---|---|
+| `User` | 用户与认证主体 |
+| `KnowledgeBase` | 知识库 |
+| `RetrievalConfig` | 检索模式、权重、阈值、父上下文等配置 |
+| `ModelConfig` | OCR/VLM/Embedding 等模型配置 |
+| `VectorStoreConfig` | PostgreSQL / Qdrant / Milvus 等向量存储配置 |
+| `ChunkerConfig` | 切分运行时配置；`enable_parent_child` 在这里决定主分支 |
+| `AuditLog` | 操作审计 |
+| `Document` | 上传文档、解析状态、解析元数据 |
+| `Chunk` | 子块、父块、表格、图片、OCR 文本等统一存储 |
+| `ParseTask` | 解析任务状态 |
+| `ParseTaskEvent` | 解析任务阶段事件 |
+| `ChunkEmbedding` | Chunk 向量；PostgreSQL 侧的 embedding 真值记录 |
+
+## 2.4 Schema 层
 
 ```text
-重复块 → 删除
-噪声块 → 删除
-结构损坏 → 修复
-有意义短块 → 保留
+backend/app/schemas/
+├─ auth.py                                # 认证请求/响应
+├─ chat.py                                # Chat 请求/响应
+├─ chunk.py                               # Chunk 列表、详情、树结构
+├─ chunker_config.py                      # 切分配置 DTO
+├─ document.py                            # 上传、解析、文档 DTO
+├─ faq.py                                 # FAQ DTO
+├─ knowledge_base.py                      # 知识库 DTO
+├─ mcp_placeholder.py                     # 旧 MCP 占位 DTO
+├─ model_config.py                        # 模型配置 DTO
+├─ retrieval.py                           # 混合检索/LLM Context DTO
+└─ vector_store.py                        # 向量库配置 DTO
 ```
 
-### 6. Parent 完整性
+---
 
-最终：
+# 3. `services/` 核心业务目录与文件作用
+
+## 3.1 一级业务服务
 
 ```text
-Parent 0 Child → 删除 Parent
-Parent 1 Child → 删除 Parent，Child standalone
-Parent >= 2 Child → 保留
+backend/app/services/
+├─ auth_service.py                        # 用户注册、登录、认证业务
+├─ audit_service.py                       # 审计日志
+├─ batch_vectorize_service.py             # 批量向量化任务
+├─ captcha_service.py                     # 验证码
+├─ chat_service.py                        # Chat 业务
+│
+├─ document_service.py                    # 文档上传、解析编排、删除 [主链路]
+├─ parse_task_service.py                  # 解析任务状态与事件 [主链路]
+├─ parser_service.py                      # 解析器总调度 [主链路]
+├─ vision_service.py                      # OCR/VLM 增强 [主链路]
+├─ chunk_service.py                       # Chunk 重建总 dispatcher 与持久化 [主链路]
+├─ chunker_config_service.py              # 读取 DB 切分配置 [主链路]
+│
+├─ embedding_service.py                   # Embedding 生成与写入 [主链路]
+├─ keyword_index_service.py               # Elasticsearch BM25 索引与查询 [主链路]
+├─ vector_store_adapters.py               # Qdrant/Milvus 外部向量适配 [主链路支撑]
+├─ vector_store_service.py                # 向量库配置管理
+│
+├─ retrieval_service.py                   # 向量+BM25+融合+父上下文 [主链路]
+├─ llm_context_builder.py                 # 云端 Flat Chunks / Legacy Context 构建 [主链路]
+│
+├─ faq_service.py                         # FAQ 业务
+├─ knowledge_base_service.py              # 知识库业务
+├─ model_config_service.py                # 模型配置业务
+├─ ollama_service.py                      # Ollama 连通/模型辅助
+├─ content_cleaning.py                    # 文本清洗公共逻辑
+└─ mcp_placeholder_service.py             # 旧占位服务 [预留/非真实 MCP]
 ```
 
-该阶段只调整 Parent 引用，不重新切 Child 内容。
-
-### 7. Markdown 专项链路
-
-Markdown 继续使用原生保序解析：
+## 3.2 文档解析子系统 `document_parser/`
 
 ```text
-.md / .markdown
-→ native_markdown
-→ markdown_ordered.py
-→ heading / text / table / code / HTML table 原位输出
+backend/app/services/document_parser/
+├─ types.py                               # ParsedDocument / ParsedBlock 统一中间模型 [核心]
+├─ markdown_ordered.py                    # Markdown 保序解析；标题/表格/代码结构保留
+├─ mineru_adapter.py                      # MinerU HTTP 调用、结果归一化、媒体落盘 [主链路]
+├─ ragflow_format_adapter.py              # 多格式 RAGFlow/DeepDoc 总适配 [主链路]
+├─ ragflow_deepdoc_adapter.py             # DeepDoc 调用适配
+├─ deepdoc_runtime.py                     # DeepDoc 运行时加载
+├─ deepdoc_local_ocr.py                   # DeepDoc 本地 OCR 支撑
+├─ pdf_ragflow_advanced.py                # PDF 高级解析
+├─ pdf_ragflow_lite.py                    # PDF 轻量解析
+├─ docx_multimodal.py                     # DOCX 多模态解析
+├─ generic_parsers.py                     # 通用格式解析器
+├─ media_storage.py                       # 解析媒体文件保存
+├─ block_reflow.py                        # ParsedBlock 重排、OCR 文本修复、标题路径继承 [主链路]
+└─ canonical_document.py                  # ParsedDocument → Canonical Markdown + Asset sidecar [核心算法]
+```
+
+### 统一解析中间层
+
+```text
+各种文件格式
+→ Parser Adapter
+→ ParsedDocument
+   ├─ content
+   └─ blocks[]
+      ├─ block_type: text / table / image / ...
+      ├─ text
+      ├─ order_index
+      ├─ bbox / page
+      ├─ context_header
+      └─ metadata
+```
+
+**维护原则：** Parser Adapter 的差异应尽量收敛到 `ParsedDocument / ParsedBlock`，不要让下游 Chunker 针对每个解析器写大量专用分支。
+
+## 3.3 当前切分算法目录 `chunker/`
+
+```text
+backend/app/services/chunker/
+├─ service.py                             # 通用 split_document 入口；兼容非父子模式
+├─ models.py                              # ParsedChunk / ChunkerConfig 等切分模型
+├─ text_unit.py                           # 文本单元模型
+│
+├─ canonical_parent_child.py              # Canonical → 父子切分计划 [当前核心算法]
+├─ parent_child_splitter.py               # Know_RAG ↔ WeKnora Python 算法适配
+├─ weknora_splitter.py                    # Old 两阶段 Parent/Child 实际算法实现
+│
+├─ protected_patterns.py                  # 代码/表格/LaTeX/HTML/目录树等保护范围 [关键]
+├─ boundary_utils.py                      # 安全边界辅助
+├─ heading_utils.py                       # Heading 工具
+├─ heading_splitter.py                    # 标题优先切分策略
+├─ heuristic_splitter.py                  # 启发式边界策略
+├─ recursive_splitter.py                  # 递归切分策略
+├─ markdown_splitter.py                   # Markdown 切分辅助
+└─ chunk_postprocess.py                   # 后处理辅助
+```
+
+### 当前生产父子切分的核心文件优先级
+
+```text
+1. canonical_parent_child.py   # 当前最优先看：整体计划和物化策略
+2. weknora_splitter.py         # 真正决定 Old 父/子边界
+3. parent_child_splitter.py    # 两套模型之间的适配
+4. protected_patterns.py       # 保护代码、表格、公式、结构文本
+5. canonical_document.py       # 切分前的统一文档结构
+6. chunk_service.py            # runtime dispatcher + ORM 物化 + 持久化
+```
+
+## 3.4 `chunking/` 模块化重构目录
+
+```text
+backend/app/services/chunking/
+├─ rebuild_service.py                     # ChunkRebuildService 重构入口
+├─ chunk_draft.py                         # Chunk draft 中间模型
+├─ section_builder.py                     # Section 构建
+├─ parent_builder.py                      # Parent 构建
+├─ child_builder.py                       # Child 构建
+├─ image_chunk_builder.py                 # Image Chunk 构建
+├─ table_chunk_builder.py                 # Table Chunk 构建
+├─ code_context_merger.py                 # 代码上下文合并
+├─ metadata_builder.py                    # Metadata 构建
+├─ chunk_linker.py                        # Chunk 链接
+└─ chunk_persistence.py                   # Chunk 持久化
+```
+
+> **状态：`[非当前主链路]`**
+>
+> 这组代码代表一次模块化重构方向，并有相应测试，但静态调用关系显示：
+>
+> - 当前 `rebuild_document_chunks()` dispatcher **没有调用** `ChunkRebuildService`；
+> - 因此维护当前实际切分效果时，不应优先修改这里；
+> - `chunk_service.py` 仍保留部分对 `section_builder`、`parent_builder`、`code_context_merger` 的引用，但它们服务于保留的旧结构化函数/兼容函数，不等于 `ChunkRebuildService` 已接管当前主流程。
+
+## 3.5 Embedding 子系统
+
+```text
+backend/app/services/embedding/
+└─ embedding_content_builder.py           # 将不同 Chunk 转成真正用于向量化的语义文本 [核心]
+
+backend/app/services/
+├─ embedding_service.py                   # 模型调用、批量向量化、状态统计、写库
+├─ vector_store_adapters.py               # Qdrant / Milvus upsert/search
+└─ vector_store_service.py                # 向量存储配置
+```
+
+`embedding_content_builder.py` 的作用不是简单返回 `chunk.content`，而是按类型构造语义输入：
+
+```text
+Document Title
++ Context Header
++ Type-aware Body
+```
+
+并针对文本、结构树、表格、图片 OCR/VLM、公式等内容分别处理。`parent_text` 不进入 Embedding。
+
+## 3.6 Context 统一服务层
+
+```text
+backend/app/services/context/
+├─ knowledge_context_service.py           # 检索 → 上下文返回模式的统一 Facade [主链路]
+└─ schemas.py                             # Context 服务内部结构
+```
+
+该层是当前 FastAPI、MCP 以及未来 Chat/Agent 的统一上下文入口，目的是避免每个调用方自行拼检索结果。
+
+---
+
+# 4. 真正的 MCP 目录
+
+```text
+backend/app/integrations/mcp/
+├─ server.py                              # FastMCP Server；注册 MCP Tools [主链路]
+├─ tools.py                               # MCP 参数 → Know_RAG HTTP API 参数的薄适配层
+├─ http_client.py                         # 登录并调用 FastAPI；401 时重试一次
+├─ http_server.py                         # MCP HTTP 服务相关入口/支撑
+├─ schemas.py                             # MCP 内部 schema
+└─ README.md                              # MCP 使用说明
+```
+
+**重要边界：**
+
+```text
+MCP Client
+→ MCP Server
+→ tools.py
+→ http_client.py
+→ Know_RAG FastAPI HTTP API
+→ retrieval/context service
+→ DB / ES / Vector Store
+```
+
+MCP **不直接连接 PostgreSQL**。这保证了鉴权、检索策略和返回结构仍由后端统一维护。
+
+### 当前真实 MCP Tools
+
+| Tool | 作用 |
+|---|---|
+| `know_rag_list_knowledge_bases` | 查询可用知识库 |
+| `know_rag_search_context` | 调用 `/knowledge-bases/{kb_id}/llm-context` 获取云端可用 `chunks[]` |
+
+`routes_mcp_placeholder.py` 和 `mcp_placeholder_service.py` 不是这里的真实 MCP Server，不要混淆。
+
+---
+
+# 5. 前端目录树与文件作用
+
+```text
+frontend/src/
+├─ main.ts                                # Vue 应用入口
+├─ App.vue                                # 根组件
+├─ router/index.ts                        # 页面路由注册
+│
+├─ api/
+│  ├─ client.ts                           # HTTP Client、Token/错误处理
+│  ├─ config.ts                           # 配置 API
+│  ├─ auth.ts                             # 认证 API
+│  ├─ knowledgeBases.ts                   # 知识库 API
+│  ├─ documents.ts                        # 文档上传/解析/向量化 API
+│  ├─ chunks.ts                           # Chunk API
+│  ├─ parseTasks.ts                       # 解析任务 API
+│  └─ retrieval.ts                        # 检索/LLM Context 调试 API
+│
+├─ layouts/
+│  └─ MainLayout.vue                      # 主后台布局
+│
+├─ components/common/
+│  ├─ EmptyState.vue                      # 空状态
+│  ├─ PageHeader.vue                      # 页面标题区
+│  ├─ StatCard.vue                        # 统计卡片
+│  └─ StatusBadge.vue                     # 状态标签
+│
+├─ views/
+│  ├─ LoginView.vue                       # 登录
+│  ├─ DashboardView.vue                   # 首页仪表盘
+│  ├─ KnowledgeBaseListView.vue           # 知识库列表
+│  ├─ KnowledgeBaseFormView.vue           # 新建/编辑知识库
+│  ├─ KnowledgeBaseDetailView.vue         # 知识库详情
+│  ├─ DocumentListView.vue                # 文档列表
+│  ├─ DocumentUploadView.vue              # 上传文档
+│  ├─ DocumentDetailView.vue              # 文档详情/解析状态
+│  ├─ ParseWorkbenchView.vue              # 解析工作台
+│  ├─ ChunkListView.vue                   # Chunk 列表
+│  ├─ ChunkDetailView.vue                 # Chunk 详情
+│  ├─ ChunkerConfigView.vue               # 切分配置；影响 enable_parent_child
+│  ├─ ModelConfigView.vue                 # 模型配置
+│  ├─ VectorStoreConfigView.vue           # 向量存储配置
+│  ├─ RetrievalConfigView.vue             # 检索策略配置
+│  ├─ SearchDebugView.vue                 # 混合检索调试
+│  └─ PlaceholderView.vue                 # 占位页
+│
+├─ plugins/parse-eval/
+│  ├─ ParseEvalHomeView.vue               # 解析评估首页
+│  ├─ ParseEvalDocumentView.vue           # 文档评估详情
+│  ├─ ParseEvalRunView.vue                # 评估运行页
+│  ├─ api.ts                              # 插件 API
+│  ├─ routes.ts                           # 插件路由
+│  └─ eval.css                            # 插件样式
+│
+└─ styles/
+   ├─ tokens.css                          # 设计变量
+   ├─ base.css                            # 基础样式
+   └─ components.css                      # 组件样式
+```
+
+---
+
+# 6. 主链路一：文档上传 → 解析 → Chunk 入库
+
+## 6.1 总链路树
+
+```text
+POST /api/v1/knowledge-bases/{kb_id}/documents
+│
+├─ api/routes_documents.py
+│  └─ upload_document()
+│
+├─ services/document_service.py
+│  └─ upload_document()
+│     ├─ 校验知识库/文件类型
+│     ├─ 生成源文件 object_key
+│     ├─ storage/minio_storage.py 保存原文件
+│     ├─ 保存 parse options 到 document.metadata_json
+│     ├─ 创建 Document
+│     └─ parse_immediately=true 时创建后台解析任务
+│
+├─ services/parse_task_service.py
+│  ├─ create_parse_task()
+│  ├─ update_task()
+│  └─ add_event()
+│
+├─ services/document_service.py
+│  └─ run_parse_document_task()
+│     └─ 新建 SessionLocal 后调用 parse_document()
+│
+└─ services/document_service.py
+   └─ parse_document()
+      ├─ parser_service.parse_local_document()
+      ├─ vision_service.enhance_ocr_blocks()
+      ├─ vision_service.enhance_image_blocks()
+      ├─ document_parser.block_reflow.reflow_parsed_document()
+      ├─ 保存解析 metadata / preview
+      ├─ chunk_service.rebuild_document_chunks()
+      ├─ 可选 auto embedding
+      ├─ 更新任务完成状态
+      └─ finally 清理 parse cache
+```
+
+## 6.2 主要 Python 文件与作用
+
+| 顺序 | Python 文件 | 核心函数/类 | 具体作用 | 修改风险 |
+|---|---|---|---|---|
+| 1 | `api/routes_documents.py` | `upload_document()` | HTTP 入口；接收上传和解析参数 | 中 |
+| 2 | `services/document_service.py` | `upload_document()` | 保存源文件、创建 Document、决定是否立即解析 | 高 |
+| 3 | `services/storage/minio_storage.py` | 存储相关函数 | MinIO object key、上传、删除、媒体对象 | 高 |
+| 4 | `services/parse_task_service.py` | `create_parse_task()` 等 | 持久化解析任务进度和事件 | 中 |
+| 5 | `services/document_service.py` | `run_parse_document_task()` | 后台任务线程/进程中的 DB Session 隔离 | 高 |
+| 6 | `services/document_service.py` | `parse_document()` | 解析总编排；整个 ingest 的业务主控 | **极高** |
+| 7 | `services/parser_service.py` | `parse_local_document()` | 选择 MinerU/RAGFlow/Markdown 等解析器 | **极高** |
+| 8 | `services/vision_service.py` | `enhance_ocr_blocks()` / `enhance_image_blocks()` | 对图片块补 OCR/VLM 信息 | 高 |
+| 9 | `document_parser/block_reflow.py` | `reflow_parsed_document()` | 修复 OCR 行、重排 block、传递标题结构 | 高 |
+| 10 | `services/chunk_service.py` | `rebuild_document_chunks()` | 清旧 Chunk/向量/ES，并重建新 Chunk | **极高** |
+
+## 6.3 `parse_document()` 的阶段职责
+
+```text
+原始文件
+→ Parse
+→ OCR Enhance
+→ VLM/Image Enhance
 → Block Reflow
-→ Canonical Document
-→ Old Structure First Parent/Child
+→ 保存 Parse Result Metadata
+→ Rebuild Chunks
+→ Optional Auto Embedding
+→ Complete
 ```
 
-已保留以下修复：
+维护时应保持这一层只负责编排，具体格式解析、切分算法、Embedding 算法分别放在各自模块。
 
-- EOF 无换行表格识别；
-- 多表格不再移动到文末；
-- 标题、正文、表格保持原始顺序；
-- 代码块伪表格不误识别；
-- 表格与章节上下文保持对应。
+---
 
-### 8. 当前非父子兼容链路
+# 7. 主链路二：解析器选择与统一中间结构
 
-当：
+## 7.1 Parser Router
 
 ```text
-enable_parent_child = false
+parser_service.parse_local_document(document, db)
+│
+├─ Markdown 原生路径
+│  └─ document_parser/markdown_ordered.py
+│
+├─ MinerU 路径
+│  └─ document_parser/mineru_adapter.py
+│
+├─ RAGFlow / DeepDoc 路径
+│  └─ document_parser/ragflow_format_adapter.py
+│     ├─ PDF
+│     ├─ DOCX
+│     ├─ Excel/CSV
+│     ├─ HTML/JSON/TXT/Markdown
+│     ├─ EPUB/PPT/Image/Archive
+│     └─ binary fallback
+│
+└─ 统一输出 ParsedDocument
 ```
 
-仍走：
+## 7.2 主要 Python 文件
+
+| 文件 | 作用 |
+|---|---|
+| `parser_service.py` | 解析器总路由；记录 requested/actual parser、fallback 是否发生及原因 |
+| `document_parser/types.py` | 定义 `ParsedDocument` / `ParsedBlock`，是下游统一契约 |
+| `document_parser/markdown_ordered.py` | Markdown 保序结构解析，避免标题、表格、代码顺序丢失 |
+| `document_parser/mineru_adapter.py` | 调 MinerU API；定位返回内容；构建 block；保存图片；清理 MinerU 输出 |
+| `document_parser/ragflow_format_adapter.py` | 多格式 dispatcher；将 Vendor 解析结果统一到 ParsedBlock |
+| `document_parser/block_reflow.py` | 重排和修复解析块，为 Canonical/Chunker 提供更稳定输入 |
+
+### 解析层维护边界
 
 ```text
-ParsedBlock
-→ block_type 分支
-→ split_document()
-→ text/table/image/equation build
-→ orphan short-text postprocess
-→ Persist
+解析器差异
+→ 在 Adapter 内消化
+→ 统一成 ParsedDocument / ParsedBlock
+→ 下游不感知 MinerU 或 RAGFlow 的原始返回结构
 ```
 
-因此 `app/services/chunking/` 和部分旧 `chunker/` helper 当前仍有运行时引用，不能仅因为父子主链路不用就直接删除。
+---
 
-## 关键链路文件速查
+# 8. 主链路三：Old Structure First 父子切分
 
-### 文档解析到 Chunk 入库
-
-- `backend/app/services/document_service.py`：上传、解析、重解析、删除和文档状态管理；负责串联 Parser、OCR/VLM、Reflow 与 Chunk rebuild。
-- `backend/app/services/parser_service.py`：Parser 路由入口；Markdown 固定走 `native_markdown`，其他格式按配置选择 MinerU、DeepDoc/RAGFlow 等。
-- `backend/app/services/document_parser/markdown_ordered.py`：Markdown 保序解析，保证 heading/text/table/code/HTML table 原位输出。
-- `backend/app/services/document_parser/canonical_document.py`：将 ParsedDocument/ParsedBlock 转为 Canonical Markdown + Asset Sidecar，并执行 Parser Noise Gate。
-- `backend/app/services/chunker/canonical_parent_child.py`：当前父子切分计划核心；串联 Old two-pass Skeleton、全局标题上下文、materialization、精确 overlap 去重和 Parent 完整性校验。
-- `backend/app/services/chunker/parent_child_splitter.py`：Old two-pass Parent/Child Skeleton。
-- `backend/app/services/chunker/protected_patterns.py`：保护 code/table/HTML/LaTeX/link/image/entity 等结构。
-- `backend/app/services/chunk_service.py`：Chunk rebuild 与 persist 编排入口；父子模式走 Canonical/Old Structure First，非父子模式走兼容 Block Path。
-
-### 当前生产父子链路
+## 8.1 当前核心调用树
 
 ```text
-build_canonical_document()
-→ build_canonical_parent_child_plan()
-→ split_parent_child_result()
-→ _apply_heading_context_to_source_children()
-→ _materialize_source_child()
-→ deduplicate_overlap_shadow_children()
-→ _flatten_underfilled_parent_links()
-→ Persist
+chunk_service.rebuild_document_chunks()
+│
+├─ runtime_config_from_db(db)
+│  └─ 读取 DB ChunkerConfig
+│
+└─ enable_parent_child = true
+   │
+   └─ _rebuild_canonical_weknora_parent_child()
+      │
+      ├─ canonical_document.build_canonical_document()
+      │  ├─ ParsedBlock 按原顺序统一成 Canonical Markdown
+      │  ├─ Table 转 Markdown/HTML 可用表达
+      │  ├─ Image 转 asset:// 引用
+      │  └─ CanonicalAsset 放 sidecar
+      │
+      ├─ canonical_parent_child.build_canonical_parent_child_plan()
+      │  │
+      │  ├─ normalize_canonical_markdown()
+      │  │  ├─ 超长 fenced code 安全切分
+      │  │  └─ 超长 Markdown table 保表头切分
+      │  │
+      │  ├─ parent_child_splitter.split_parent_child_result()
+      │  │  └─ weknora_splitter.split_parent_child()
+      │  │     ├─ 第一阶段：Parent 级切分
+      │  │     ├─ 第二阶段：Child 级切分
+      │  │     ├─ heading / heuristic / recursive 策略选择
+      │  │     └─ overlap / resequence / validation
+      │  │
+      │  ├─ _apply_heading_context_to_source_children()
+      │  ├─ _materialize_source_child()
+      │  │  ├─ text
+      │  │  ├─ table
+      │  │  └─ image / asset
+      │  ├─ deduplicate_overlap_shadow_children()
+      │  └─ _flatten_underfilled_parent_links()
+      │     └─ 只做 Parent 0/1 最终完整性约束
+      │
+      ├─ ORM Materialization
+      │  ├─ parent_text
+      │  └─ child chunks
+      │
+      ├─ _enforce_parent_child_integrity()
+      ├─ _link_neighbors()
+      ├─ _finalize_chunk_skip_flags()
+      ├─ DB flush
+      └─ keyword_index_service.index_document_chunks()
 ```
 
-当前生产链路不调用：
+## 8.2 Old Structure First 的核心原则
+
+### 原则 1：先保结构，再优化长度
+
+当前生产计划**不自动合并短兄弟块**。短块可能是：
+
+- 标题后的定义；
+- 列表项；
+- 代码前导语；
+- 图表说明；
+- 有独立语义的结论句。
+
+因此不再为了“块长更好看”而主动破坏文档边界。
+
+### 原则 2：Parent 是上下文容器，Child 是召回单元
 
 ```text
-merge_short_text_siblings()
+Parent
+├─ Child A   ← Embedding / BM25 / Retrieval
+├─ Child B   ← Embedding / BM25 / Retrieval
+└─ Child C   ← Embedding / BM25 / Retrieval
 ```
 
-### 向量化与检索
+- `parent_text` 不做 Embedding；
+- 检索先召回 Child；
+- 需要上下文时再回到 Parent/兄弟块扩展。
 
-- `backend/app/services/embedding/embedding_content_builder.py`：根据 Chunk 类型和 metadata 构造 embedding 输入。
-- `backend/app/services/embedding_service.py`：生成向量、写入 `chunk_embeddings`，并同步可选外部向量库。
-- `backend/app/services/keyword_index_service.py`：Elasticsearch/BM25 索引写入、删除和检索。
-- `backend/app/services/retrieval_service.py`：向量检索 + BM25 + RRF/加权融合 + Parent 上下文组织。
-- `backend/app/services/context/knowledge_context_service.py`：构建检索后的知识上下文对象。
-- `backend/app/services/llm_context_builder.py`：将检索结果转换为 flat chunks 或 legacy LLM context。
+### 原则 3：保护不可随意断开的结构
 
-### MCP 与公网 Agent 对接
+`protected_patterns.py` 负责保护或识别：
 
-- `backend/app/integrations/mcp/server.py`：MCP Server 注册和生命周期。
-- `backend/app/integrations/mcp/http_server.py`：MCP HTTP/Streamable HTTP 服务入口。
-- `backend/app/integrations/mcp/tools.py`：检索类 MCP 工具实现。
-- `backend/app/integrations/mcp/http_client.py`：MCP 服务调用 Know_RAG Backend Retrieval API 的客户端。
-- `docker/nginx/know_rag_gateway.conf`：统一代理 `/api`、`/files`、`/mcp`。
+- fenced code；
+- Markdown table；
+- HTML；
+- LaTeX；
+- Markdown link/image；
+- entity；
+- 目录树/文件列表等结构型文本。
 
-### 前端主要页面
+## 8.3 父子切分主要 Python 文件与职责
 
-- `frontend/src/views/KnowledgeBaseDetailView.vue`：知识库详情、文档/Chunk/向量统计。
-- `frontend/src/views/DocumentDetailView.vue`：文档状态、重新解析、向量化。
-- `frontend/src/views/ChunkListView.vue`：Chunk 列表/树形展示与类型筛选。
-- `frontend/src/views/DocumentUploadView.vue`：上传与 Parser/OCR/VLM 配置。
-- `frontend/src/views/SearchDebugView.vue`：Hybrid Search 和 Parent Context 调试。
-- `frontend/src/views/ChunkerConfigView.vue`：Chunk size、overlap、父子模式等配置。
-- `frontend/src/views/ModelConfigView.vue`：Embedding/LLM/VLM 配置。
-- `frontend/src/views/VectorStoreConfigView.vue`：pgvector/Qdrant/Milvus 配置入口。
+| 顺序 | Python 文件 | 核心函数 | 作用 | 修改风险 |
+|---|---|---|---|---|
+| 1 | `chunk_service.py` | `rebuild_document_chunks()` | runtime dispatcher；决定走父子还是兼容分支 | **极高** |
+| 2 | `chunker_config_service.py` | `runtime_config_from_db()` | DB 配置 → 运行时 ChunkerConfig | **极高** |
+| 3 | `document_parser/canonical_document.py` | `build_canonical_document()` | 统一结构源文档，避免解析器差异污染切分器 | **极高** |
+| 4 | `chunker/canonical_parent_child.py` | `build_canonical_parent_child_plan()` | 当前生产父子计划总入口 | **极高** |
+| 5 | `chunker/parent_child_splitter.py` | `split_parent_child_result()` | 配置与结果模型适配 | 高 |
+| 6 | `chunker/weknora_splitter.py` | `split_parent_child()` | Old 两阶段边界算法核心 | **极高** |
+| 7 | `chunker/protected_patterns.py` | `find_protected_spans()` 等 | 防止代码/表格/公式/结构文本被错误切断 | **极高** |
+| 8 | `chunk_service.py` | `_rebuild_canonical_weknora_parent_child()` | Plan → ORM Chunk | **极高** |
+| 9 | `chunk_service.py` | `_enforce_parent_child_integrity()` | 保证 Parent 链接合法 | 高 |
+| 10 | `keyword_index_service.py` | `index_document_chunks()` | 将最终 Child 同步到 ES | 高 |
 
-## 当前技术债务与维护说明
+## 8.4 当前保留但不应误认成生产逻辑的函数
 
-### 1. 历史 WeKnora 命名仍存在
+| 代码 | 当前状态 |
+|---|---|
+| `chunk_service._rebuild_markdown_weknora_parent_child()` | 保留实现；当前 dispatcher 不调用 |
+| `chunk_service._rebuild_document_chunks_structured_parent_child()` | 保留的旧结构化父子实现；当前 dispatcher 不调用 |
+| `chunking.rebuild_service.ChunkRebuildService` | 模块化重构实现；当前 dispatcher 不调用 |
+| `canonical_parent_child.merge_short_text_siblings()` | Helper 保留；生产 plan 有意不调用 |
 
-当前函数和 metadata 中仍可能存在：
+---
+
+# 9. 主链路四：非父子兼容切分
+
+```text
+rebuild_document_chunks()
+└─ enable_parent_child = false
+   │
+   ├─ 遍历 ParsedBlock
+   │
+   ├─ text
+   │  └─ chunker.service.split_document()
+   │
+   ├─ table
+   │  └─ 直接物化 table Chunk
+   │
+   └─ image
+      ├─ OCR 文本足够长 → image_ocr_text Chunk
+      └─ 图片本身 → image Chunk
+
+→ _post_process_orphan_short_text_chunks()
+→ _link_neighbors()
+→ _finalize_chunk_skip_flags()
+→ DB
+→ ES BM25
+```
+
+这条链路目前仍是有效 runtime 分支，但不是当前 Old Structure First 优化的核心对象。
+
+---
+
+# 10. 主链路五：Embedding 与向量存储
+
+## 10.1 调用树
+
+```text
+POST /documents/{document_id}/embedding
+│
+├─ api/routes_documents.py
+│  └─ embed_document()
+│
+└─ services/embedding_service.py
+   └─ embed_document()
+      │
+      ├─ 查询 eligible chunks
+      │  ├─ text
+      │  ├─ table
+      │  ├─ image
+      │  ├─ image_ocr_text
+      │  └─ equation
+      │
+      ├─ embedding/embedding_content_builder.py
+      │  └─ build_embedding_content()
+      │
+      ├─ embed_text()
+      │  ├─ Ollama
+      │  └─ OpenAI-compatible API
+      │
+      ├─ _upsert_embedding()
+      │  └─ PostgreSQL chunk_embeddings  【真值记录】
+      │
+      └─ optional external mirror
+         └─ vector_store_adapters.upsert_external_vector()
+            ├─ Qdrant
+            └─ Milvus
+```
+
+## 10.2 关键规则
+
+1. `parent_text` 不向量化。
+2. 不是所有存在的 Chunk 都必须向量化；低信息块、占位块可跳过。
+3. 真正送给 Embedding 模型的内容由 `build_embedding_content()` 决定，而不是简单使用 `chunk.content`。
+4. PostgreSQL `chunk_embeddings` 是本地状态判断和回退检索的重要依据。
+5. 外部向量库是 mirror/search provider，不应破坏 PostgreSQL 侧文档与 Chunk 的关系真值。
+
+## 10.3 主要 Python 文件
+
+| 文件 | 作用 |
+|---|---|
+| `api/routes_documents.py` | 单文档和批量向量化 HTTP 入口 |
+| `embedding_service.py` | Embedding provider 调用、批量处理、状态统计、写入 |
+| `embedding/embedding_content_builder.py` | 构造语义 Embedding 输入；这是效果调优核心 |
+| `vector_store_adapters.py` | Qdrant/Milvus upsert 和 search |
+| `vector_store_service.py` | 向量库配置 CRUD/测试 |
+
+---
+
+# 11. 主链路六：Elasticsearch BM25 索引
+
+## 11.1 入库链路
+
+```text
+Chunk rebuild 完成
+→ DB add / flush
+→ keyword_index_service.index_document_chunks()
+→ 只索引可检索的非 parent_text Chunk
+→ Elasticsearch
+```
+
+## 11.2 搜索链路
+
+```text
+retrieval_service.keyword_search()
+→ keyword_index_service.search_bm25()
+→ Elasticsearch BM25
+→ Keyword Hit
+→ score normalize
+→ retrieval result
+```
+
+如果 ES 不可用，只有在配置显式允许时才走 SQL `ILIKE` fallback。
+
+## 11.3 关键文件
+
+| 文件 | 作用 |
+|---|---|
+| `keyword_index_service.py` | ES index schema、Chunk → ES doc、批量索引、删除、BM25 查询、重建索引 |
+| `main.py` | FastAPI startup 时可初始化 ES index |
+| `chunk_service.py` | Chunk rebuild 后触发 ES 同步 |
+| `retrieval_service.py` | 调用 BM25 并融合结果 |
+| `backend/scripts/rebuild_keyword_index.py` | 运维时重建关键词索引 |
+
+---
+
+# 12. 主链路七：Hybrid Retrieval
+
+## 12.1 总链路树
+
+```text
+GET/POST /api/v1/knowledge-bases/{kb_id}/search
+│
+├─ api/routes_retrieval.py
+│  └─ hybrid_search_get() / hybrid_search_post()
+│
+└─ services/retrieval_service.py
+   └─ hybrid_search()
+      │
+      ├─ normalize_options()
+      │
+      ├─ Vector branch
+      │  └─ vector_search()
+      │     ├─ query embedding
+      │     ├─ external vector store 优先（如配置）
+      │     └─ PostgreSQL pgvector fallback/本地搜索
+      │
+      ├─ Keyword branch
+      │  └─ keyword_search()
+      │     └─ Elasticsearch BM25
+      │
+      ├─ merge_results()
+      │  ├─ merge_results_rrf()      【默认重点】
+      │  └─ merge_results_weighted()
+      │
+      ├─ attach_context()            【可选】
+      │  └─ Parent preview / sibling summaries
+      │
+      ├─ build_parent_groups()       【可选】
+      │  └─ 按 parent 聚合 Child hits
+      │
+      └─ return results + parent_groups + meta
+```
+
+## 12.2 检索的核心数据模型
+
+```text
+Child Chunk
+├─ 是精确召回单元
+├─ 有 embedding
+└─ 有 BM25 文档
+
+Parent Text
+├─ 是上下文容器
+├─ 不直接 embedding
+└─ 由命中的 Child 反查和扩展
+```
+
+## 12.3 主要 Python 文件与作用
+
+| 顺序 | Python 文件 | 核心函数 | 作用 |
+|---|---|---|---|
+| 1 | `api/routes_retrieval.py` | `hybrid_search_*()` | HTTP 入口 |
+| 2 | `retrieval_service.py` | `normalize_options()` | 合并请求参数与 DB 检索配置 |
+| 3 | `retrieval_service.py` | `vector_search()` | 向量召回 |
+| 4 | `embedding_service.py` | `embed_text()` | Query 向量化 |
+| 5 | `vector_store_adapters.py` | `search_external_vector()` | 外部向量库召回 |
+| 6 | `retrieval_service.py` | `keyword_search()` | BM25 召回 |
+| 7 | `keyword_index_service.py` | `search_bm25()` | Elasticsearch 查询 |
+| 8 | `retrieval_service.py` | `merge_results_rrf()` | 按排名进行融合 |
+| 9 | `retrieval_service.py` | `attach_context()` | 回填 Parent/邻居上下文 |
+| 10 | `retrieval_service.py` | `build_parent_groups()` | 以 Parent 为单位聚合证据 |
+| 11 | `retrieval_service.py` | `hybrid_search()` | 整体 orchestration |
+
+---
+
+# 13. 主链路八：统一 LLM Context
+
+## 13.1 调用树
+
+```text
+POST /api/v1/knowledge-bases/{kb_id}/llm-context
+│
+├─ api/routes_retrieval.py
+│  └─ llm_context_post()
+│
+├─ retrieval_service.py
+│  └─ build_llm_context()              # 兼容壳
+│
+└─ context/knowledge_context_service.py
+   └─ KnowledgeContextService.build_for_knowledge_base()
+      │
+      ├─ _normalize_payload()
+      │  ├─ include_context = true
+      │  ├─ include_parent_context = true
+      │  ├─ merge_hits_by_parent = true
+      │  └─ return_mode = chunks_with_selective_context
+      │
+      ├─ retrieval_service.hybrid_search()
+      │
+      └─ 按 return_mode 构建结果
+         ├─ chunks
+         │  └─ llm_context_builder.build_cloud_flat_chunks_payload()
+         ├─ chunks_with_selective_context   【默认】
+         │  └─ build_cloud_flat_chunks_payload()
+         ├─ debug
+         │  ├─ cloud flat chunks
+         │  └─ legacy builder 附加调试字段
+         └─ legacy / fallback
+            └─ build_llm_context_payload()
+```
+
+## 13.2 默认返回模式
+
+默认：`chunks_with_selective_context`
+
+目标不是直接拼成一整段 Prompt，而是返回云端 Agent 更容易控制的扁平证据：
+
+```text
+chunks[]
+├─ 直接命中的 hit chunks
+└─ 按规则补充的 context chunks
+   ├─ parent 内相邻文本
+   └─ 关联 media chunks
+```
+
+当前 schema 标识为：
+
+```text
+cloud_flat_chunks.v4.selective_context
+```
+
+## 13.3 主要 Python 文件
+
+| 文件 | 作用 |
+|---|---|
+| `api/routes_retrieval.py` | `/llm-context` HTTP 入口 |
+| `retrieval_service.py` | `build_llm_context()` 兼容调用壳；底层仍负责真正检索 |
+| `context/knowledge_context_service.py` | FastAPI/MCP/未来 Chat 的统一 Context Facade |
+| `llm_context_builder.py` | 将检索结果变成 flat chunks 或 legacy context |
+
+### 为什么 `KnowledgeContextService` 重要
+
+旧结构容易变成：
+
+```text
+FastAPI 自己调 retrieval
+MCP 自己调 retrieval
+Chat 自己调 retrieval
+```
+
+当前目标是：
+
+```text
+FastAPI ─┐
+MCP ─────┼─→ KnowledgeContextService → Retrieval → Context Builder
+Chat ────┘
+```
+
+后续新的调用方应优先复用该服务，而不是复制一套检索拼接逻辑。
+
+---
+
+# 14. 主链路九：MCP → Know_RAG Context
+
+## 14.1 总链路
+
+```text
+Claude / Codex / 其他 MCP Client
+│
+└─ integrations/mcp/server.py
+   └─ know_rag_search_context
+      │
+      └─ integrations/mcp/tools.py
+         └─ search_context()
+            │
+            └─ integrations/mcp/http_client.py
+               └─ POST /api/v1/knowledge-bases/{kb_id}/llm-context
+                  │
+                  └─ KnowledgeContextService
+                     └─ Hybrid Retrieval
+                        └─ Cloud Flat Chunks
+```
+
+## 14.2 主要 Python 文件
+
+| 文件 | 作用 |
+|---|---|
+| `integrations/mcp/server.py` | 创建 FastMCP；声明暴露给 MCP Client 的工具 |
+| `integrations/mcp/tools.py` | 参数校验和映射；保持薄适配层 |
+| `integrations/mcp/http_client.py` | 登录、Token 管理、后端 HTTP 调用、401 重试 |
+| `context/knowledge_context_service.py` | MCP 最终复用的统一上下文业务 |
+| `retrieval_service.py` | 实际检索 |
+| `llm_context_builder.py` | MCP 返回的 `chunks[]` 结构生成 |
+
+### MCP 维护原则
+
+1. 检索策略改动：改 `retrieval_service.py`，不要在 MCP 里复制。
+2. Context 返回结构改动：改 `knowledge_context_service.py` / `llm_context_builder.py`。
+3. MCP 只负责协议适配和参数暴露。
+4. MCP 不直接查 DB。
+
+---
+
+# 15. 文档删除与数据清理链路
+
+```text
+DELETE document
+→ document_service.delete_document()
+├─ delete_document_objects()
+│  └─ 删除 MinIO 中该文档的全部对象
+├─ delete_document_from_index()          # best-effort
+│  └─ 删除 Elasticsearch BM25 文档数据
+├─ DB 删除 Chunk + Document
+│  └─ ChunkEmbedding 依赖 ORM/数据库级联删除
+├─ 更新 KnowledgeBase document/chunk 统计
+└─ delete_document_cache()               # best-effort
+   └─ 清理本地解析缓存
+```
+
+### 当前需要特别关注的清理边界
+
+当前 `delete_document()` 中**没有看到显式删除 Qdrant/Milvus 外部向量记录的调用**。因此如果部署环境启用了外部向量库，后续应重点验证：
+
+```text
+删除文档 / 重解析文档
+→ PostgreSQL 已删除
+→ ES 已删除
+→ MinIO 已删除
+→ 外部向量库是否仍残留旧 chunk id ？
+```
+
+维护删除逻辑时必须同时考虑：
+
+```text
+PostgreSQL
+MinIO
+Elasticsearch
+外部向量库
+本地解析缓存
+```
+
+新增一种存储后，应同步检查删除和重解析逻辑是否需要补清理。
+
+---
+
+# 16. 主要链路 Python 文件总表
+
+> 后续排障可先从这张表定位。
+
+| 领域 | 入口文件 | 核心文件 | 最关键职责 |
+|---|---|---|---|
+| 应用启动 | `main.py` | `core/config.py` | 路由、启动初始化、全局配置 |
+| 上传 | `routes_documents.py` | `document_service.py` | 文件入库、Document 创建、解析任务 |
+| 对象存储 | `document_service.py` | `storage/minio_storage.py` | 源文件和媒体对象生命周期 |
+| 解析任务 | `document_service.py` | `parse_task_service.py` | 后台任务状态、阶段事件 |
+| 解析路由 | `document_service.py` | `parser_service.py` | 选择 MinerU/RAGFlow/Markdown |
+| MinerU | `parser_service.py` | `document_parser/mineru_adapter.py` | MinerU API 和结果归一化 |
+| 多格式解析 | `parser_service.py` | `document_parser/ragflow_format_adapter.py` | 格式 dispatcher |
+| OCR/VLM | `document_service.py` | `vision_service.py` | 图片块语义增强 |
+| Block 重排 | `document_service.py` | `document_parser/block_reflow.py` | OCR 修复、结构重排、标题上下文 |
+| Canonical | `chunk_service.py` | `document_parser/canonical_document.py` | 统一 Markdown + asset sidecar |
+| 切分 dispatcher | `document_service.py` | `chunk_service.py` | 清旧数据、选择分支、物化、持久化 |
+| Old Structure First | `chunk_service.py` | `chunker/canonical_parent_child.py` | 生产父子计划 |
+| Parent/Child 算法 | `canonical_parent_child.py` | `chunker/weknora_splitter.py` | 两阶段边界选择 |
+| 结构保护 | `canonical_parent_child.py` | `chunker/protected_patterns.py` | 防止结构内容断裂 |
+| Embedding | `routes_documents.py` | `embedding_service.py` | 生成和存储向量 |
+| Embedding 内容 | `embedding_service.py` | `embedding/embedding_content_builder.py` | 决定模型真正看到的语义文本 |
+| 外部向量库 | `retrieval_service.py` | `vector_store_adapters.py` | Qdrant/Milvus |
+| BM25 | `chunk_service.py` / `retrieval_service.py` | `keyword_index_service.py` | ES 建索引和查询 |
+| Hybrid Retrieval | `routes_retrieval.py` | `retrieval_service.py` | 向量+BM25+RRF+上下文 |
+| Unified Context | `routes_retrieval.py` | `context/knowledge_context_service.py` | 调用方统一 Facade |
+| Cloud Chunks | `knowledge_context_service.py` | `llm_context_builder.py` | selective context flat chunks |
+| MCP | `integrations/mcp/server.py` | `tools.py` + `http_client.py` | MCP → HTTP API 适配 |
+
+---
+
+# 17. 按“要改什么”快速定位文件
+
+| 需求/问题 | 第一修改位置 | 第二检查位置 |
+|---|---|---|
+| 上传参数不对 | `api/routes_documents.py` | `schemas/document.py` |
+| 上传后没启动解析 | `document_service.upload_document()` | `parse_task_service.py` |
+| 解析器选错 | `parser_service.py` | Document metadata / ModelConfig |
+| MinerU 返回适配错误 | `document_parser/mineru_adapter.py` | MinerU 实际 payload |
+| Markdown 顺序/表格错 | `document_parser/markdown_ordered.py` | `block_reflow.py` |
+| OCR 行碎裂 | `document_parser/block_reflow.py` | `vision_service.py` |
+| 图片没有描述 | `vision_service.py` | `model_config_service.py` |
+| Parent/Child 根本没启用 | DB `ChunkerConfig` | `chunker_config_service.py` |
+| 普通文本切坏 | `chunker/canonical_parent_child.py` | `weknora_splitter.py` |
+| 英文 token/URL/长行被切断 | `protected_patterns.py` / `boundary_utils.py` | `canonical_parent_child.py` |
+| 代码块切坏 | `canonical_parent_child.py` | `protected_patterns.py` |
+| 表格切坏 | `canonical_parent_child.py` | `canonical_document.py` |
+| 标题上下文丢失 | `_apply_heading_context_to_source_children()` | `block_reflow.py` |
+| 短块太多 | 先确认是否真是语义问题 | **不要直接恢复自动 merge_short_text_siblings** |
+| Parent 关系异常 | `_enforce_parent_child_integrity()` | `_flatten_underfilled_parent_links()` |
+| Embedding 效果差 | `embedding_content_builder.py` | `embedding_service.py` |
+| 文档显示未向量化 | `embedding_service.py` 状态统计 | `ChunkEmbedding` 数据 |
+| 外部向量库查不到 | `vector_store_adapters.py` | `VectorStoreConfig` |
+| BM25 查不到 | `keyword_index_service.py` | ES index 是否同步 |
+| Hybrid 排名不合理 | `merge_results_rrf()` | RetrievalConfig |
+| Parent 上下文太长/太短 | `attach_context()` / `build_parent_groups()` | retrieval config |
+| MCP 返回结构不对 | `llm_context_builder.py` | `knowledge_context_service.py` |
+| MCP 能连但查不到数据 | `http_client.py` | 后端 `/llm-context` 接口 |
+| 删除后残留文件 | `document_service.delete_document()` | MinIO/ES/外部向量库清理 |
+
+---
+
+# 18. 容易误判的代码与维护陷阱
+
+## 18.1 `services/chunking/` 不是当前切分 dispatcher
+
+存在测试 ≠ 已接管生产主链路。
+
+当前真实入口仍是：
+
+```text
+chunk_service.rebuild_document_chunks()
+```
+
+而不是：
+
+```text
+ChunkRebuildService.rebuild()
+```
+
+后续若要正式迁移，必须显式修改 dispatcher，并做回归测试后再更新本文。
+
+## 18.2 不要把旧父子函数当成当前 Canonical 主链路
+
+当前父子分支：
 
 ```text
 _rebuild_canonical_weknora_parent_child()
-canonical_weknora_parent_child
-canonical_markdown_weknora_two_pass
 ```
 
-但当前真实策略已经是：
+以下函数虽然存在，但当前 dispatcher 不调用：
 
 ```text
-Old Structure First
+_rebuild_markdown_weknora_parent_child()
+_rebuild_document_chunks_structured_parent_child()
 ```
 
-建议后续单独做纯命名重构，不与切分逻辑修改同时进行。
+## 18.3 不要看到短块就自动合并
 
-### 2. `app/services/chunking/` 当前不可直接删除
+`merge_short_text_siblings()` 当前保留但不进入生产 plan，原因是上一轮优化已经验证：单纯追求“没有短块”会损害文档结构。
 
-虽然它不是 `enable_parent_child=true` 时的最终主链路，但 `chunk_service.py` 仍引用其中部分 helper，且非父子模式仍依赖旧 Block Path。
-
-删除前必须完成：
+处理短块问题时先分类：
 
 ```text
-runtime import audit
-非父子模式验证
-测试迁移
+真实语义短块        → 保留
+结构噪声            → Canonical/quality gate 清理
+错误断句            → 修边界算法
+纯 overlap shadow   → 精确去重
+错误 Parent 关系    → integrity 修复
 ```
 
-### 3. `backend/weknora_chunker_py/` 是清理候选
-
-当前更接近参考实现/历史对照代码。若确认无文档、开发调试和运行时依赖，可后续删除。
-
-### 4. Short Merge Helper 仍保留但生产不调用
+## 18.4 `mcp_placeholder` 不是实际 MCP
 
 ```text
-merge_short_text_siblings()
+api/routes_mcp_placeholder.py
+services/mcp_placeholder_service.py
 ```
 
-目前仅用于历史兼容、实验或旧测试。后续可选择：
+是历史占位。
+
+真实 MCP：
 
 ```text
-保留为实验工具
+integrations/mcp/
 ```
 
-或：
+## 18.5 `ragflow_vendor/` 和 `weknora_chunker_py/` 不应随意修改
+
+它们用于：
+
+- Vendor 依赖；
+- 对照原始算法；
+- 调研和迁移参考。
+
+正常业务修复优先落在 `backend/app/services/` 内。
+
+---
+
+# 19. 测试目录与回归范围
+
+## 19.1 当前测试重点分组
 
 ```text
-连同过时测试一起删除
+backend/tests/
+├─ test_old_structure_first_optimization.py       # 当前策略总回归
+├─ test_canonical_parent_child_unified.py         # Canonical 父子统一链路
+├─ test_canonical_parent_child_integration.py     # 集成行为
+├─ test_canonical_pipeline_convergence.py         # Pipeline 收敛
+├─ test_canonical_overlap_shadow_dedup.py         # overlap shadow 去重
+├─ test_canonical_short_sibling_merge.py          # 短兄弟 helper 行为（不代表生产调用）
+├─ test_chunk_boundary_quality.py                 # 边界质量
+├─ test_context_header_continuation.py            # 标题上下文继承
+├─ test_markdown_code_context_merge.py            # 代码上下文
+├─ test_markdown_ordered_tables.py                # Markdown 表格
+├─ test_markdown_table_pipeline.py                # 表格主链路
+├─ test_chunker.py                                # 基础切分
+├─ test_chunker_structure.py                      # 结构切分
+│
+├─ test_embedding_content.py                      # Embedding 内容
+├─ test_embedding_structure_content.py            # 结构文本 Embedding
+│
+├─ test_hybrid_result_mapping.py                  # Hybrid 结果映射
+├─ test_retrieval_mapping.py                      # Retrieval 映射
+├─ test_rrf_fusion.py                             # RRF 融合
+│
+├─ test_mineru_ocr.py                             # MinerU OCR
+├─ test_mineru_parser_engine.py                   # MinerU parser routing
+├─ test_parse_quality_fix.py                      # 解析质量修复
+└─ test_block_reflow_structure.py                 # Block Reflow 结构
 ```
 
-但当前不影响生产结果。
+## 19.2 修改后最低回归建议
 
-## 当前维护原则
+### 修改 Canonical/父子切分
 
-以后调整切分链路时，优先顺序固定为：
+至少关注：
 
 ```text
-1. 是否丢内容
-2. 是否破坏标题结构
-3. 是否破坏图片/表格/代码/公式
-4. 是否产生确定性重复
-5. 是否产生非法 Parent
-6. 是否影响检索
-7. 最后才检查短块比例
+test_old_structure_first_optimization.py
+test_canonical_parent_child_unified.py
+test_canonical_parent_child_integration.py
+test_canonical_overlap_shadow_dedup.py
+test_chunk_boundary_quality.py
+test_context_header_continuation.py
 ```
 
-不再因为：
+### 修改 Markdown/代码/表格
 
 ```text
-Chunk < 120
+test_markdown_ordered_tables.py
+test_markdown_table_pipeline.py
+test_markdown_code_context_merge.py
 ```
 
-就默认增加自动合并规则。
+### 修改 Embedding
+
+```text
+test_embedding_content.py
+test_embedding_structure_content.py
+```
+
+### 修改 Retrieval
+
+```text
+test_hybrid_result_mapping.py
+test_retrieval_mapping.py
+test_rrf_fusion.py
+```
+
+> 本手册基于静态代码调用关系整理，不代表本次生成文档时已经执行完整测试套件。
+
+---
+
+# 20. 运维与部署相关目录
+
+```text
+docker-compose.yml
+├─ backend
+├─ frontend
+├─ mcp
+├─ gateway
+├─ postgres / pgvector
+├─ qdrant
+├─ redis
+├─ elasticsearch
+├─ minio
+├─ mineru-cpu
+└─ mineru-gpu
+
+
+docker/
+├─ mineru/                               # MinerU 镜像/启动配置
+└─ nginx/                                # Nginx
+```
+
+### 后端维护脚本
+
+```text
+backend/scripts/
+├─ check_parent_child_chunks.py          # 检查父子 Chunk 结果
+└─ rebuild_keyword_index.py              # 重建 ES 关键词索引
+```
+
+---
+
+# 21. 历史文档的维护优先级
+
+`docs/` 中大量文件记录了不同阶段的设计和实现，仍有参考价值，但项目已经经历多轮演进。
+
+推荐阅读优先级：
+
+```text
+1. 本手册                               # 当前代码结构和真实主链路
+2. backend/OLD_STRUCTURE_FIRST_OPTIMIZATION.md
+3. docs/weknora_alignment_report.md
+4. docs/architecture.md / backend.md
+5. 各 phase_xxx 文档                   # 查历史背景
+```
+
+历史文档与代码冲突时：
+
+```text
+真实 dispatcher 调用关系
+> 当前测试
+> 最新专项说明
+> 历史阶段文档
+```
+
+---
+
+# 22. 推荐的后续维护规范
+
+## 22.1 每次主链路修改后更新本手册
+
+至少检查：
+
+```text
+[ ] 入口函数是否变化
+[ ] runtime dispatcher 是否变化
+[ ] 新增/删除 Python 文件
+[ ] DB 配置是否新增
+[ ] 真实生产分支是否改变
+[ ] 返回 schema 是否改变
+[ ] MCP 是否仍复用统一 Context API
+[ ] 删除/重解析是否仍能清理所有存储
+[ ] 对应测试是否新增或失效
+```
+
+## 22.2 新模块接管旧主链路的判定标准
+
+只有满足以下条件，本文才把模块标成 `[主链路]`：
+
+```text
+1. HTTP route / task entry 可以追到它；
+2. dispatcher 真实调用它；
+3. 不是仅有 import、测试或未调用 helper；
+4. 生产配置下存在可达路径。
+```
+
+## 22.3 当前项目最应该保持清晰的五层边界
+
+```text
+解析层
+ParsedDocument / ParsedBlock
+        ↓
+Canonical 层
+Canonical Markdown + Asset Sidecar
+        ↓
+切分层
+Parent/Child Plan
+        ↓
+存储/索引层
+PostgreSQL + ES + Vector Store + MinIO
+        ↓
+检索/上下文层
+Hybrid Retrieval + KnowledgeContextService + MCP
+```
+
+只要这五层边界不再次混在一个大文件中，项目后续维护成本会明显低很多。
+
+---
+
+# 23. 最终主链路总图
+
+```text
+【文档入库】
+Frontend
+→ routes_documents.py
+→ document_service.py
+→ MinIO
+→ ParseTask
+→ parser_service.py
+→ MinerU / RAGFlow / Markdown
+→ ParsedDocument / ParsedBlock
+→ vision_service.py
+→ block_reflow.py
+→ chunk_service.rebuild_document_chunks()
+
+    ├─ enable_parent_child=true
+    │  → canonical_document.py
+    │  → canonical_parent_child.py
+    │  → parent_child_splitter.py
+    │  → weknora_splitter.py
+    │  → Parent/Child Chunk
+    │
+    └─ enable_parent_child=false
+       → split_document / direct block materialization
+       → Compatibility Chunks
+
+→ PostgreSQL Chunks
+→ Elasticsearch BM25
+→ Optional Embedding
+→ PostgreSQL ChunkEmbedding
+→ Optional Qdrant / Milvus
+
+
+【查询与 Agent 使用】
+Client / MCP
+→ routes_retrieval.py
+→ KnowledgeContextService
+→ retrieval_service.hybrid_search()
+    ├─ Vector Search
+    └─ BM25 Search
+→ RRF / Weighted Fusion
+→ Child Hits
+→ Parent Context / Parent Groups
+→ llm_context_builder.py
+→ cloud_flat_chunks.v4.selective_context
+→ FastAPI / MCP / Future Chat Agent
+```
+
+---
+
+## 结论
+
+当前 Know_RAG 已经形成了相对清晰的核心闭环：
+
+```text
+多格式解析
+→ 统一 ParsedDocument
+→ Canonical Markdown
+→ Old Structure First Parent/Child
+→ 多路索引
+→ Hybrid Retrieval
+→ Selective Context
+→ MCP / Agent
+```
+
+后续维护最关键的是始终区分三件事：
+
+1. **文件存在**不等于**当前运行时会调用**；
+2. **历史重构方案**不等于**当前 dispatcher 已切换**；
+3. **代码支持某分支**不等于**部署环境当前配置已启用**。
+
+本手册应持续以真实调用关系维护，而不是仅根据目录名称或历史文档维护。

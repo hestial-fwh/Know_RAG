@@ -38,6 +38,10 @@ class ParsedDocument:
     content: str
     blocks: list[ParsedBlock] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+    # Exact source text when the input format has an authoritative textual
+    # representation (currently Markdown).  ``content`` is allowed to be a
+    # parser/reflow projection; this field must never be rebuilt from blocks.
+    source_content: str | None = None
 
     @classmethod
     def from_text(cls, text: str, *, metadata: dict | None = None) -> "ParsedDocument":
@@ -45,6 +49,7 @@ class ParsedDocument:
             content=text,
             blocks=[ParsedBlock(block_type="text", text=text, order_index=0)] if text else [],
             metadata=metadata or {},
+            source_content=text,
         )
 
 

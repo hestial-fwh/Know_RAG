@@ -89,6 +89,7 @@ def _build_fallback_text_drafts(
             if not content or is_low_information_text(content):
                 continue
             meta = {
+                **(parsed.metadata or {}),
                 "source": "parser",
                 "parser": "fallback_flat_text_after_structured_empty",
                 "file_type": file_type,
@@ -97,7 +98,6 @@ def _build_fallback_text_drafts(
                 "block_type": getattr(block, "block_type", "text"),
                 "block_order": getattr(block, "order_index", 0),
                 "fallback_reason": "structured_parent_child_produced_zero_drafts",
-                **(parsed.metadata or {}),
             }
             drafts.append(
                 ChildDraft(
@@ -136,6 +136,11 @@ def _section_has_semantic_children(section: dict[str, Any]) -> bool:
 
 class ChunkRebuildService:
     def __init__(self, persistence: ChunkPersistence | None = None):
+        if persistence is not None:
+            raise ValueError(
+                "custom ChunkPersistence is no longer supported; "
+                "chunk persistence is owned by chunk_service.rebuild_document_chunks"
+            )
         self.persistence = persistence or ChunkPersistence()
 
     def build_drafts(
@@ -264,59 +269,19 @@ class ChunkRebuildService:
         file_type: str,
         cfg: Any,
     ) -> int:
-        try:
-            from app.services.keyword_index_service import delete_document_from_index
+        """Compatibility wrapper around the single production rebuild entry.
 
-            delete_document_from_index(document.id)
-        except Exception as exc:
-            logger.warning(
-                "Elasticsearch keyword index cleanup skipped before rebuild: document_id=%s error=%s",
-                document.id,
-                exc,
-            )
+        ``build_drafts`` remains available for focused builder tests and
+        migration experiments, but persistence must have exactly one owner.
+        Keeping a second replacement implementation here previously allowed
+        its safety tests to diverge from the function used by document parsing.
+        """
+        from app.services.chunk_service import rebuild_document_chunks
 
-        drafts = self.build_drafts(
-            parsed_document=parsed_document,
-            file_type=file_type,
-            cfg=cfg,
+        return rebuild_document_chunks(
+            db,
+            document,
+            parsed_document,
+            cfg_override=cfg,
+            file_type_override=file_type,
         )
-
-        if not drafts:
-            logger.warning(
-                "chunk rebuild: zero drafts after build_drafts (including fallback). "
-                "document_id=%s blocks=%s file_type=%s",
-                document.id,
-                len(parsed_document.blocks or []),
-                file_type,
-            )
-            return 0
-
-        chunks, inserted = self.persistence.persist(
-            db=db,
-            document=document,
-            drafts=drafts,
-            file_type=file_type,
-            delete_existing=True,
-        )
-
-        logger.info(
-            "chunk rebuild persist done: document_id=%s drafts=%s inserted=%s",
-            document.id,
-            len(drafts),
-            inserted,
-        )
-
-        try:
-            from app.services.keyword_index_service import index_document_chunks
-
-            indexable_chunks = [chunk for chunk in chunks if chunk.chunk_type != "parent_text"]
-            index_document_chunks(db, document, indexable_chunks)
-        except Exception as exc:
-            logger.warning(
-                "Elasticsearch keyword indexing skipped after chunk rebuild: document_id=%s error=%s",
-                document.id,
-                exc,
-            )
-
-        update_knowledge_base_chunk_count(db, document.knowledge_base_id)
-        return inserted

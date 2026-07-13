@@ -242,3 +242,142 @@ def build_code_child_metadata(
         raw_block_type=block_meta.get("raw_block_type", "code"),
         extra=code_extra,
     )
+
+
+# ---------------------------------------------------------------------------
+# Typed child wrappers used by the modular builders
+# ---------------------------------------------------------------------------
+
+
+def build_text_child_metadata(
+    *,
+    parent_id: str,
+    parent_context: str,
+    section: dict[str, Any],
+    block_meta: dict[str, Any],
+    block_page_no: int | None = None,
+    bbox: list[float] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return build_child_metadata(
+        block_meta=block_meta,
+        parent_id=parent_id,
+        parent_context=parent_context,
+        section=section,
+        block_page_no=block_page_no,
+        normalized_block_type="text",
+        raw_block_type=str(block_meta.get("raw_block_type") or "text"),
+        bbox=bbox,
+        content_kind=str(block_meta.get("content_kind") or "text"),
+        structure_like=bool(block_meta.get("structure_like")),
+        preserve_line_boundaries=bool(block_meta.get("preserve_line_boundaries")),
+        extra=extra,
+    )
+
+
+def build_table_child_metadata(
+    *,
+    parent_id: str,
+    parent_context: str,
+    section: dict[str, Any],
+    block_meta: dict[str, Any],
+    block_page_no: int | None = None,
+    bbox: list[float] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return build_child_metadata(
+        block_meta=block_meta,
+        parent_id=parent_id,
+        parent_context=parent_context,
+        section=section,
+        block_page_no=block_page_no,
+        normalized_block_type="table",
+        raw_block_type=str(block_meta.get("raw_block_type") or "table"),
+        bbox=bbox,
+        content_kind="table",
+        extra=extra,
+    )
+
+
+def build_image_child_metadata(
+    *,
+    parent_id: str,
+    parent_context: str,
+    section: dict[str, Any],
+    block_meta: dict[str, Any],
+    block_page_no: int | None = None,
+    bbox: list[float] | None = None,
+    visual_subtype: str = "",
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return build_child_metadata(
+        block_meta=block_meta,
+        parent_id=parent_id,
+        parent_context=parent_context,
+        section=section,
+        block_page_no=block_page_no,
+        normalized_block_type="image",
+        raw_block_type=str(block_meta.get("raw_block_type") or "image"),
+        bbox=bbox,
+        visual_subtype=visual_subtype,
+        content_kind="image",
+        extra=extra,
+    )
+
+
+def build_image_ocr_metadata(
+    *,
+    parent_id: str,
+    parent_context: str,
+    section: dict[str, Any],
+    block_meta: dict[str, Any],
+    block_page_no: int | None = None,
+    bbox: list[float] | None = None,
+    image_url: str = "",
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return build_child_metadata(
+        block_meta=block_meta,
+        parent_id=parent_id,
+        parent_context=parent_context,
+        section=section,
+        block_page_no=block_page_no,
+        normalized_block_type="image",
+        raw_block_type=str(block_meta.get("raw_block_type") or "image"),
+        bbox=bbox,
+        content_kind="image_ocr_text",
+        extra={
+            "derived_from_block_type": "image",
+            "derived_image_url": image_url,
+            "ocr_text_source": "metadata",
+            **(extra or {}),
+        },
+    )
+
+
+def build_equation_metadata(**kwargs: Any) -> dict[str, Any]:
+    kwargs = dict(kwargs)
+    kwargs["is_equation"] = True
+    return build_child_metadata(
+        normalized_block_type="equation",
+        raw_block_type=str(kwargs.get("block_meta", {}).get("raw_block_type") or "equation"),
+        **kwargs,
+    )
+
+
+def build_code_block_metadata(**kwargs: Any) -> dict[str, Any]:
+    kwargs.pop("content_kind", None)
+    return build_code_child_metadata(**kwargs)
+
+
+def mark_skip_embedding(
+    metadata: dict[str, Any],
+    *,
+    reason: str = "low_information",
+) -> dict[str, Any]:
+    return {
+        **metadata,
+        "skip_embedding_recommended": True,
+        "low_content_chunk": True,
+        "skip_reason": reason,
+    }

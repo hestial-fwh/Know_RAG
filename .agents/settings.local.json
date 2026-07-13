@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(echo \"exit: $?\")",
+      "Bash(python3)",
+      "Bash(docker compose *)",
+      "Bash(npx vue-tsc *)",
+      "PowerShell(docker compose -f d:/know_rag/docker-compose.yml exec backend pip install pytest -q 2>&1)",
+      "PowerShell(docker compose -f d:/know_rag/docker-compose.yml exec backend python -m pytest tests/test_mineru_parser_engine.py -v 2>&1)",
+      "PowerShell(docker compose -f d:/know_rag/docker-compose.yml build backend 2>&1)",
+      "PowerShell(docker compose -f d:/know_rag/docker-compose.yml up -d --force-recreate backend 2>&1)",
+      "Bash(Get-ChildItem -Path \"D:\\\\know_rag\\\\backend\\\\app\\\\api\" -Name)",
+      "PowerShell(curl -s http://localhost:8000/api/v1/auth/captcha)",
+      "PowerShell(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('success:', d['success']\\); print\\('captcha_id:', d['data']['captcha_id'][:20]+'...'\\); print\\('image prefix:', d['data']['image'][:50]+'...'\\)\")",
+      "PowerShell(docker compose exec backend grep \"if return_mode == \\\\\"legacy\\\\\":\" /app/app/services/context/knowledge_context_service.py)",
+      "Bash(cd /d d:\\\\know_rag)",
+      "Bash(sed -i 's/LOGIN_CAPTCHA_ENABLED=false/LOGIN_CAPTCHA_ENABLED=true/' .env)",
+      "Bash(Get-ChildItem -Path backend -Name -Depth 0)",
+      "Bash(Get-ChildItem -Path frontend -Name -Depth 0 -Exclude node_modules)",
+      "Bash(Get-ChildItem -Path backend/app -Name -Depth 0)",
+      "Bash(Get-ChildItem -Path backend/app/services/document_parser -Name -Depth 0)",
+      "Bash(Get-ChildItem -Path backend/app/services/chunker -Name -Depth 0)",
+      "Bash(Get-ChildItem -Path backend/app/services/embedding -Name -Depth 0)",
+      "Bash(Get-ChildItem -Path backend/app/services/storage -Name -Depth 0)",
+      "Bash(Get-ChildItem -Path backend/app/services/ocr -Name -Depth 0)"
+    ]
+  }
+}

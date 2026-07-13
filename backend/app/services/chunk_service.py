@@ -983,15 +983,28 @@ def _rebuild_canonical_weknora_parent_child(
     if not canonical.markdown_content.strip():
         return [], 0
 
+    materialize_parents = bool(getattr(cfg, "enable_parent_child", False))
+    flat_chunk_size = max(getattr(cfg, "chunk_size", 512) or 512, 1)
+    flat_chunk_overlap = max(getattr(cfg, "chunk_overlap", 80) or 0, 0)
+    effective_child_size = (
+        max(getattr(cfg, "child_chunk_size", 384) or 384, 1)
+        if materialize_parents
+        else flat_chunk_size
+    )
+    effective_child_overlap = (
+        max(getattr(cfg, "child_chunk_overlap", 64) or 0, 0)
+        if materialize_parents
+        else flat_chunk_overlap
+    )
     runtime_cfg = ChunkerConfig(
-        chunk_size=max(getattr(cfg, "chunk_size", 512) or 512, 1),
-        chunk_overlap=max(getattr(cfg, "chunk_overlap", 80) or 0, 0),
+        chunk_size=flat_chunk_size,
+        chunk_overlap=flat_chunk_overlap,
         strategy=getattr(cfg, "strategy", "auto") or "auto",
         separators=list(getattr(cfg, "separators", []) or []),
         enable_parent_child=True,
         parent_chunk_size=max(getattr(cfg, "parent_chunk_size", 4096) or 4096, 1),
-        child_chunk_size=max(getattr(cfg, "child_chunk_size", 384) or 384, 1),
-        child_chunk_overlap=max(getattr(cfg, "child_chunk_overlap", 64) or 0, 0),
+        child_chunk_size=effective_child_size,
+        child_chunk_overlap=effective_child_overlap,
         token_limit=max(getattr(cfg, "token_limit", 0) or 0, 0),
         languages=list(getattr(cfg, "languages", []) or []),
         enable_structured_parent_child=False,
@@ -1000,9 +1013,13 @@ def _rebuild_canonical_weknora_parent_child(
     )
     plan = build_canonical_parent_child_plan(canonical, runtime_cfg)
 
-    parent_ids = {parent.parent_index: new_id() for parent in plan.parents}
+    parent_ids = {
+        parent.parent_index: new_id()
+        for parent in plan.parents
+        if materialize_parents
+    }
     parent_chunks: dict[int, Chunk] = {}
-    for parent in plan.parents:
+    for parent in plan.parents if materialize_parents else []:
         parent_id = parent_ids[parent.parent_index]
         parent_chunk = _make_chunk(
             document=document,
@@ -1028,6 +1045,7 @@ def _rebuild_canonical_weknora_parent_child(
                 "canonical_source_format": canonical.source_format,
                 "canonical_asset_count": len(canonical.assets),
                 "parent_materialization_rule": "two_or_more_surviving_children",
+                "coordinate_space": "normalized_canonical_markdown",
             },
         )
         # Canonical Markdown is structure-preserving; bypass text normalizers.
@@ -1039,7 +1057,7 @@ def _rebuild_canonical_weknora_parent_child(
     new_chunks: list[Chunk] = []
     emitted_parents: set[int] = set()
     for child in plan.children:
-        parent_index = child.parent_index
+        parent_index = child.parent_index if materialize_parents else None
         if parent_index is not None and parent_index in parent_chunks and parent_index not in emitted_parents:
             parent_chunk = parent_chunks[parent_index]
             parent_chunk.chunk_index = len(new_chunks)
@@ -1063,6 +1081,8 @@ def _rebuild_canonical_weknora_parent_child(
                 "weknora_parent_child": True,
                 "canonical_markdown": True,
                 "parent_materialized": parent_index is not None,
+                "coordinate_space": "normalized_canonical_markdown",
+                "source_position_is_exact": False,
             },
             metadata={
                 **(child.metadata or {}),
@@ -1073,6 +1093,8 @@ def _rebuild_canonical_weknora_parent_child(
                 "canonical_source_format": canonical.source_format,
                 "canonical_asset_count": len(canonical.assets),
                 "parent_materialized": parent_index is not None,
+                "coordinate_space": "normalized_canonical_markdown",
+                "source_position_is_exact": False,
             },
         )
         # Preserve Markdown/code/tree layout exactly. Image child content is
@@ -2195,35 +2217,36 @@ def _rebuild_document_chunks_structured_parent_child(
 
     return new_chunks, inserted
 
-def rebuild_document_chunks(db: Session, document: Document, text: str | ParsedDocument) -> int:
-    try:
-        from app.services.keyword_index_service import delete_document_from_index
-
-        delete_document_from_index(document.id)
-    except Exception as exc:
-        logger.warning("Elasticsearch keyword index cleanup skipped before rebuild: document_id=%s error=%s", document.id, exc)
-
-    db.query(ChunkEmbedding).filter(ChunkEmbedding.document_id == document.id).delete(synchronize_session=False)
-    db.query(Chunk).filter(Chunk.document_id == document.id).delete(synchronize_session=False)
-
-    file_type = sanitize_text_for_postgres(document.file_type.lower().lstrip("."))
-    cfg = runtime_config_from_db(db)
+def rebuild_document_chunks(
+    db: Session,
+    document: Document,
+    text: str | ParsedDocument,
+    *,
+    cfg_override=None,
+    file_type_override: str | None = None,
+) -> int:
+    file_type = sanitize_text_for_postgres(
+        (file_type_override or document.file_type).lower().lstrip(".")
+    )
+    cfg = cfg_override or runtime_config_from_db(db)
     parsed_document = text if isinstance(text, ParsedDocument) else ParsedDocument.from_text(sanitize_text_for_postgres(text))
     blocks = parsed_document.blocks or [ParsedBlock(block_type="text", text=parsed_document.content, order_index=0)]
 
     new_chunks: list[Chunk] = []
     inserted = 0
     global_offset = 0
-    use_canonical_parent_child = bool(getattr(cfg, "enable_parent_child", False))
+    # Canonical Markdown is the single production splitting input for every
+    # format.  The setting controls parent materialization only; it no longer
+    # selects a completely different parsing/chunking algorithm.
+    use_canonical_parent_child = True
 
-    if use_canonical_parent_child:
-        new_chunks, inserted = _rebuild_canonical_weknora_parent_child(
-            document,
-            parsed_document,
-            file_type,
-            cfg,
-        )
-    else:
+    new_chunks, inserted = _rebuild_canonical_weknora_parent_child(
+        document,
+        parsed_document,
+        file_type,
+        cfg,
+    )
+    if not use_canonical_parent_child:  # retained legacy implementation for compatibility only
         for block in sorted(blocks, key=lambda item: item.order_index):
             block_page_no = _block_page_no(block, block.index_text() or block.text)
             block_meta = {
@@ -2392,23 +2415,26 @@ def rebuild_document_chunks(db: Session, document: Document, text: str | ParsedD
         new_chunks = _enforce_parent_child_integrity(new_chunks)
         inserted = len(new_chunks)
 
+    if not new_chunks:
+        # Build and validate before replacing persisted data.  A zero-chunk
+        # result is never a successful replacement for an existing document.
+        raise ValueError("文档切分结果为空，已保留原有切片")
+
     _link_neighbors(new_chunks, {"text"})
     _link_neighbors(new_chunks, {"parent_text"})
     _link_neighbors(new_chunks, {"text", "table", "image", "image_ocr_text", "equation"})
+
+    # Replacement starts only after the complete new chunk set has passed all
+    # quality and parent/child integrity checks.  The caller owns the DB
+    # transaction, so any later failure restores the previous rows.
+    db.query(ChunkEmbedding).filter(ChunkEmbedding.document_id == document.id).delete(synchronize_session=False)
+    db.query(Chunk).filter(Chunk.document_id == document.id).delete(synchronize_session=False)
 
     for chunk in new_chunks:
         if isinstance(chunk, Chunk):
             _finalize_chunk_skip_flags(chunk)
         db.add(chunk)
     db.flush()
-
-    try:
-        from app.services.keyword_index_service import index_document_chunks
-
-        indexable_chunks = [chunk for chunk in new_chunks if chunk.chunk_type != "parent_text"]
-        index_document_chunks(db, document, indexable_chunks)
-    except Exception as exc:
-        logger.warning("Elasticsearch keyword indexing skipped after chunk rebuild: document_id=%s error=%s", document.id, exc)
 
     update_knowledge_base_chunk_count(db, document.knowledge_base_id)
     return inserted

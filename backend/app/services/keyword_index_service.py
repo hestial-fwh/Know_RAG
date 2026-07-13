@@ -298,17 +298,23 @@ def chunk_to_es_doc(chunk: Chunk, document: Document) -> dict:
     }
 
 
-def index_document_chunks(db: Session, document: Document, chunks: Iterable[Chunk]) -> None:
+def index_document_chunks(
+    db: Session,
+    document: Document,
+    chunks: Iterable[Chunk],
+    *,
+    strict: bool = False,
+) -> int:
     """Index newly built chunks into Elasticsearch.
 
     Called after SQLAlchemy flush in rebuild_document_chunks.  Exceptions are
     logged and swallowed so parsing/chunking is not blocked by ES boot delay.
     """
     if not keyword_search_enabled():
-        return
+        return 0
     chunks = [chunk for chunk in chunks if chunk and chunk.status == "ready" and chunk.is_enabled and _is_indexable_chunk(chunk)]
     if not chunks:
-        return
+        return 0
     try:
         ensure_index()
         index = _index_name()
@@ -326,14 +332,20 @@ def index_document_chunks(db: Session, document: Document, chunks: Iterable[Chun
         data = response.json()
         if data.get("errors"):
             failed = [item for item in data.get("items", []) if item.get("index", {}).get("error")]
-            logger.warning("Elasticsearch keyword index partial failures: count=%s sample=%s", len(failed), failed[:2])
+            raise RuntimeError(
+                f"Elasticsearch keyword index partial failures: count={len(failed)} sample={failed[:2]}"
+            )
         else:
             logger.info("Elasticsearch keyword indexed chunks: document_id=%s count=%s", document.id, len(chunks))
+        return len(chunks)
     except Exception as exc:
+        if strict:
+            raise
         logger.warning("Elasticsearch keyword indexing skipped: document_id=%s error=%s", document.id, exc)
+        return 0
 
 
-def delete_document_from_index(document_id: str) -> int:
+def delete_document_from_index(document_id: str, *, strict: bool = False) -> int:
     if not keyword_search_enabled():
         return 0
     try:
@@ -345,8 +357,62 @@ def delete_document_from_index(document_id: str) -> int:
             return 0
         return int((response.json() or {}).get("deleted") or 0)
     except Exception as exc:
+        if strict:
+            raise
         logger.warning("Elasticsearch document delete skipped: document_id=%s error=%s", document_id, exc)
         return 0
+
+
+def sync_document_index(db: Session, document: Document) -> int:
+    """Replace one document's keyword index from committed database rows.
+
+    Callers must invoke this only after the SQL transaction that replaced the
+    chunks has committed.  This prevents an unsuccessful DB rebuild from
+    deleting the last known-good keyword index.
+    """
+    if not keyword_search_enabled():
+        return 0
+    chunks = (
+        db.query(Chunk)
+        .filter(
+            Chunk.document_id == document.id,
+            Chunk.is_enabled == True,  # noqa: E712
+            Chunk.status == "ready",
+        )
+        .order_by(Chunk.chunk_index.asc())
+        .all()
+    )
+    indexable_chunks = [chunk for chunk in chunks if _is_indexable_chunk(chunk)]
+    # Index the committed replacement first.  If this fails, the old index is
+    # untouched.  Only after every new chunk is accepted do we remove stale
+    # chunk ids from the previous generation.
+    indexed = index_document_chunks(db, document, indexable_chunks, strict=True)
+    keep_ids = [chunk.id for chunk in indexable_chunks]
+    if not keep_ids:
+        delete_document_from_index(document.id, strict=True)
+        return 0
+
+    ensure_index()
+    body = {
+        "query": {
+            "bool": {
+                "filter": [{"term": {"document_id": document.id}}],
+                "must_not": [{"ids": {"values": keep_ids}}],
+            }
+        }
+    }
+    response = _request(
+        "POST",
+        f"/{_index_name()}/_delete_by_query",
+        json_body=body,
+        params={"conflicts": "proceed", "refresh": "true"},
+    )
+    if response.status_code not in {200, 201}:
+        raise RuntimeError(
+            f"stale keyword chunk cleanup failed: status={response.status_code}, "
+            f"body={response.text[:300]}"
+        )
+    return indexed
 
 
 def delete_knowledge_base_from_index(knowledge_base_id: str) -> int:
