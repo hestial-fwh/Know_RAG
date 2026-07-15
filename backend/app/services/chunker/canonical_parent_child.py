@@ -467,8 +467,10 @@ def _asset_image_info(asset: CanonicalAsset) -> dict[str, Any]:
     }
     if asset.image_path:
         info["image_path"] = asset.image_path
+        info["path"] = asset.image_path
     if asset.image_url:
         info["image_url"] = asset.image_url
+        info["url"] = asset.image_url
     if asset.image_base64:
         info["image_base64"] = asset.image_base64
     if asset.page_no is not None:

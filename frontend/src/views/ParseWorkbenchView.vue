@@ -92,6 +92,7 @@ function previewText(value?: unknown, limit = 180) {
 function normalizeFileUrl(value?: unknown) {
   if (typeof value !== 'string' || !value.trim()) return ''
   let url = value.trim()
+  if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:') || url.startsWith('blob:')) return url
   if (url.startsWith('/files//files/')) url = url.replace('/files//files/', '/files/')
   if (url.startsWith('/files/')) return url
   if (url.startsWith('files/')) return `/${url}`
@@ -103,13 +104,19 @@ function imageUrl(payload?: Record<string, unknown>) {
   if (!payload) return ''
   const info = (payload.image_info && typeof payload.image_info === 'object') ? payload.image_info as Record<string, unknown> : payload
   const nested = (info.image_info && typeof info.image_info === 'object') ? info.image_info as Record<string, unknown> : undefined
+  const base64 = payload.image_base64 || info.image_base64 || info.base64 || nested?.image_base64 || nested?.base64
   return normalizeFileUrl(payload.image_url)
     || normalizeFileUrl(info.url)
+    || normalizeFileUrl(info.image_url)
     || normalizeFileUrl(nested?.url)
+    || normalizeFileUrl(nested?.image_url)
     || normalizeFileUrl(info.relative_path)
     || normalizeFileUrl(nested?.relative_path)
     || normalizeFileUrl(info.path)
+    || normalizeFileUrl(info.image_path)
     || normalizeFileUrl(nested?.path)
+    || normalizeFileUrl(nested?.image_path)
+    || (typeof base64 === 'string' && base64 ? (base64.startsWith('data:') ? base64 : `data:image/png;base64,${base64}`) : '')
 }
 
 function payloadPreview(event: ParseTaskEvent) {

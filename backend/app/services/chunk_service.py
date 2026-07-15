@@ -93,6 +93,8 @@ def _normalize_file_url(value: str | None) -> tuple[str, str]:
     raw = (value or "").strip()
     if not raw:
         return "", ""
+    if raw.startswith(("http://", "https://", "data:", "blob:")):
+        return "", raw
     if raw.startswith("/files//files/"):
         raw = raw.replace("/files//files/", "/files/", 1)
     if raw.startswith("/files/"):
@@ -113,13 +115,13 @@ def _normalize_image_info(info: dict | None) -> dict:
     nested = result.get("image_info") if isinstance(result.get("image_info"), dict) else {}
 
     candidate = ""
-    for key in ("url", "relative_path", "path"):
+    for key in ("url", "image_url", "relative_path", "path", "image_path"):
         value = result.get(key)
         if isinstance(value, str) and value.strip():
             candidate = value.strip()
             break
     if not candidate:
-        for key in ("url", "relative_path", "path"):
+        for key in ("url", "image_url", "relative_path", "path", "image_path"):
             value = nested.get(key)
             if isinstance(value, str) and value.strip():
                 candidate = value.strip()
@@ -133,13 +135,18 @@ def _normalize_image_info(info: dict | None) -> dict:
 
     if candidate:
         relative, url = _normalize_file_url(candidate)
-        result["relative_path"] = relative
+        if relative:
+            result["relative_path"] = relative
         result["url"] = url
         if isinstance(nested, dict) and nested:
             nested = dict(nested)
             nested.setdefault("relative_path", relative)
             nested.setdefault("url", url)
             result["image_info"] = nested
+
+    image_base64 = result.get("image_base64") or nested.get("image_base64")
+    if isinstance(image_base64, str) and image_base64.strip():
+        result.setdefault("base64", image_base64.strip())
     return result
 
 
