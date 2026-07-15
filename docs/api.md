@@ -1,5 +1,8 @@
 # API
 
+> 状态：Current（完整实时契约以 FastAPI `/docs` 为准）
+> 维护日期：2026-07-15
+
 统一响应：
 
 ```json
@@ -11,6 +14,9 @@
 ```
 
 除 `/health` 和 `/api/v1/auth/login` 外，业务接口需要 `Authorization: Bearer <token>`。
+
+Chunk 返回中的 `embedding_index_info` 可以包含模型、维度、向量长度、范数和最多 16 维
+`vector_preview`，不会包含完整 embedding 向量。
 
 ## Phase 4 新增真实接口
 

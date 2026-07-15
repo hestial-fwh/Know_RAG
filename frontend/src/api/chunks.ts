@@ -42,7 +42,6 @@ export interface ChunkItem {
     status?: string
     indexed_content_preview?: string
     vector_preview?: number[]
-    vector?: number[]
     vector_size?: number
     vector_norm?: number | null
   }

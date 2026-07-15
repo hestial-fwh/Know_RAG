@@ -186,8 +186,6 @@ def chunk_to_dict(chunk: Chunk, include_content: bool = True) -> dict:
         "vector_norm": _vector_norm(full_vector or vector_preview),
         "vector_size": len(full_vector) if full_vector else (embedding.dimension if embedding else 0),
     }
-    if full_vector:
-        embedding_index_info["vector"] = full_vector
     data = {
         "id": chunk.id,
         "chunk_id": chunk.id,

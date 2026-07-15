@@ -65,7 +65,7 @@ def _get_text(mapping: dict[str, Any] | None, keys: list[str]) -> str:
 
 
 def _is_probable_structure_tree(text: str) -> bool:
-    """Return True only for real directory/tree-like structures.
+    r"""Return True only for real directory/tree-like structures.
 
     Some chunks are tagged as ``project_structure`` / ``code_structure`` even
     when the content is actually a normal numbered list or table sentence, for

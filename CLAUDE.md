@@ -32,6 +32,7 @@ docker compose build frontend && docker compose up -d --force-recreate frontend
 cd frontend
 npm run dev              # start dev server on :5174
 npm run build            # type-check + build (vue-tsc --noEmit && vite build)
+npm run check            # type-check + ESLint + Vitest
 ```
 
 ### Tests
@@ -39,6 +40,7 @@ npm run build            # type-check + build (vue-tsc --noEmit && vite build)
 ```bash
 # Run all tests
 docker compose exec backend python -m pytest tests/ -v
+docker compose exec backend ruff check app tests
 
 # Run single test file
 docker compose exec backend python -m pytest tests/test_chunker.py -v

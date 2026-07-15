@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { deleteChunk, disableChunk, enableChunk, getChunkTree, listChunks, type ChunkItem, type ChunkTreeParent } from '../api/chunks'
+import { resolveImageUrl } from '../utils/media'
 
 const route = useRoute()
 const router = useRouter()
@@ -81,38 +82,8 @@ function skipReasonLabel(item: ChunkItem) {
   return reason ? (skipReasonText[reason] || reason) : ''
 }
 
-function normalizeFileUrl(value?: unknown) {
-  if (typeof value !== 'string' || !value.trim()) return ''
-  let url = value.trim()
-  if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:') || url.startsWith('blob:')) return url
-  if (url.startsWith('/files//files/')) url = url.replace('/files//files/', '/files/')
-  if (url.startsWith('/files/')) return url
-  if (url.startsWith('files/')) return `/${url}`
-  if (url.startsWith('/data/files/')) return `/files/${url.replace('/data/files/', '')}`
-  if (url.startsWith('minio://')) {
-    const withoutScheme = url.replace('minio://', '')
-    const parts = withoutScheme.split('/')
-    parts.shift()
-    return `/files/${parts.join('/')}`
-  }
-  return `/files/${url.replace(/^\/+/, '')}`
-}
-
 function imageUrl(info?: Record<string, unknown>) {
-  if (!info) return ''
-  const nested = typeof info.image_info === 'object' && info.image_info ? (info.image_info as Record<string, unknown>) : undefined
-  const base64 = info.image_base64 || info.base64 || nested?.image_base64 || nested?.base64
-  return normalizeFileUrl(info.url)
-    || normalizeFileUrl(info.image_url)
-    || normalizeFileUrl(nested?.url)
-    || normalizeFileUrl(nested?.image_url)
-    || normalizeFileUrl(info.relative_path)
-    || normalizeFileUrl(nested?.relative_path)
-    || normalizeFileUrl(info.path)
-    || normalizeFileUrl(info.image_path)
-    || normalizeFileUrl(nested?.path)
-    || normalizeFileUrl(nested?.image_path)
-    || (typeof base64 === 'string' && base64 ? (base64.startsWith('data:') ? base64 : `data:image/png;base64,${base64}`) : '')
+  return resolveImageUrl(info)
 }
 
 function typeLabel(type?: string) {

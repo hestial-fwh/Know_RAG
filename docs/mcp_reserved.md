@@ -1,5 +1,9 @@
 # MCP Reserved
 
+> 状态：Superseded
+> 被替代文档：`backend/app/integrations/mcp/README.md`、`docs/architecture.md`
+> 说明：本文仅记录早期 placeholder API，不能用于判断当前 MCP 服务状态。
+
 Full MCP Gateway is not implemented in Phase 1.
 
 The project only reserves:

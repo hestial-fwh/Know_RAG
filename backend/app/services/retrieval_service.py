@@ -45,17 +45,17 @@ class SearchOptions:
     use_keyword: bool
     include_content: bool
     include_context: bool
-    include_parent_context: bool
-    parent_context_mode: str
-    parent_context_max_chars: int
-    neighbor_context_max_chars: int
-    parent_children_limit: int
-    max_parent_contexts: int
-    merge_hits_by_parent: bool
-    fusion_strategy: str
-    rrf_k: int
-    vector_weight: float
-    keyword_weight: float
+    include_parent_context: bool = True
+    parent_context_mode: str = "standard"
+    parent_context_max_chars: int = 0
+    neighbor_context_max_chars: int = 0
+    parent_children_limit: int = 0
+    max_parent_contexts: int = 0
+    merge_hits_by_parent: bool = False
+    fusion_strategy: str = "rrf"
+    rrf_k: int = 60
+    vector_weight: float = 1.0
+    keyword_weight: float = 1.0
 
 
 def retrieval_config_to_dict(config: RetrievalConfig) -> dict:

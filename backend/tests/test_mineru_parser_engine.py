@@ -10,7 +10,7 @@ These tests verify:
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.core.config import Settings
 from app.services.document_parser.mineru_adapter import (
@@ -149,7 +149,7 @@ class TestMinerUSupportedFormat(unittest.TestCase):
         self.assertFalse(is_mineru_supported_format("pdf"))
 
 
-class TestMinerUHealthCheck(unittest.TestCase):
+class TestMinerUHealthCheck(unittest.IsolatedAsyncioTestCase):
     """Test MinerU health check logic (model_config_service._test_vision)."""
 
     @patch("app.services.model_config_service.httpx.AsyncClient")
@@ -160,7 +160,7 @@ class TestMinerUHealthCheck(unittest.TestCase):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"status": "healthy"}
-        mock_client.get.return_value = mock_resp
+        mock_client.get = AsyncMock(return_value=mock_resp)
         mock_client_class.return_value = mock_client
 
         from app.services.model_config_service import _test_vision
@@ -174,7 +174,7 @@ class TestMinerUHealthCheck(unittest.TestCase):
         """Connection error → raises RuntimeError."""
         mock_client = MagicMock()
         mock_client.__aenter__.return_value = mock_client
-        mock_client.get.side_effect = Exception("Connection refused")
+        mock_client.get = AsyncMock(side_effect=Exception("Connection refused"))
         mock_client_class.return_value = mock_client
 
         from app.services.model_config_service import _test_vision
@@ -191,7 +191,7 @@ class TestMinerUHealthCheck(unittest.TestCase):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {"status": "starting"}
-        mock_client.get.return_value = mock_resp
+        mock_client.get = AsyncMock(return_value=mock_resp)
         mock_client_class.return_value = mock_client
 
         from app.services.model_config_service import _test_vision
@@ -207,7 +207,7 @@ class TestMinerUHealthCheck(unittest.TestCase):
         mock_client.__aenter__.return_value = mock_client
         mock_resp = MagicMock()
         mock_resp.status_code = 404
-        mock_client.get.return_value = mock_resp
+        mock_client.get = AsyncMock(return_value=mock_resp)
         mock_client_class.return_value = mock_client
 
         from app.services.model_config_service import _test_vision
@@ -225,7 +225,7 @@ class TestMinerUHealthCheck(unittest.TestCase):
         self.assertIn("Base URL 不能为空", str(ctx.exception))
 
 
-class TestMinerUListModels(unittest.TestCase):
+class TestMinerUListModels(unittest.IsolatedAsyncioTestCase):
     """Test list_available_models() for MinerU provider."""
 
     async def test_mineru_list_models_no_http(self):

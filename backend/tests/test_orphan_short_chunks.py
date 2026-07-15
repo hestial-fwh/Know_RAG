@@ -62,7 +62,11 @@ print("ok")
             chunk_type="text",
             context_header="",
             content="约 20 行，核心模块：",
-            metadata_json={"orphan_short_chunk": True, "skip_embedding_recommended": True},
+            metadata_json={
+                "orphan_short_chunk": True,
+                "skip_embedding_recommended": True,
+                "skip_reason": "orphan_short_chunk",
+            },
             flags={"low_information": True},
             image_info={},
         )

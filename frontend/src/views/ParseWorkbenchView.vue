@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { getChunk, type ChunkItem } from '../api/chunks'
 import { getDocument, type DocumentItem } from '../api/documents'
 import { eventChunk, getParseTaskEvents, type ParseTask, type ParseTaskEvent } from '../api/parseTasks'
+import { resolveImageUrl } from '../utils/media'
 
 const route = useRoute()
 const router = useRouter()
@@ -89,34 +90,8 @@ function previewText(value?: unknown, limit = 180) {
   return text.length > limit ? `${text.slice(0, limit)}...` : text
 }
 
-function normalizeFileUrl(value?: unknown) {
-  if (typeof value !== 'string' || !value.trim()) return ''
-  let url = value.trim()
-  if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:') || url.startsWith('blob:')) return url
-  if (url.startsWith('/files//files/')) url = url.replace('/files//files/', '/files/')
-  if (url.startsWith('/files/')) return url
-  if (url.startsWith('files/')) return `/${url}`
-  if (url.startsWith('/data/files/')) return `/files/${url.replace('/data/files/', '')}`
-  return `/files/${url.replace(/^\/+/, '')}`
-}
-
 function imageUrl(payload?: Record<string, unknown>) {
-  if (!payload) return ''
-  const info = (payload.image_info && typeof payload.image_info === 'object') ? payload.image_info as Record<string, unknown> : payload
-  const nested = (info.image_info && typeof info.image_info === 'object') ? info.image_info as Record<string, unknown> : undefined
-  const base64 = payload.image_base64 || info.image_base64 || info.base64 || nested?.image_base64 || nested?.base64
-  return normalizeFileUrl(payload.image_url)
-    || normalizeFileUrl(info.url)
-    || normalizeFileUrl(info.image_url)
-    || normalizeFileUrl(nested?.url)
-    || normalizeFileUrl(nested?.image_url)
-    || normalizeFileUrl(info.relative_path)
-    || normalizeFileUrl(nested?.relative_path)
-    || normalizeFileUrl(info.path)
-    || normalizeFileUrl(info.image_path)
-    || normalizeFileUrl(nested?.path)
-    || normalizeFileUrl(nested?.image_path)
-    || (typeof base64 === 'string' && base64 ? (base64.startsWith('data:') ? base64 : `data:image/png;base64,${base64}`) : '')
+  return resolveImageUrl(payload)
 }
 
 function payloadPreview(event: ParseTaskEvent) {
@@ -129,14 +104,10 @@ async function openEvent(event: ParseTaskEvent) {
   if (event.event_type === 'chunk_created' && typeof chunkId === 'string') {
     try {
       selected.value = await getChunk(chunkId)
-    } catch (_) {
+    } catch {
       selected.value = event
     }
   }
-}
-
-function openChunk(chunk: ChunkItem) {
-  selected.value = chunk
 }
 
 function selectedPayload() {
@@ -166,7 +137,11 @@ async function pullEvents() {
     const result = await getParseTaskEvents(taskId.value, lastSeq.value, 300)
     task.value = result.task
     if (result.task?.document_id && !document.value) {
-      try { document.value = await getDocument(result.task.document_id) } catch (_) {}
+      try {
+        document.value = await getDocument(result.task.document_id)
+      } catch {
+        // The workbench can still display task events without document metadata.
+      }
     }
     for (const event of result.items) {
       events.value.push(event)

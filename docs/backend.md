@@ -1,5 +1,8 @@
 # Backend
 
+> 状态：Current（后续 Phase 小节为历史增量记录）
+> 维护日期：2026-07-15
+
 后端使用 FastAPI、SQLAlchemy 2.x、Alembic、PostgreSQL、pgvector 和本地 Ollama。
 
 ## Phase 4 已实现
@@ -38,7 +41,7 @@
 ### retrieval_service
 
 - 向量检索：pgvector cosine distance。
-- 关键词检索：ILIKE 简化实现。
+- 关键词检索：默认 Elasticsearch BM25；仅在显式启用 fallback 时使用 PostgreSQL ILIKE。
 - hybrid search：按配置权重合并分数。
 
 ## 未实现
@@ -46,7 +49,7 @@
 - knowledge-chat 真实 LLM 回答。
 - 会话和消息持久化。
 - FAQ embedding。
-- MCP Gateway。
+- `mcp-placeholder` 兼容路由仍为占位；真实只读 MCP 服务位于 `app/integrations/mcp/`。
 - Web Search、Agent、外部 SaaS 数据源。
 
 ## PDF 文本清洗

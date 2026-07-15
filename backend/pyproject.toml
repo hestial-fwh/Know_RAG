@@ -7,3 +7,15 @@ requires-python = ">=3.11"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = ["ragflow_vendor", "weknora_chunker_py"]
+
+[tool.ruff.lint]
+# Start with high-confidence runtime failures. Expand incrementally after the
+# existing compatibility modules have paid down their import/style backlog.
+select = ["E9", "F63", "F7", "F82"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra"

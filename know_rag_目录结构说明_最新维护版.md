@@ -1,7 +1,7 @@
 # Know_RAG 项目目录结构与主链路维护手册（最新代码基线）
 
-> **代码基线**：`know_rag (3).zip`  
-> **维护日期**：2026-07-07  
+> **代码基线**：当前工作区
+> **维护日期**：2026-07-15
 > **用途**：用于后续项目维护、功能定位、主链路排查、代码重构和新人接手。  
 > **分析原则**：以本次上传代码的**真实调用关系**为准，不以历史设计文档或曾经存在的重构方案代替当前运行时事实。
 
@@ -51,6 +51,10 @@ Canonical Markdown
 ```
 
 5. `merge_short_text_siblings()` 仍保留在代码中，但**当前生产 `build_canonical_parent_child_plan()` 不调用它**；这是有意保持 Structure First，而不是遗漏。
+6. 默认关键词检索后端是 Elasticsearch BM25，PostgreSQL ILIKE 仅是显式配置的故障回退。
+7. 真实只读 MCP 服务位于 `backend/app/integrations/mcp/`；`routes_mcp_placeholder.py` 只是兼容占位路由。
+8. 普通 chunk API 不返回完整 embedding，只返回索引状态、维度、范数和最多 16 维预览。
+9. Current 文档入口是 `docs/index.md`；Phase、analysis、repair 类文档只用于历史追溯。
 
 ---
 
@@ -60,6 +64,9 @@ Canonical Markdown
 
 ```text
 know_rag/
+├─ .github/workflows/check.yml            # 后端 Ruff/pytest + 前端 check 持续集成
+├─ .editorconfig                          # 跨编辑器 UTF-8、LF、缩进约定
+├─ .gitignore                             # 凭据、依赖、缓存、构建产物忽略规则
 ├─ .agents/                              # Agent/自动化辅助配置目录
 ├─ .claude/                              # Claude Code 本地配置与 skills
 │  ├─ settings.local.json                # 本地 Claude Code 设置
@@ -74,15 +81,19 @@ know_rag/
 │  ├─ OLD_STRUCTURE_FIRST_OPTIMIZATION.md# 当前切分优化策略说明
 │  ├─ alembic.ini                        # Alembic 配置
 │  ├─ Dockerfile                         # 后端镜像
+│  ├─ .dockerignore                      # 排除后端缓存和本地虚拟环境
 │  ├─ entrypoint.sh                      # 容器启动脚本
 │  ├─ pyproject.toml                     # Python 工程配置
 │  ├─ requirements.txt                   # pip 依赖
+│  ├─ requirements-dev.txt               # pytest / pytest-asyncio / Ruff 开发依赖
 │  └─ uv.lock                            # uv 锁定依赖
 │
 ├─ frontend/                             # 前端：Vue 3 + Vite + TypeScript
 │  ├─ src/                               # 前端源码
 │  ├─ dist/                              # 构建产物，不作为源码维护
+│  ├─ .dockerignore                      # 排除 node_modules/dist/coverage
 │  ├─ Dockerfile                         # 前端镜像
+│  ├─ eslint.config.js                   # Vue/TypeScript ESLint flat config
 │  ├─ index.html                         # Vite 入口 HTML
 │  ├─ package.json                       # npm 依赖与命令
 │  ├─ package-lock.json                  # npm 锁文件
@@ -93,9 +104,10 @@ know_rag/
 │  ├─ mineru/                            # MinerU 服务相关配置
 │  └─ nginx/                             # Nginx 反向代理配置
 │
-├─ docs/                                 # 历史设计、部署、阶段性说明文档
+├─ docs/                                 # Current 专项文档 + 历史设计记录
+│  └─ index.md                           # 文档权威顺序与维护入口
 │
-├─ .env                                  # 当前本地环境变量（注意敏感信息）
+├─ .env                                  # 当前本地环境变量（敏感，不应纳入版本控制）
 ├─ .env.example                          # 环境变量模板
 ├─ docker-compose.yml                    # 主编排文件
 ├─ docker-compose.override.yml.example   # 本地覆盖模板
@@ -1336,16 +1348,18 @@ backend/scripts/
 
 # 21. 历史文档的维护优先级
 
-`docs/` 中大量文件记录了不同阶段的设计和实现，仍有参考价值，但项目已经经历多轮演进。
+`docs/` 中既有 Current 文档，也有不同阶段的历史设计和实现记录。先通过 `docs/index.md`
+判断文档状态，不再根据文件名中的“最新”或 Phase 编号推断权威性。
 
 推荐阅读优先级：
 
 ```text
-1. 本手册                               # 当前代码结构和真实主链路
-2. backend/OLD_STRUCTURE_FIRST_OPTIMIZATION.md
-3. docs/weknora_alignment_report.md
-4. docs/architecture.md / backend.md
-5. 各 phase_xxx 文档                   # 查历史背景
+1. README.md / docs/index.md             # 当前入口和权威顺序
+2. AGENTS.md                             # AI/工程修改边界与验证命令
+3. docs/architecture.md / security.md    # 当前架构与安全边界
+4. 本手册                               # 当前代码结构和真实主链路
+5. backend/OLD_STRUCTURE_FIRST_OPTIMIZATION.md
+6. 各 phase/analysis/report 文档         # 仅查历史背景
 ```
 
 历史文档与代码冲突时：
@@ -1353,7 +1367,7 @@ backend/scripts/
 ```text
 真实 dispatcher 调用关系
 > 当前测试
-> 最新专项说明
+> 标记为 Current 的专项说明
 > 历史阶段文档
 ```
 
@@ -1375,7 +1389,29 @@ backend/scripts/
 [ ] MCP 是否仍复用统一 Context API
 [ ] 删除/重解析是否仍能清理所有存储
 [ ] 对应测试是否新增或失效
+[ ] `docs/index.md` 指向的 Current 文档是否同步
+[ ] `ruff check app tests` 是否通过
+[ ] `python -m pytest tests/` 是否通过
+[ ] `npm run check` 是否通过
+[ ] API 是否意外返回完整向量、密钥或本地绝对路径
 ```
+
+### 22.1.1 仓库生成物边界
+
+以下内容不作为源码维护：
+
+```text
+.env
+frontend/node_modules/
+frontend/dist/
+cache/
+__pycache__/
+.pytest_cache/
+coverage/
+```
+
+`.gitignore` 只能阻止新的未跟踪文件进入 Git；如果这些目录或 `.env` 已存在于历史索引中，
+需要在明确授权的仓库清理窗口使用 `git rm --cached` 停止跟踪，并对真实凭据执行轮换。
 
 ## 22.2 新模块接管旧主链路的判定标准
 

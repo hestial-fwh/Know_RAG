@@ -1,5 +1,9 @@
 # Backend Module Map — Know_RAG
 
+> 状态：Current
+> 维护日期：2026-07-15
+> 行数为近似值；生产入口以调用关系和测试为准。
+
 ## Document Parse Flow
 
 ```

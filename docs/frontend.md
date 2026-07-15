@@ -1,6 +1,21 @@
 # Frontend
 
+> 状态：Current（后续 Phase 小节为历史增量记录）
+> 维护日期：2026-07-15
+
 前端使用 Vue 3、Vue Router 和 Vite，用户可见文案保持中文。
+
+当前质量入口：
+
+```bash
+npm run typecheck
+npm run lint
+npm run test
+npm run check
+```
+
+图片媒体地址统一通过 `src/utils/media.ts` 解析，页面不应各自维护 `url/image_url/path/base64`
+兼容规则。普通 chunk API 只返回向量预览，不返回完整 embedding。
 
 ## Phase 4 已接入
 

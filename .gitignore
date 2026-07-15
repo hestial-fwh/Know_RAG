@@ -1,0 +1,34 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.venv/
+backend/.venv/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+
+# Runtime data
+cache/
+*.log
+
+# IDE and local agent state
+.idea/
+.vscode/
+.claude/settings.local.json
+.agents/
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -15,6 +15,10 @@ _EQUATION_LABEL_RE = re.compile(r"^\s*(公式|equation|eq\.)\s*[\d一二三四�
 _KEEP_SHORT_PREFIX_RE = re.compile(r"^\s*(注意|结论|摘要|说明|提示|重要|Note|Conclusion)\s*[:：]", re.I)
 _LIST_ITEM_RE = re.compile(r"(?m)^\s*(?:[-*+]|\d+[.)、])\s+\S+")
 _MARKDOWN_TABLE_RE = re.compile(r"(?m)^\s*\|.*\|\s*$")
+_CODE_TAIL_NOTE_RE = re.compile(
+    r"^\s*(?:以上|上述|返回|输出|完成后|用于|说明|结果|写入|生成|得到)",
+    re.I,
+)
 
 
 def _is_code_block_chunk(chunk: ParsedChunk) -> bool:
@@ -64,7 +68,9 @@ def _merge_short_text_into_chunk(target: ParsedChunk, short: ParsedChunk, *, pos
     target.metadata["absorbed_orphan_short_text"] = True
 
 
-def post_process_orphan_short_chunks(chunks: list[ParsedChunk]) -> list[ParsedChunk]:
+def post_process_orphan_short_chunks(
+    chunks: list[ParsedChunk], max_chunk_size: int | None = None
+) -> list[ParsedChunk]:
     """Merge or hide orphan short text chunks after strategy splitting."""
     if not chunks:
         return []
@@ -81,17 +87,39 @@ def post_process_orphan_short_chunks(chunks: list[ParsedChunk]) -> list[ParsedCh
         if next_chunk is not None and _is_code_block_chunk(next_chunk):
             _merge_short_text_into_chunk(next_chunk, chunk, position="lead")
             continue
-        if prev_chunk is not None and _is_code_block_chunk(prev_chunk):
+        if (
+            prev_chunk is not None
+            and _is_code_block_chunk(prev_chunk)
+            and _CODE_TAIL_NOTE_RE.search(sanitize_text_for_postgres(chunk.content or ""))
+        ):
             _merge_short_text_into_chunk(prev_chunk, chunk, position="tail")
             continue
-        if prev_chunk is not None and prev_chunk.chunk_type == "text" and prev_chunk.context_header == chunk.context_header and not _is_code_block_chunk(prev_chunk):
+        if (
+            prev_chunk is not None
+            and prev_chunk.chunk_type == "text"
+            and prev_chunk.context_header == chunk.context_header
+            and not _is_code_block_chunk(prev_chunk)
+            and (
+                max_chunk_size is None
+                or len(prev_chunk.content) + 1 + len(chunk.content) <= max_chunk_size
+            )
+        ):
             prev_chunk.content = sanitize_text_for_postgres(f"{prev_chunk.content}\n{chunk.content}")
             prev_chunk.end = max(prev_chunk.end, chunk.end)
             prev_meta = clear_embedding_skip_metadata(prev_chunk.metadata or {})
             prev_meta["absorbed_orphan_short_text"] = True
             prev_chunk.metadata = prev_meta
             continue
-        if next_chunk is not None and next_chunk.chunk_type == "text" and next_chunk.context_header == chunk.context_header and not _is_code_block_chunk(next_chunk):
+        if (
+            next_chunk is not None
+            and next_chunk.chunk_type == "text"
+            and next_chunk.context_header == chunk.context_header
+            and not _is_code_block_chunk(next_chunk)
+            and (
+                max_chunk_size is None
+                or len(chunk.content) + 1 + len(next_chunk.content) <= max_chunk_size
+            )
+        ):
             next_chunk.content = sanitize_text_for_postgres(f"{chunk.content}\n{next_chunk.content}")
             next_chunk.start = min(next_chunk.start, chunk.start)
             next_meta = clear_embedding_skip_metadata(next_chunk.metadata or {})
@@ -116,7 +144,9 @@ def post_process_orphan_short_chunks(chunks: list[ParsedChunk]) -> list[ParsedCh
 def split_markdown(text: str, cfg: ChunkerConfig) -> list[ParsedChunk]:
     """Unified WeKnora-style strategy dispatch for Markdown-like content."""
     def finish(items: list[ParsedChunk]) -> list[ParsedChunk]:
-        return postprocess_chunk_boundaries(post_process_orphan_short_chunks(items), cfg)
+        return postprocess_chunk_boundaries(
+            post_process_orphan_short_chunks(items, max_chunk_size=cfg.chunk_size), cfg
+        )
 
     strategy = (cfg.strategy or "auto").lower()
     if strategy == "legacy":

@@ -12,6 +12,8 @@
 - `docker compose build frontend` then `docker compose up -d --force-recreate frontend`: rebuild only the frontend.
 - `cd frontend; npm run dev`: run the Vite dev server on port `5174`.
 - `cd frontend; npm run build`: type-check with `vue-tsc` and build frontend assets.
+- `cd frontend; npm run check`: run type checking, ESLint, and Vitest.
+- `docker compose exec backend ruff check app tests`: lint backend application and tests.
 - `docker compose exec backend python -m pytest tests/ -v`: run backend tests.
 
 ## Coding Style & Naming Conventions
@@ -29,3 +31,10 @@ No strict commit convention is enforced in this workspace. Use short, imperative
 ## Security & Configuration Tips
 
 Keep secrets in `.env` and use `.env.example` for documented defaults. This project is local-first: do not add cloud APIs, external search, or remote model calls unless explicitly requested. Preserve local storage boundaries for uploaded files, parsed blocks, chunks, embeddings, and vector indexes.
+
+## Documentation Authority
+
+Read `docs/index.md` before relying on phase reports. Current runtime behavior is documented in
+`docs/architecture.md` and `know_rag_目录结构说明_最新维护版.md`; files named `phase_*`, reports,
+and repair notes are historical context. When changing a main flow, API contract, security boundary,
+or directory responsibility, update the corresponding Current document in the same change.

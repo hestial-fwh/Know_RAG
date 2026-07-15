@@ -135,13 +135,31 @@ def postprocess_chunk_boundaries(chunks: list[ParsedChunk], cfg: ChunkerConfig |
 
         # ── 3. Short orphan merge ──
         if _is_short_orphan(chunk, min_orphan):
-            if _can_merge(prev, chunk) and not is_sentence_end(prev.content):
+            previous_merged_size = (
+                len(sanitize_text_for_postgres(f"{prev.content}\n{chunk.content}"))
+                if prev is not None
+                else 0
+            )
+            next_merged_size = (
+                len(sanitize_text_for_postgres(f"{chunk.content}\n{next_chunk.content}"))
+                if next_chunk is not None
+                else 0
+            )
+            if (
+                _can_merge(prev, chunk)
+                and not is_sentence_end(prev.content)
+                and previous_merged_size <= max_merge_size
+            ):
                 _merge_into_previous(prev, chunk, reason="short_orphan_previous")
                 continue
-            if next_chunk is not None and _can_merge(next_chunk, chunk):
+            if (
+                next_chunk is not None
+                and _can_merge(next_chunk, chunk)
+                and next_merged_size <= max_merge_size
+            ):
                 _merge_into_next(next_chunk, chunk, reason="short_orphan_next")
                 continue
-            if _can_merge(prev, chunk):
+            if _can_merge(prev, chunk) and previous_merged_size <= max_merge_size:
                 _merge_into_previous(prev, chunk, reason="short_orphan_previous_fallback")
                 continue
             meta = clear_embedding_skip_metadata(chunk.metadata or {})

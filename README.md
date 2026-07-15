@@ -2,14 +2,23 @@
 
 `know_rag` 是轻量本地 RAG 知识库建立维护底座。它不复刻 WeKnora 全量能力，也不复制或翻译 WeKnora Go 后端。
 
-Phase 4 已实现：
+> 状态：Current
+> 维护日期：2026-07-15
+> 文档入口：`docs/index.md`
+> 说明：本文从“历史阶段记录”开始的内容仅用于追溯，不代表当前未实现能力。
+
+当前系统由 Vue 3/Vite 前端、FastAPI 后端、PostgreSQL/pgvector、Elasticsearch、MinIO、
+MinerU/DeepDoc 解析服务和只读 MCP 服务组成。默认采用本地 Ollama；管理员也可以显式配置
+OpenAI-compatible 远程模型供应商，因此部署前应按 `docs/security.md` 评估数据边界。
+
+## 当前核心能力
 
 - 本地 Ollama embedding 调用，默认模型 `bge-m3`。
 - PostgreSQL + pgvector 保存 chunk 向量。
 - 文档级、知识库级向量生成与状态查询。
 - 文档详情页可点击“生成向量 / 查看向量化状态”。
 - 知识库详情页可点击“批量生成向量 / 查看向量化状态”。
-- 真实 hybrid search：向量召回 + 简单关键词召回。
+- 真实 hybrid search：向量召回 + Elasticsearch BM25，支持 RRF 融合。
 - 前端“本地检索调试”页面接入真实接口。
 - 文档详情和知识库详情增加向量化入口。
 
@@ -28,6 +37,19 @@ cd know_rag
 docker compose up -d --build
 docker compose exec backend alembic upgrade head
 ```
+
+常用质量检查：
+
+```bash
+docker compose exec backend ruff check app tests
+docker compose exec backend python -m pytest tests/ -q
+cd frontend && npm run check
+```
+
+## 历史阶段记录
+
+以下 Phase 内容保留用于追溯实现过程。当前能力和约束以 `docs/index.md` 指向的 Current 文档、
+运行代码和自动化测试为准。
 
 访问：
 

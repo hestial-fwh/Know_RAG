@@ -1,5 +1,8 @@
 # Database
 
+> 状态：Current（后续 Phase 小节为历史增量记录）
+> 维护日期：2026-07-15
+
 执行迁移：
 
 ```bash
@@ -16,7 +19,8 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 如果 pgvector 不可用，迁移会失败，需要先确认 PostgreSQL 镜像或数据库已安装 pgvector。当前 Compose 使用 `pgvector/pgvector:pg16`。
 
-`pg_trgm` 会尝试启用，用于后续关键词匹配增强；如果不可用，当前关键词检索仍可使用 ILIKE 简化实现。
+`pg_trgm` 会尝试启用。默认关键词检索使用 Elasticsearch BM25；只有显式启用
+`ELASTICSEARCH_FALLBACK_TO_SQL=true` 时，Elasticsearch 故障才回退到 ILIKE。
 
 ## 主要表
 
@@ -70,7 +74,7 @@ OLLAMA_EMBEDDING_MODEL=bge-m3
 ## 检索能力
 
 - 向量检索：基于 pgvector cosine distance。
-- 关键词检索：当前为 ILIKE + 简单命中评分。
+- 关键词检索：默认 Elasticsearch BM25，PostgreSQL ILIKE 为可选应急回退。
 - hybrid search：合并向量分和关键词分。
 
 当前不保存 FAQ embedding，不实现 RAG 问答生成。

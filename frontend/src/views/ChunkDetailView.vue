@@ -2,51 +2,24 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getChunk, type ChunkItem } from '../api/chunks'
+import { resolveImageUrl } from '../utils/media'
 
 const route = useRoute()
 const router = useRouter()
 const chunk = ref<ChunkItem | null>(null)
 const error = ref('')
 const showPreview = ref(false)
-const showFullVector = ref(false)
 
 const statusText: Record<string, string> = {
   ready: '可用',
   disabled: '已禁用'
 }
 
-const vector = computed(() => chunk.value?.embedding_index_info?.vector || [])
-const vectorPreview = computed(() => chunk.value?.embedding_index_info?.vector_preview || vector.value.slice(0, 16))
-const vectorText = computed(() => (showFullVector.value ? vector.value : vectorPreview.value).map((v) => Number(v).toFixed(6)).join(', '))
-
-function normalizeFileUrl(value?: unknown) {
-  if (typeof value !== 'string' || !value.trim()) return ''
-  let url = value.trim()
-  if (url.startsWith('/files//files/')) url = url.replace('/files//files/', '/files/')
-  if (url.startsWith('/files/')) return url
-  if (url.startsWith('files/')) return `/${url}`
-  if (url.startsWith('/data/files/')) return `/files/${url.replace('/data/files/', '')}`
-  if (url.startsWith('minio://')) {
-    const withoutScheme = url.replace('minio://', '')
-    const parts = withoutScheme.split('/')
-    parts.shift()
-    return `/files/${parts.join('/')}`
-  }
-  return `/files/${url.replace(/^\/+/, '')}`
-}
+const vectorPreview = computed(() => chunk.value?.embedding_index_info?.vector_preview || [])
+const vectorText = computed(() => vectorPreview.value.map((v) => Number(v).toFixed(6)).join(', '))
 
 function imageUrl(info?: Record<string, unknown>) {
-  if (!info) return ''
-  const nested = typeof info.image_info === 'object' && info.image_info
-    ? (info.image_info as Record<string, unknown>)
-    : undefined
-
-  return normalizeFileUrl(info.url)
-    || normalizeFileUrl(nested?.url)
-    || normalizeFileUrl(info.relative_path)
-    || normalizeFileUrl(nested?.relative_path)
-    || normalizeFileUrl(info.path)
-    || normalizeFileUrl(nested?.path)
+  return resolveImageUrl(info)
 }
 
 function typeLabel(type?: string) {
@@ -132,7 +105,7 @@ onMounted(async () => {
           <div class="vector-panel">
             <div class="page-header small-header">
               <h3>向量预览</h3>
-              <button v-if="vector.length" class="secondary" @click="showFullVector = !showFullVector">{{ showFullVector ? '只看前16维' : '显示完整向量' }}</button>
+              <span class="text-muted">仅展示前 16 维，完整向量不通过 API 返回</span>
             </div>
             <pre class="content-block vector-block">{{ vectorText || '-' }}</pre>
           </div>

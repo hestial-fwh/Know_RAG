@@ -146,8 +146,16 @@ def _post_process_orphan_short_text_chunks(chunks: list[Chunk]) -> list[Chunk]:
             next_chunk.start_at = min(next_chunk.start_at or chunk.start_at or 0, chunk.start_at or 0)
             continue
 
-        # Do not persist isolated short text chunks. Their content is already
-        # covered by parent_text or should be recovered as neighbor metadata.
+        # In flat mode there is no parent_text carrying this content. Preserve
+        # the only meaningful child instead of turning a non-empty rebuild into
+        # an empty replacement. Parent/child mode can still drop an isolated
+        # orphan because its text is covered by the parent.
+        if chunk.parent_chunk_id is None:
+            meta = clear_embedding_skip_metadata(chunk.metadata_json or {})
+            meta["orphan_short_chunk"] = True
+            chunk.metadata_json = sanitize_json_for_postgres(meta)
+            _finalize_chunk_skip_flags(chunk)
+            result.append(chunk)
         continue
 
     for index, chunk in enumerate(result):

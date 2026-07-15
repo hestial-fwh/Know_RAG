@@ -5,8 +5,13 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+ARG INSTALL_DEV_DEPENDENCIES=true
+COPY requirements.txt requirements-dev.txt ./
+RUN if [ "$INSTALL_DEV_DEPENDENCIES" = "true" ]; then \
+      pip install --no-cache-dir -r requirements-dev.txt; \
+    else \
+      pip install --no-cache-dir -r requirements.txt; \
+    fi
 
 COPY app ./app
 COPY ragflow_vendor ./ragflow_vendor

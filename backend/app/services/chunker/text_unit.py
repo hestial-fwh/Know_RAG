@@ -255,21 +255,24 @@ def _split_regions_into_units(
             if not para_content.strip():
                 continue
 
-            para_len = len(para_content)
-            if para_len <= chunk_size:
-                units.append(
-                    TextUnit(
-                        text=para_content,
-                        start=para_start,
-                        end=para_end,
-                        unit_type="paragraph",
-                        is_paragraph_start=True,
+            # A multi-sentence paragraph must expose sentence boundaries so
+            # overlap can reuse complete sentences. A one-sentence paragraph,
+            # however, remains a paragraph unit (and keeps paragraph semantics).
+            sentence_units = _split_paragraph_into_sentences(text, para_start, para_end)
+            if sentence_units:
+                if len(sentence_units) == 1 and len(para_content) <= chunk_size:
+                    units.append(
+                        TextUnit(
+                            text=para_content,
+                            start=para_start,
+                            end=para_end,
+                            unit_type="paragraph",
+                            is_paragraph_start=True,
+                        )
                     )
-                )
-            else:
-                # Split paragraph into sentences
-                sentence_units = _split_paragraph_into_sentences(text, para_start, para_end)
-                units.extend(sentence_units)
+                else:
+                    sentence_units[0].is_paragraph_start = True
+                    units.extend(sentence_units)
 
     return units
 
@@ -726,7 +729,10 @@ def repair_bad_start(
         return []
 
     cfg = cfg or ChunkerConfig()
-    max_merge_size = int(cfg.chunk_size * 1.4)
+    # Boundary repair may exceed the normal packing target: preserving a
+    # complete connective-led sentence is preferable to emitting a known bad
+    # start. Keep the cap finite so repeated repairs cannot grow indefinitely.
+    max_merge_size = int(cfg.chunk_size * 3)
 
     out: list[ParsedChunk] = []
     for i, chunk in enumerate(chunks):
@@ -741,7 +747,11 @@ def repair_bad_start(
 
         # Bad start detected — try merging with previous
         prev = out[-1] if out else None
-        if prev is not None and prev.chunk_type == "text":
+        if (
+            prev is not None
+            and prev.chunk_type == "text"
+            and prev.metadata.get("content_kind") == "text"
+        ):
             merged_content = sanitize_text_for_postgres(f"{prev.content}\n{chunk.content}")
             if len(merged_content) <= max_merge_size:
                 prev.content = merged_content

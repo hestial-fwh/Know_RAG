@@ -1387,6 +1387,7 @@ def _cloud_build_window_for_parent(
         extra_text_count += 1
 
     def add_media(c: dict) -> None:
+        nonlocal actual_chars
         cid = _cloud_chunk_id(c)
         included.add(cid)
         media.append(cid)
