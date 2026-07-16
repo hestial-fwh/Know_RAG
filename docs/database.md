@@ -135,6 +135,13 @@ Phase A 暂不为 `knowledge_id`、`parent_chunk_id`、`pre_chunk_id`、`next_ch
 - `is_enabled`：用于检索过滤，禁用切片时同步更新。
 
 embedding 向量属于本地知识资产，只保存在 PostgreSQL/pgvector 中。API 和前端只返回索引状态与索引文本预览，不返回 embedding 数组。
+
+## 解析任务事件保留策略
+
+`parse_tasks` 持久化任务状态、阶段、进度、统计和错误。`parse_task_events` 仅承载任务运行期间
+的轻量进度事件，不保存 `parsed_block` 或 `chunk_created` 载荷，并在任务完成或失败时清空。
+迁移 `0010_parse_event_retention.py` 会删除升级前遗留的过程事件。
+
 ## chunker_config 表
 
 `chunker_config` 保存运行时切分配置。后端上传文档和重新解析文档时会读取该表，而不是只读取环境变量。

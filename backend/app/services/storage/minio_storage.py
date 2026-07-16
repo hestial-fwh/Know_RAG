@@ -2,7 +2,6 @@ import hashlib
 import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import SpooledTemporaryFile
 from urllib.parse import quote, unquote, urlparse
 import shutil
 from fastapi import UploadFile
@@ -100,25 +99,22 @@ def _content_type(filename: str, fallback: str = "application/octet-stream") -> 
 
 def save_upload_file(upload: UploadFile, object_key: str) -> StoredObject:
     ensure_bucket()
-    max_size = settings.max_file_size_mb * 1024 * 1024
     hasher = hashlib.sha256()
     size = 0
     content_type = upload.content_type or _content_type(upload.filename or object_key)
-    # 上传文件默认上限不大，使用 SpooledTemporaryFile 能同时完成 hash / size / put_object。
-    with SpooledTemporaryFile(max_size=min(max_size, 64 * 1024 * 1024), mode="w+b") as tmp:
-        while True:
-            chunk = upload.file.read(1024 * 1024)
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > max_size:
-                raise ValueError(f"文件超过大小限制：{settings.max_file_size_mb}MB")
-            hasher.update(chunk)
-            tmp.write(chunk)
-        tmp.seek(0)
-        client = _minio_client()
-        bucket = _bucket()
-        client.put_object(bucket, object_key, tmp, length=size, content_type=content_type)
+    # UploadFile already owns a seekable spooled stream. Reuse it instead of
+    # creating a second full-size temporary copy for large files.
+    upload.file.seek(0)
+    while True:
+        chunk = upload.file.read(1024 * 1024)
+        if not chunk:
+            break
+        size += len(chunk)
+        hasher.update(chunk)
+    upload.file.seek(0)
+    client = _minio_client()
+    bucket = _bucket()
+    client.put_object(bucket, object_key, upload.file, length=size, content_type=content_type)
     digest = hasher.hexdigest()
     return StoredObject(bucket=bucket, object_key=object_key, uri=minio_uri(bucket, object_key), size=size, sha256=digest, content_type=content_type)
 

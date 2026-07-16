@@ -53,6 +53,251 @@ class KeywordHit:
     highlight: str = ""
 
 
+@dataclass(frozen=True)
+class PreparedBM25Query:
+    """A bounded query plus the information needed to choose a BM25 strategy."""
+
+    normalized_query: str
+    query_text: str
+    terms: tuple[str, ...]
+    is_long: bool
+    original_length: int
+
+
+class ElasticsearchQueryComplexityError(RuntimeError):
+    """Raised after the one safe retry also exceeds Elasticsearch clause limits."""
+
+
+NORMAL_SEARCH_FIELDS = [
+    "keywords^6",
+    "title^5",
+    "file_name^3",
+    "context_header^4",
+    "content^2",
+    "ocr_text^3",
+    "vlm_description^3",
+    "table_text^3",
+]
+SHORT_SEARCH_FIELDS = [
+    "keywords^6",
+    "keywords.ngram^5",
+    "title^5",
+    "title.ngram^4",
+    "file_name^3",
+    "file_name.ngram^2",
+    "context_header^4",
+    "context_header.ngram^3",
+    "content^2",
+    "content.ngram^2",
+    "ocr_text^3",
+    "ocr_text.ngram^2",
+    "vlm_description^3",
+    "vlm_description.ngram^2",
+    "table_text^3",
+    "table_text.ngram^2",
+]
+NGRAM_SEARCH_FIELDS = [
+    "keywords.ngram^5",
+    "title.ngram^4",
+    "file_name.ngram^2",
+    "context_header.ngram^3",
+    "content.ngram^2",
+    "ocr_text.ngram^2",
+    "vlm_description.ngram^2",
+    "table_text.ngram^2",
+]
+SAFE_SEARCH_FIELDS = [
+    "keywords^6",
+    "title^5",
+    "context_header^4",
+    "content^2",
+    "ocr_text^3",
+    "table_text^3",
+]
+
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+_QUERY_TOKEN_RE = re.compile(
+    r"[A-Za-z][A-Za-z0-9]*(?:['’\-][A-Za-z0-9]+)*|\d+(?:[._/\-]\d+)*|"
+    r"[\u3400-\u4dbf\u4e00-\u9fff]+"
+)
+_LATIN_WORD_CHAR_RE = re.compile(r"[A-Za-z0-9'’\-]")
+
+
+def _positive_setting(name: str, default: int, *, maximum: int | None = None) -> int:
+    try:
+        value = max(int(getattr(settings, name, default) or default), 1)
+    except (TypeError, ValueError):
+        value = default
+    return min(value, maximum) if maximum is not None else value
+
+
+def normalize_bm25_query(query: str) -> str:
+    """Remove non-semantic controls and collapse all whitespace deterministically."""
+
+    cleaned = _CONTROL_CHARS_RE.sub(" ", str(query or ""))
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _split_cjk_run(value: str, width: int = 4) -> list[str]:
+    if len(value) <= width + 2:
+        return [value]
+    chunks = [value[index : index + width] for index in range(0, len(value), width)]
+    if len(chunks[-1]) == 1:
+        chunks[-1] = value[-width:]
+    return chunks
+
+
+def _query_terms(query: str) -> list[str]:
+    """Tokenize Latin words/numbers and bound continuous CJK runs without jieba."""
+
+    terms: list[str] = []
+    seen: set[str] = set()
+    for match in _QUERY_TOKEN_RE.finditer(query):
+        token = match.group(0)
+        candidates = _split_cjk_run(token) if re.fullmatch(r"[\u3400-\u4dbf\u4e00-\u9fff]+", token) else [token]
+        for candidate in candidates:
+            key = candidate.casefold()
+            if key and key not in seen:
+                seen.add(key)
+                terms.append(candidate)
+    return terms
+
+
+def _evenly_sample(values: list[str], limit: int) -> list[str]:
+    if len(values) <= limit:
+        return values
+    if limit == 1:
+        return [values[0]]
+    indexes = [round(index * (len(values) - 1) / (limit - 1)) for index in range(limit)]
+    return [values[index] for index in indexes]
+
+
+def _fit_whole_terms(terms: list[str], max_chars: int, max_terms: int) -> list[str]:
+    fitted: list[str] = []
+    used = 0
+    for term in _evenly_sample(terms, max_terms):
+        extra = len(term) + (1 if fitted else 0)
+        if len(term) > max_chars or used + extra > max_chars:
+            continue
+        fitted.append(term)
+        used += extra
+    return fitted
+
+
+def _prefix_without_partial_latin_word(value: str, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    prefix = value[:max_chars].rstrip()
+    if (
+        prefix
+        and max_chars < len(value)
+        and _LATIN_WORD_CHAR_RE.fullmatch(prefix[-1])
+        and _LATIN_WORD_CHAR_RE.fullmatch(value[max_chars])
+    ):
+        prefix = re.sub(r"[A-Za-z0-9'’\-]+$", "", prefix).rstrip()
+    return prefix
+
+
+def prepare_bm25_query(query: str, *, force_safe: bool = False) -> PreparedBM25Query:
+    """Normalize and, when necessary, compress a query to whole bounded terms."""
+
+    normalized = normalize_bm25_query(query)
+    max_chars = _positive_setting("elasticsearch_query_max_chars", 256, maximum=512)
+    max_terms = _positive_setting("elasticsearch_query_max_terms", 24, maximum=48)
+    safe_chars = _positive_setting("elasticsearch_safe_query_max_chars", 96, maximum=96)
+    all_terms = _query_terms(normalized)
+    is_long = force_safe or len(normalized) > min(safe_chars, max_chars) or len(all_terms) > max_terms
+    if not is_long:
+        return PreparedBM25Query(normalized, normalized, tuple(all_terms), False, len(str(query or "")))
+
+    char_limit = min(max_chars, safe_chars) if force_safe else max_chars
+    term_limit = min(max_terms, 12) if force_safe else max_terms
+    fitted_terms = _fit_whole_terms(all_terms, char_limit, term_limit)
+    return PreparedBM25Query(
+        normalized,
+        " ".join(fitted_terms),
+        tuple(fitted_terms),
+        True,
+        len(str(query or "")),
+    )
+
+
+def _multi_match(query: str, fields: list[str]) -> dict[str, Any]:
+    return {
+        "multi_match": {
+            "query": query,
+            "type": "best_fields",
+            "fields": fields,
+            "operator": "or",
+        }
+    }
+
+
+def build_bm25_search_body(
+    knowledge_base_id: str,
+    prepared: PreparedBM25Query,
+    top_k: int,
+    *,
+    force_safe: bool = False,
+) -> dict[str, Any]:
+    """Build the existing filtered/highlighted search with a bounded field strategy."""
+
+    size = max(int(top_k or 10), 1) * 5
+    if force_safe:
+        must = [_multi_match(prepared.query_text, SAFE_SEARCH_FIELDS)]
+    elif prepared.is_long:
+        must = [_multi_match(prepared.query_text, NORMAL_SEARCH_FIELDS)]
+    else:
+        ngram_limit = _positive_setting("elasticsearch_ngram_query_max_chars", 64, maximum=64)
+        ngram_query = _prefix_without_partial_latin_word(prepared.query_text, ngram_limit)
+        if ngram_query == prepared.query_text:
+            must = [_multi_match(prepared.query_text, SHORT_SEARCH_FIELDS)]
+        else:
+            should = [_multi_match(prepared.query_text, NORMAL_SEARCH_FIELDS)]
+            if ngram_query:
+                should.append(_multi_match(ngram_query, NGRAM_SEARCH_FIELDS))
+            must = [{"bool": {"should": should, "minimum_should_match": 1}}]
+    return {
+        "size": size,
+        "query": {
+            "bool": {
+                "filter": [
+                    {"term": {"knowledge_base_id": knowledge_base_id}},
+                    {"term": {"is_enabled": True}},
+                    {"term": {"status": "ready"}},
+                    {"terms": {"chunk_type": sorted(INDEXABLE_CHUNK_TYPES)}},
+                ],
+                "must": must,
+            }
+        },
+        "highlight": {
+            "pre_tags": [""],
+            "post_tags": [""],
+            "fields": {
+                "content": {"fragment_size": 180, "number_of_fragments": 2},
+                "context_header": {"fragment_size": 120, "number_of_fragments": 1},
+                "keywords": {"fragment_size": 120, "number_of_fragments": 1},
+                "ocr_text": {"fragment_size": 180, "number_of_fragments": 2},
+                "vlm_description": {"fragment_size": 180, "number_of_fragments": 2},
+                "table_text": {"fragment_size": 180, "number_of_fragments": 2},
+            },
+        },
+    }
+
+
+def is_too_many_nested_clauses_error(payload: Any) -> bool:
+    """Recognize Elasticsearch root_cause/caused_by/type/reason error trees."""
+
+    if isinstance(payload, dict):
+        return any(is_too_many_nested_clauses_error(value) for value in payload.values())
+    if isinstance(payload, list):
+        return any(is_too_many_nested_clauses_error(value) for value in payload)
+    if isinstance(payload, str):
+        lowered = payload.casefold()
+        return "too_many_nested_clauses" in lowered or "too many nested clauses" in lowered
+    return False
+
+
 def keyword_search_enabled() -> bool:
     return (getattr(settings, "keyword_search_backend", "elasticsearch") or "").lower() in {
         "elasticsearch",
@@ -432,65 +677,65 @@ def delete_knowledge_base_from_index(knowledge_base_id: str) -> int:
 
 
 def search_bm25(knowledge_base_id: str, query: str, top_k: int) -> list[KeywordHit]:
-    if not query.strip():
+    prepared = prepare_bm25_query(query)
+    if not prepared.query_text:
         return []
     ensure_index()
-    size = max(int(top_k or 10), 1) * 5
-    body = {
-        "size": size,
-        "query": {
-            "bool": {
-                "filter": [
-                    {"term": {"knowledge_base_id": knowledge_base_id}},
-                    {"term": {"is_enabled": True}},
-                    {"term": {"status": "ready"}},
-                    {"terms": {"chunk_type": sorted(INDEXABLE_CHUNK_TYPES)}},
-                ],
-                "must": [
-                    {
-                        "multi_match": {
-                            "query": query,
-                            "type": "best_fields",
-                            "fields": [
-                                "keywords^6",
-                                "keywords.ngram^5",
-                                "title^5",
-                                "title.ngram^4",
-                                "file_name^3",
-                                "file_name.ngram^2",
-                                "context_header^4",
-                                "context_header.ngram^3",
-                                "content^2",
-                                "content.ngram^2",
-                                "ocr_text^3",
-                                "ocr_text.ngram^2",
-                                "vlm_description^3",
-                                "vlm_description.ngram^2",
-                                "table_text^3",
-                                "table_text.ngram^2",
-                            ],
-                            "operator": "or",
-                        }
-                    }
-                ],
-            }
-        },
-        "highlight": {
-            "pre_tags": [""],
-            "post_tags": [""],
-            "fields": {
-                "content": {"fragment_size": 180, "number_of_fragments": 2},
-                "context_header": {"fragment_size": 120, "number_of_fragments": 1},
-                "keywords": {"fragment_size": 120, "number_of_fragments": 1},
-                "ocr_text": {"fragment_size": 180, "number_of_fragments": 2},
-                "vlm_description": {"fragment_size": 180, "number_of_fragments": 2},
-                "table_text": {"fragment_size": 180, "number_of_fragments": 2},
-            },
-        },
-    }
+    body = build_bm25_search_body(knowledge_base_id, prepared, top_k)
+    logger.info(
+        "Elasticsearch BM25 query: original_length=%s normalized_length=%s query_length=%s "
+        "term_count=%s strategy=%s retry=false summary=%r",
+        prepared.original_length,
+        len(prepared.normalized_query),
+        len(prepared.query_text),
+        len(prepared.terms),
+        "long" if prepared.is_long else "short",
+        prepared.normalized_query[:100],
+    )
     response = _request("POST", f"/{_index_name()}/_search", json_body=body)
     if response.status_code not in {200, 201}:
-        raise RuntimeError(f"Elasticsearch BM25 search failed: status={response.status_code}, body={response.text[:500]}")
+        try:
+            error_payload: Any = response.json()
+        except Exception:
+            error_payload = response.text[:500]
+        if is_too_many_nested_clauses_error(error_payload):
+            safe_prepared = prepare_bm25_query(query, force_safe=True)
+            if not safe_prepared.query_text:
+                raise ElasticsearchQueryComplexityError(
+                    "Elasticsearch BM25 query is too complex and no safe search terms remain"
+                )
+            logger.warning(
+                "Elasticsearch BM25 clause limit retry: original_length=%s compressed_length=%s "
+                "term_count=%s retry=true summary=%r",
+                prepared.original_length,
+                len(safe_prepared.query_text),
+                len(safe_prepared.terms),
+                safe_prepared.normalized_query[:100],
+            )
+            safe_body = build_bm25_search_body(
+                knowledge_base_id,
+                safe_prepared,
+                top_k,
+                force_safe=True,
+            )
+            response = _request("POST", f"/{_index_name()}/_search", json_body=safe_body)
+            if response.status_code not in {200, 201}:
+                try:
+                    safe_error_payload: Any = response.json()
+                except Exception:
+                    safe_error_payload = response.text[:500]
+                if is_too_many_nested_clauses_error(safe_error_payload):
+                    raise ElasticsearchQueryComplexityError(
+                        "Elasticsearch BM25 safe query still exceeds the nested clause limit"
+                    )
+                raise RuntimeError(
+                    "Elasticsearch BM25 safe retry failed: "
+                    f"status={response.status_code}, body={response.text[:500]}"
+                )
+        else:
+            raise RuntimeError(
+                f"Elasticsearch BM25 search failed: status={response.status_code}, body={response.text[:500]}"
+            )
     data = response.json()
     hits = (data.get("hits") or {}).get("hits") or []
     max_score = float((data.get("hits") or {}).get("max_score") or 0.0) or 0.0

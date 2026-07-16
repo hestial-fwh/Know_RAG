@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getChunk, type ChunkItem } from '../api/chunks'
 import { getDocument, type DocumentItem } from '../api/documents'
-import { eventChunk, getParseTaskEvents, type ParseTask, type ParseTaskEvent } from '../api/parseTasks'
+import { getParseTaskEvents, type ParseTask, type ParseTaskEvent } from '../api/parseTasks'
 import { resolveImageUrl } from '../utils/media'
 
 const route = useRoute()
@@ -12,8 +11,7 @@ const taskId = ref(route.params.taskId as string)
 const task = ref<ParseTask | null>(null)
 const document = ref<DocumentItem | null>(null)
 const events = ref<ParseTaskEvent[]>([])
-const chunks = ref<ChunkItem[]>([])
-const selected = ref<ParseTaskEvent | ChunkItem | null>(null)
+const selected = ref<ParseTaskEvent | null>(null)
 const error = ref('')
 const loading = ref(false)
 const lastSeq = ref(0)
@@ -31,7 +29,6 @@ const stages = [
 ]
 
 const terminal = computed(() => ['completed', 'failed'].includes(task.value?.status || ''))
-const selectedChunk = computed(() => selected.value && !('payload' in selected.value) ? selected.value as ChunkItem : null)
 const statusLabel = computed(() => {
   if (!task.value) return '加载中'
   if (task.value.status === 'queued') return '排队中'
@@ -45,7 +42,6 @@ const stats = computed(() => task.value?.stats || {})
 const chunkStats = computed(() => (stats.value.chunk_type_counts || {}) as Record<string, number>)
 const filteredEvents = computed(() => {
   if (eventFilter.value === 'all') return events.value
-  if (eventFilter.value === 'blocks') return events.value.filter(e => ['parsed_block', 'chunk_created'].includes(e.event_type))
   if (eventFilter.value === 'errors') return events.value.filter(e => e.event_type.includes('failed') || e.stage === 'failed')
   return events.value.filter(e => e.stage === eventFilter.value || e.event_type === eventFilter.value)
 })
@@ -73,14 +69,10 @@ function typeLabel(type?: string) {
 }
 
 function eventTitle(event: ParseTaskEvent) {
-  if (event.event_type === 'chunk_created') return `切片 #${event.payload?.chunk_index ?? event.seq_no} 已生成`
-  if (event.event_type === 'parsed_block') return `解析块 #${event.payload?.block_index ?? event.seq_no}`
   return event.message || event.event_type
 }
 
 function eventType(event: ParseTaskEvent) {
-  const payloadType = String(event.payload?.chunk_type || event.payload?.block_type || '')
-  if (payloadType) return payloadType
   return event.stage
 }
 
@@ -98,36 +90,24 @@ function payloadPreview(event: ParseTaskEvent) {
   return previewText(event.payload?.preview_text || event.payload?.content_preview || event.payload?.preview || event.payload?.message || event.message, 220)
 }
 
-async function openEvent(event: ParseTaskEvent) {
+function openEvent(event: ParseTaskEvent) {
   selected.value = event
-  const chunkId = event.payload?.id || event.payload?.chunk_id
-  if (event.event_type === 'chunk_created' && typeof chunkId === 'string') {
-    try {
-      selected.value = await getChunk(chunkId)
-    } catch {
-      selected.value = event
-    }
-  }
 }
 
 function selectedPayload() {
-  if (!selected.value) return {}
-  if ('payload' in selected.value) return selected.value.payload || {}
-  return selected.value as unknown as Record<string, unknown>
+  return selected.value?.payload || {}
 }
 
 function selectedImageUrl() {
   const current = selected.value
   if (!current) return ''
-  if ('payload' in current) return imageUrl(current.payload)
-  return imageUrl(current as unknown as Record<string, unknown>) || imageUrl((current as ChunkItem).image_info)
+  return imageUrl(current.payload)
 }
 
 function selectedTitle() {
   const current = selected.value
-  if (!current) return '请选择一个块'
-  if ('payload' in current) return eventTitle(current)
-  return `${typeLabel(current.chunk_type)} #${current.chunk_index}`
+  if (!current) return '请选择一个进度事件'
+  return eventTitle(current)
 }
 
 async function pullEvents() {
@@ -146,11 +126,11 @@ async function pullEvents() {
     for (const event of result.items) {
       events.value.push(event)
       lastSeq.value = Math.max(lastSeq.value, event.seq_no)
-      const chunk = event.event_type === 'chunk_created' ? eventChunk(event.payload) : null
-      if (chunk && !chunks.value.some(item => item.id === chunk.id)) chunks.value.push(chunk)
     }
     if (!selected.value && result.items.length) selected.value = result.items[result.items.length - 1]
     if (terminal.value && timer) {
+      events.value = []
+      selected.value = null
       window.clearInterval(timer)
       timer = undefined
     }
@@ -176,7 +156,7 @@ onUnmounted(() => { if (timer) window.clearInterval(timer) })
       <div>
         <p class="eyebrow">Parse Workbench</p>
         <h1>文档解析工作台</h1>
-        <p class="text-muted">上传后实时观察解析阶段、block 生成、图片/表格切片和 OCR/VLM 状态。本工作台默认不执行向量化，先用于检查解析结果。</p>
+        <p class="text-muted">上传后实时观察解析阶段和 OCR/VLM 状态。过程事件仅在任务运行期间临时展示，解析块与切片请在最终结果页查看。</p>
       </div>
       <div class="header-actions">
         <button class="secondary" @click="router.push(`/documents/${task?.document_id || document?.id || ''}`)">文档详情</button>
@@ -227,11 +207,10 @@ onUnmounted(() => { if (timer) window.clearInterval(timer) })
         <div class="stream-toolbar">
           <div>
             <h2>实时解析流</h2>
-            <p class="text-muted">解析块会先出现；切片入库失败时，仍可在这里查看已识别的文本、表格和图片结果。</p>
+            <p class="text-muted">这里只显示临时阶段进度；任务结束后不保留过程事件，避免重复占用数据库空间。</p>
           </div>
           <select v-model="eventFilter">
             <option value="all">全部事件</option>
-            <option value="blocks">只看解析结果/切片</option>
             <option value="parse">结构解析</option>
             <option value="ocr">OCR</option>
             <option value="vlm">图片理解</option>
@@ -242,7 +221,7 @@ onUnmounted(() => { if (timer) window.clearInterval(timer) })
 
         <div v-if="!filteredEvents.length" class="empty-stream">
           <div class="loader-dot"></div>
-          <p>等待解析事件...</p>
+          <p>{{ terminal ? '解析已结束，过程事件已清理。' : '等待解析进度...' }}</p>
         </div>
         <div v-else class="event-feed">
           <article v-for="event in filteredEvents" :key="event.id" :class="['event-card', `event-${eventType(event)}`]" @click="openEvent(event)">
@@ -267,11 +246,8 @@ onUnmounted(() => { if (timer) window.clearInterval(timer) })
       <aside class="parse-detail-panel">
         <div class="detail-sticky">
           <h2>{{ selectedTitle() }}</h2>
-          <p class="text-muted">点击左侧事件或切片可以查看完整内容、裁剪图和元数据。</p>
+          <p class="text-muted">点击进度事件可查看临时状态；最终内容请进入切片页面。</p>
           <img v-if="selectedImageUrl()" :src="selectedImageUrl()" class="workbench-preview-image" />
-          <div v-if="selectedChunk" class="detail-actions-row">
-            <button @click="router.push(`/chunks/${selectedChunk.id}`)">打开切片详情</button>
-          </div>
           <div class="detail-section">
             <h3>内容预览</h3>
             <pre>{{ previewText((selectedPayload().content as string) || (selectedPayload().content_preview as string) || (selectedPayload().preview_text as string) || (selectedPayload().preview as string) || (selected && 'message' in selected ? selected.message : ''), 2000) }}</pre>

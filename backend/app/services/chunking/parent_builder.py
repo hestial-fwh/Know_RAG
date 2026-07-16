@@ -14,6 +14,7 @@ from app.services.chunking.section_builder import (
     is_noise_block,
     normalized_child_type,
     parent_context_header,
+    raw_block_type,
 )
 from app.services.chunking.chunk_draft import ParentDraft
 from app.services.chunking.metadata_builder import build_parent_flags, build_parent_metadata
@@ -65,12 +66,26 @@ def build_parent(
 ) -> ParentDraft | None:
     """Build one database-independent parent draft for a section."""
     content = build_parent_content(section, file_type)
+    is_synthetic_parent = not content
+    context_header = normalize_context_header(parent_context_header(section))
+    blocks = section.get("blocks") or []
+    has_semantic_children = any(
+        normalized_child_type(b) in {"image", "table", "equation"}
+        or raw_block_type(b) in {"code", "code_block", "fenced_code", "pre", "source_code"}
+        for b in blocks
+    )
+
+    # If parent content is empty but the section has table/image/code blocks,
+    # create a synthetic parent so children are not silently discarded.
     if not content:
-        return None
+        if has_semantic_children:
+            content = context_header or "文档内容"
+        else:
+            return None
 
     child_types = [
         normalized_child_type(block)
-        for block in (section.get("blocks") or [])
+        for block in blocks
         if not is_noise_block(block)
     ]
     page_start = section.get("page_start")
@@ -89,18 +104,22 @@ def build_parent(
         languages=list(getattr(cfg, "languages", []) or []),
         separators=list(getattr(cfg, "separators", []) or []),
     )
+    flags = build_parent_flags(child_types)
+    if is_synthetic_parent:
+        flags["synthetic_parent"] = True
+        metadata.setdefault("parent_source", "synthetic_from_visual_blocks")
     return ParentDraft(
         content=content,
         start_at=start_at,
         end_at=start_at + len(content),
-        context_header=normalize_context_header(parent_context_header(section)),
+        context_header=context_header,
         metadata=metadata,
-        flags=build_parent_flags(child_types),
+        flags=flags,
         section_index=section_index,
         child_block_orders=[
             int(getattr(block, "order_index", 0))
-            for block in (section.get("blocks") or [])
+            for block in blocks
         ],
         child_types=sorted(set(child_types)),
-        children_count_planned=len(section.get("blocks") or []),
+        children_count_planned=len(blocks),
     )

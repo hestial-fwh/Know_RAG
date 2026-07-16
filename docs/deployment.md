@@ -3,6 +3,13 @@
 > 状态：Current
 > 维护日期：2026-07-15
 
+前端镜像默认使用 `NPM_REGISTRY=https://registry.npmmirror.com`，并在构建时统一替换
+`package-lock.json` 中的 registry host。若当前网络访问官方源更稳定，可在 `.env` 设置：
+
+```text
+NPM_REGISTRY=https://registry.npmjs.org
+```
+
 ## 启动
 
 ```bash
@@ -76,3 +83,8 @@ PostgreSQL 使用 `pgvector/pgvector:pg16`，迁移要求 pgvector 可用。关�
 
 默认 Compose 使用 MinIO 保存文件对象，并将解析缓存挂载到根目录 `cache/`。MCP 服务监听 `8010`，
 统一网关监听本机 `8483`。部署到非本机网络前必须修改默认管理员密码、JWT secret 和服务 token。
+
+项目后端不限制上传文件大小；内置 Nginx 仅对 `/api/v1/documents/upload` 使用
+`client_max_body_size 0`，其他接口仍保留 100 MiB 上限。上传链路复用 FastAPI 已接收的
+临时文件流计算 hash 并写入 MinIO，不再创建第二份完整临时副本。若前面还有云负载均衡、
+CDN 或其他反向代理，需要同步取消其上传接口请求体大小限制。

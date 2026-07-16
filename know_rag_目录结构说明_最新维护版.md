@@ -19,7 +19,7 @@
 | **[兼容]** | 为旧接口、旧返回结构或旧实现保留，不是新功能优先修改位置 |
 | **[非当前主链路]** | 文件存在，但当前 dispatcher/路由没有直接走到 |
 | **[预留]** | 占位接口或未来扩展代码 |
-| **[Vendor/参考]** | 外部项目代码或对照实现，原则上不直接修改 |
+| **[Vendor]** | 运行时依赖的外部项目代码，原则上不直接修改 |
 
 ### 0.2 当前运行时最重要的事实
 
@@ -54,7 +54,9 @@ Canonical Markdown
 6. 默认关键词检索后端是 Elasticsearch BM25，PostgreSQL ILIKE 仅是显式配置的故障回退。
 7. 真实只读 MCP 服务位于 `backend/app/integrations/mcp/`；`routes_mcp_placeholder.py` 只是兼容占位路由。
 8. 普通 chunk API 不返回完整 embedding，只返回索引状态、维度、范数和最多 16 维预览。
-9. Current 文档入口是 `docs/index.md`；Phase、analysis、repair 类文档只用于历史追溯。
+9. Current 文档入口是 `docs/index.md`；历史变更通过 Git 记录追溯，不保留重复 Phase/repair 报告。
+10. 上传链路不设置应用层大小上限；容量边界由临时磁盘、MinIO 和外部代理决定。
+11. `ParseTaskEvent` 仅是运行期临时进度，任务结束即清空，不保存 block/chunk 预览。
 
 ---
 
@@ -76,9 +78,7 @@ know_rag/
 │  ├─ app/                               # 后端业务源码
 │  ├─ scripts/                           # 后端维护脚本
 │  ├─ tests/                             # 后端测试
-│  ├─ ragflow_vendor/                    # RAGFlow/DeepDoc Vendor 代码 [Vendor/参考]
-│  ├─ weknora_chunker_py/                # WeKnora 切分参考实现 [Vendor/参考]
-│  ├─ OLD_STRUCTURE_FIRST_OPTIMIZATION.md# 当前切分优化策略说明
+│  ├─ ragflow_vendor/                    # RAGFlow/DeepDoc 运行时 Vendor 代码 [Vendor]
 │  ├─ alembic.ini                        # Alembic 配置
 │  ├─ Dockerfile                         # 后端镜像
 │  ├─ .dockerignore                      # 排除后端缓存和本地虚拟环境
@@ -90,7 +90,6 @@ know_rag/
 │
 ├─ frontend/                             # 前端：Vue 3 + Vite + TypeScript
 │  ├─ src/                               # 前端源码
-│  ├─ dist/                              # 构建产物，不作为源码维护
 │  ├─ .dockerignore                      # 排除 node_modules/dist/coverage
 │  ├─ Dockerfile                         # 前端镜像
 │  ├─ eslint.config.js                   # Vue/TypeScript ESLint flat config
@@ -104,18 +103,14 @@ know_rag/
 │  ├─ mineru/                            # MinerU 服务相关配置
 │  └─ nginx/                             # Nginx 反向代理配置
 │
-├─ docs/                                 # Current 专项文档 + 历史设计记录
+├─ docs/                                 # Current 专项文档
 │  └─ index.md                           # 文档权威顺序与维护入口
 │
 ├─ .env                                  # 当前本地环境变量（敏感，不应纳入版本控制）
 ├─ .env.example                          # 环境变量模板
 ├─ docker-compose.yml                    # 主编排文件
 ├─ docker-compose.override.yml.example   # 本地覆盖模板
-├─ README.md                             # 项目入口说明
-├─ TODO.md                               # 待办事项
-├─ know_rag_architecture_analysis.md     # 历史架构分析
-├─ repair.md                             # 修复记录
-└─ 其他历史维护文档                      # 仅作参考，最新运行事实以本手册和代码为准
+└─ README.md                             # 项目入口说明
 ```
 
 ---
@@ -214,7 +209,7 @@ backend/app/db/
 | `Document` | 上传文档、解析状态、解析元数据 |
 | `Chunk` | 子块、父块、表格、图片、OCR 文本等统一存储 |
 | `ParseTask` | 解析任务状态 |
-| `ParseTaskEvent` | 解析任务阶段事件 |
+| `ParseTaskEvent` | 运行期临时阶段事件；终态清空，不保存 block/chunk 预览 |
 | `ChunkEmbedding` | Chunk 向量；PostgreSQL 侧的 embedding 真值记录 |
 
 ## 2.4 Schema 层
@@ -521,8 +516,8 @@ POST /api/v1/knowledge-bases/{kb_id}/documents
 │
 ├─ services/parse_task_service.py
 │  ├─ create_parse_task()
-│  ├─ update_task()
-│  └─ add_event()
+│  ├─ update_task()                       # 更新终态时清空临时事件
+│  └─ add_event()                         # 跳过 parsed_block/chunk_created
 │
 ├─ services/document_service.py
 │  └─ run_parse_document_task()
@@ -547,8 +542,8 @@ POST /api/v1/knowledge-bases/{kb_id}/documents
 |---|---|---|---|---|
 | 1 | `api/routes_documents.py` | `upload_document()` | HTTP 入口；接收上传和解析参数 | 中 |
 | 2 | `services/document_service.py` | `upload_document()` | 保存源文件、创建 Document、决定是否立即解析 | 高 |
-| 3 | `services/storage/minio_storage.py` | 存储相关函数 | MinIO object key、上传、删除、媒体对象 | 高 |
-| 4 | `services/parse_task_service.py` | `create_parse_task()` 等 | 持久化解析任务进度和事件 | 中 |
+| 3 | `services/storage/minio_storage.py` | 存储相关函数 | 无应用层大小上限；复用 UploadFile 临时流，避免第二份完整副本 | 高 |
+| 4 | `services/parse_task_service.py` | `create_parse_task()` 等 | 持久化任务状态；阶段事件仅运行期临时保留 | 中 |
 | 5 | `services/document_service.py` | `run_parse_document_task()` | 后台任务线程/进程中的 DB Session 隔离 | 高 |
 | 6 | `services/document_service.py` | `parse_document()` | 解析总编排；整个 ingest 的业务主控 | **极高** |
 | 7 | `services/parser_service.py` | `parse_local_document()` | 选择 MinerU/RAGFlow/Markdown 等解析器 | **极高** |
@@ -841,13 +836,18 @@ Chunk rebuild 完成
 ```text
 retrieval_service.keyword_search()
 → keyword_index_service.search_bm25()
+→ prepare_bm25_query() 清理并判断短/长查询
+→ build_bm25_search_body() 选择普通 + ngram 或仅普通字段
+→ too_many_nested_clauses 时仅一次安全查询重试
 → Elasticsearch BM25
 → Keyword Hit
 → score normalize
 → retrieval result
 ```
 
-如果 ES 不可用，只有在配置显式允许时才走 SQL `ILIKE` fallback。
+短查询保留 ngram 召回，长查询压缩为有限词项且禁止使用 ngram。安全重试仍超过子句限制时，
+Hybrid 已成功的向量结果继续返回；关键词单检索返回明确错误。如果 ES 连接、认证等非复杂度
+错误发生，只有在配置显式允许时才走 SQL `ILIKE` fallback。
 
 ## 11.3 关键文件
 
@@ -857,6 +857,7 @@ retrieval_service.keyword_search()
 | `main.py` | FastAPI startup 时可初始化 ES index |
 | `chunk_service.py` | Chunk rebuild 后触发 ES 同步 |
 | `retrieval_service.py` | 调用 BM25 并融合结果 |
+| `tests/test_keyword_index_query_safety.py` | 长查询压缩、DSL、安全重试、映射和 Hybrid 降级回归 |
 | `backend/scripts/rebuild_keyword_index.py` | 运维时重建关键词索引 |
 
 ---
@@ -1227,15 +1228,13 @@ services/mcp_placeholder_service.py
 integrations/mcp/
 ```
 
-## 18.5 `ragflow_vendor/` 和 `weknora_chunker_py/` 不应随意修改
+## 18.5 `ragflow_vendor/` 不应随意修改
 
-它们用于：
+它是 DeepDoc 解析链路的运行时 Vendor 依赖。正常业务修复优先落在
+`backend/app/services/` 内；只有上游同步或明确的兼容修复才修改 Vendor。
 
-- Vendor 依赖；
-- 对照原始算法；
-- 调研和迁移参考。
-
-正常业务修复优先落在 `backend/app/services/` 内。
+未接入运行时的 WeKnora Python 参考副本已经移除；算法差异通过上游仓库和 Git 历史追溯，
+不再在生产仓库维护第二份实现。
 
 ---
 
@@ -1265,6 +1264,7 @@ backend/tests/
 ├─ test_hybrid_result_mapping.py                  # Hybrid 结果映射
 ├─ test_retrieval_mapping.py                      # Retrieval 映射
 ├─ test_rrf_fusion.py                             # RRF 融合
+├─ test_keyword_index_query_safety.py             # BM25 查询安全、单次重试与 Hybrid 异常隔离
 │
 ├─ test_mineru_ocr.py                             # MinerU OCR
 ├─ test_mineru_parser_engine.py                   # MinerU parser routing
@@ -1346,10 +1346,10 @@ backend/scripts/
 
 ---
 
-# 21. 历史文档的维护优先级
+# 21. 文档维护优先级
 
-`docs/` 中既有 Current 文档，也有不同阶段的历史设计和实现记录。先通过 `docs/index.md`
-判断文档状态，不再根据文件名中的“最新”或 Phase 编号推断权威性。
+`docs/` 只保留 Current 文档和仍有效的专项运维说明。历史设计、Phase 进度和一次性修复报告
+通过 Git 历史追溯，避免与运行时代码形成第二套事实来源。
 
 推荐阅读优先级：
 
@@ -1358,8 +1358,7 @@ backend/scripts/
 2. AGENTS.md                             # AI/工程修改边界与验证命令
 3. docs/architecture.md / security.md    # 当前架构与安全边界
 4. 本手册                               # 当前代码结构和真实主链路
-5. backend/OLD_STRUCTURE_FIRST_OPTIMIZATION.md
-6. 各 phase/analysis/report 文档         # 仅查历史背景
+5. Git 历史                             # 追溯旧设计和已完成修复
 ```
 
 历史文档与代码冲突时：
@@ -1368,7 +1367,7 @@ backend/scripts/
 真实 dispatcher 调用关系
 > 当前测试
 > 标记为 Current 的专项说明
-> 历史阶段文档
+> Git 历史
 ```
 
 ---
@@ -1410,8 +1409,8 @@ __pycache__/
 coverage/
 ```
 
-`.gitignore` 只能阻止新的未跟踪文件进入 Git；如果这些目录或 `.env` 已存在于历史索引中，
-需要在明确授权的仓库清理窗口使用 `git rm --cached` 停止跟踪，并对真实凭据执行轮换。
+生成目录已从工作树清理并由 `.gitignore` 排除。`.env` 保留为本地运行配置；若历史提交包含
+真实凭据，仍需停止跟踪并执行凭据轮换。
 
 ## 22.2 新模块接管旧主链路的判定标准
 

@@ -24,11 +24,14 @@
 - `security.md`：本地优先边界、远程供应商和 MCP 风险。
 - `deployment.md`：构建、迁移、测试和服务检查。
 - `backend_module_map.md`：后端主调用链地图。
+- `elasticsearch_hybrid_search.md`：Elasticsearch BM25 与混合检索配置。
+- `minio_storage.md`：MinIO 对象存储边界。
+- `mineru_docker.md`：MinerU 容器部署说明。
+- `backend/app/integrations/mcp/README.md`：MCP 工具与传输层契约。
+- `backend/app/plugins/parse_eval/README.md`：解析质量评测插件。
 
-## 历史与专项记录
-
-名称含 `phase_`、`analysis`、`report`、`fix`、`optimization` 的文档用于追溯设计与修复背景，
-不作为当前能力清单。历史文档必须保留时，应在顶部标注 `Historical` 或 `Superseded`。
+已完成的 Phase 记录、一次性修复日志和重复架构报告不在仓库中长期保留；历史变更通过 Git
+提交记录追溯。
 
 ## 文档维护规则
 

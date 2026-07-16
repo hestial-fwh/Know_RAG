@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from html import unescape
+import logging
 from math import log1p
 import re
 from typing import Any
@@ -11,8 +12,12 @@ from app.core.response import error_response, success_response
 from app.db.models import KnowledgeBase, RetrievalConfig, User
 from app.services.audit_service import record_audit
 from app.services.embedding_service import embed_text, embedding_to_vector_literal, get_embedding_runtime
+from app.services.keyword_index_service import ElasticsearchQueryComplexityError
 from app.services.vector_store_adapters import get_active_vector_config, is_external_provider, search_external_vector
 from app.utils.ids import new_id
+
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_RETRIEVAL_CONFIG = {
@@ -498,6 +503,8 @@ def keyword_search(db, kb_id: str, query: str, top_k: int, keyword_threshold: fl
         from app.services.keyword_index_service import search_bm25
 
         hits = search_bm25(kb_id, query, top_k)
+    except ElasticsearchQueryComplexityError:
+        raise
     except Exception as exc:
         if bool(getattr(settings, "elasticsearch_fallback_to_sql", False)):
             return _sql_keyword_search_fallback(db, kb_id, query, top_k, keyword_threshold, include_content)
@@ -1300,24 +1307,50 @@ async def hybrid_search(db, actor: User | None, kb_id: str, payload: dict):
     vector_results: list[dict] = []
     keyword_results: list[dict] = []
     vector_message = ""
-    try:
-        if options.use_vector:
+    vector_available = False
+    degradation_messages: list[str] = []
+    if options.use_vector:
+        try:
             vector_results, vector_message = await vector_search(
                 db, kb_id, options.query, options.top_k, options.vector_threshold, options.include_content
             )
-        if options.use_keyword:
+            # An empty result with a message means the vector path was not
+            # available (for example, the knowledge base has no embeddings or
+            # an external store failed with PostgreSQL fallback disabled).
+            vector_available = bool(vector_results) or not vector_message
+        except Exception as exc:
+            logger.warning("Vector retrieval failed while hybrid search continues: kb_id=%s error=%s", kb_id, exc)
+            if not options.use_keyword:
+                return error_response(str(exc) or "向量检索失败")
+            degradation_messages.append(f"向量检索失败，已继续使用关键词检索：{exc}")
+
+    if options.use_keyword:
+        try:
             keyword_results = keyword_search(
                 db, kb_id, options.query, options.top_k, options.keyword_threshold, options.include_content
             )
-    except Exception as exc:
-        return error_response(str(exc) or "检索失败")
+        except ElasticsearchQueryComplexityError as exc:
+            if not (options.use_vector and vector_available):
+                vector_detail = f"；{vector_message}" if vector_message else ""
+                return error_response(f"Elasticsearch BM25 查询过于复杂：{exc}{vector_detail}")
+            logger.warning(
+                "BM25 retrieval degraded after safe query retry; keeping vector results: "
+                "kb_id=%s query_length=%s",
+                kb_id,
+                len(options.query),
+            )
+            degradation_messages.append("关键词检索超过 Elasticsearch 查询复杂度限制，已降级为向量检索结果")
+        except Exception as exc:
+            return error_response(str(exc) or "关键词检索失败")
 
     results = merge_results(vector_results, keyword_results, options)
     parent_groups: list[dict] = []
     if options.include_context:
         attach_context(db, results, options)
         parent_groups = build_parent_groups(db, results, options) if options.merge_hits_by_parent else []
-    if options.use_vector and not vector_results and not keyword_results and vector_message:
+    if degradation_messages:
+        message = "；".join(degradation_messages)
+    elif options.use_vector and not vector_results and not keyword_results and vector_message:
         message = vector_message
     else:
         message = ""

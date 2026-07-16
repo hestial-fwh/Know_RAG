@@ -48,7 +48,6 @@ class Settings(BaseSettings):
     parent_chunk_size: int = Field(4096, alias="PARENT_CHUNK_SIZE")
     child_chunk_size: int = Field(384, alias="CHILD_CHUNK_SIZE")
     child_chunk_overlap: int = Field(64, alias="CHILD_CHUNK_OVERLAP")
-    max_file_size_mb: int = Field(30, alias="MAX_FILE_SIZE_MB")
     local_storage_dir: str = Field("/data/files", alias="LOCAL_STORAGE_DIR")
     local_cache_dir: str = Field("/data/cache", alias="LOCAL_CACHE_DIR")
 
@@ -116,6 +115,10 @@ class Settings(BaseSettings):
     elasticsearch_url: str = Field("http://elasticsearch:9200", alias="ELASTICSEARCH_URL")
     elasticsearch_index: str = Field("know_rag_chunks", alias="ELASTICSEARCH_INDEX")
     elasticsearch_timeout_seconds: int = Field(10, alias="ELASTICSEARCH_TIMEOUT_SECONDS")
+    elasticsearch_query_max_chars: int = Field(256, alias="ELASTICSEARCH_QUERY_MAX_CHARS")
+    elasticsearch_query_max_terms: int = Field(24, alias="ELASTICSEARCH_QUERY_MAX_TERMS")
+    elasticsearch_ngram_query_max_chars: int = Field(64, alias="ELASTICSEARCH_NGRAM_QUERY_MAX_CHARS")
+    elasticsearch_safe_query_max_chars: int = Field(96, alias="ELASTICSEARCH_SAFE_QUERY_MAX_CHARS")
     elasticsearch_fallback_to_sql: bool = Field(False, alias="ELASTICSEARCH_FALLBACK_TO_SQL")
 
     admin_username: str = Field("admin", alias="ADMIN_USERNAME")

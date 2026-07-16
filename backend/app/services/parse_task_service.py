@@ -3,11 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.core.response import error_response, success_response
-from app.db.models import Chunk, Document, ParseTask, ParseTaskEvent, User
+from app.db.models import Document, ParseTask, ParseTaskEvent, User
 from app.utils.ids import new_id
 from app.utils.text import sanitize_json_for_postgres, sanitize_text_for_postgres
 
@@ -23,6 +23,11 @@ STAGE_LABELS = {
     "done": "完成",
     "failed": "失败",
 }
+
+# Block/chunk previews duplicate final parsed data and can dominate database
+# storage on large documents. They are intentionally never persisted.
+NON_PERSISTED_EVENT_TYPES = {"parsed_block", "chunk_created"}
+TERMINAL_TASK_STATUSES = {"completed", "failed"}
 
 
 def _now():
@@ -120,8 +125,10 @@ def add_event(
     *,
     commit: bool = True,
 ) -> ParseTaskEvent | None:
+    if event_type in NON_PERSISTED_EVENT_TYPES:
+        return None
     task_obj = db.get(ParseTask, task) if isinstance(task, str) else task
-    if task_obj is None:
+    if task_obj is None or task_obj.status in TERMINAL_TASK_STATUSES:
         return None
     event = ParseTaskEvent(
         id=new_id(),
@@ -164,6 +171,7 @@ def update_task(
             task_obj.started_at = _now()
         if status in {"completed", "failed"}:
             task_obj.finished_at = _now()
+            db.execute(delete(ParseTaskEvent).where(ParseTaskEvent.task_id == task_obj.id))
     if stage is not None:
         task_obj.current_stage = stage
     if progress is not None:
@@ -212,11 +220,3 @@ def list_events(db: Session, task_id: str, after_seq: int = 0, limit: int = 200)
         .limit(min(max(limit, 1), 500))
     ).all()
     return success_response({"task": task_to_dict(task), "items": [event_to_dict(item) for item in rows]})
-
-
-def chunk_event_payload(chunk: Chunk) -> dict:
-    from app.services.chunk_service import chunk_to_dict
-
-    data = chunk_to_dict(chunk, include_content=False)
-    data["preview_text"] = data.get("content_preview") or data.get("preview") or ""
-    return data

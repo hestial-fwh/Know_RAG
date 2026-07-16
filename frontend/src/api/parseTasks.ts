@@ -1,5 +1,4 @@
 import { api } from './client'
-import type { ChunkItem } from './chunks'
 
 export interface ParseTask {
   id: string
@@ -51,10 +50,4 @@ export function getParseTaskEvents(taskId: string, afterSeq = 0, limit = 200) {
 
 export function getLatestParseTask(documentId: string) {
   return api.get<ParseTask | null>(`/api/v1/parse-tasks/documents/${documentId}/latest`)
-}
-
-export function eventChunk(payload: Record<string, unknown>): ChunkItem | null {
-  if (!payload || typeof payload !== 'object') return null
-  if (!payload.id && !payload.chunk_id) return null
-  return payload as unknown as ChunkItem
 }

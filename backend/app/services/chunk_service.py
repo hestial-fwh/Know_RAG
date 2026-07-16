@@ -965,6 +965,90 @@ def _rebuild_markdown_weknora_parent_child(
     return new_chunks, len(new_chunks)
 
 
+def _rebuild_fallback_flat_text_from_blocks(
+    document: Document,
+    parsed_document: ParsedDocument,
+    file_type: str,
+    cfg,
+) -> tuple[list[Chunk], int]:
+    """Flat text fallback when the canonical WeKnora path yields zero chunks.
+
+    Used only when blocks exist but the canonical plan produces nothing — so the
+    document is not silently marked parsed with chunk_count=0. Produces plain text
+    children (no parent_text) tagged with a clear fallback provenance.
+    """
+    blocks = parsed_document.blocks or []
+    if not blocks:
+        content = parsed_document.content or ""
+        if not content:
+            return [], 0
+        blocks = [ParsedBlock(block_type="text", text=content, order_index=0)]
+
+    flat_cfg = ChunkerConfig(
+        chunk_size=max(getattr(cfg, "chunk_size", 512) or 512, 256),
+        chunk_overlap=max(getattr(cfg, "chunk_overlap", 80) or 0, 0),
+        strategy=getattr(cfg, "strategy", "auto") or "auto",
+        separators=list(getattr(cfg, "separators", []) or []),
+        enable_parent_child=False,
+        parent_chunk_size=0,
+        child_chunk_size=0,
+        child_chunk_overlap=0,
+        token_limit=max(getattr(cfg, "token_limit", 0) or 0, 0),
+        languages=list(getattr(cfg, "languages", []) or []),
+        enable_structured_parent_child=False,
+        enable_table_row_split=False,
+        enable_image_ocr_child=False,
+    )
+
+    new_chunks: list[Chunk] = []
+    global_offset = 0
+    for block in sorted(blocks, key=lambda b: getattr(b, "order_index", 0)):
+        text = sanitize_text_for_postgres(
+            (block.index_text() if hasattr(block, "index_text") else block.text) or block.text or ""
+        )
+        if not text or not text.strip():
+            continue
+        if is_low_information_text(text):
+            continue
+        for parsed in split_document(text, file_type, flat_cfg):
+            content = sanitize_text_for_postgres(parsed.content)
+            if not content or is_low_information_text(content):
+                continue
+            block_meta = {
+                "block_type": getattr(block, "block_type", "text"),
+                "block_order": getattr(block, "order_index", 0),
+                "source": "fallback_flat_text_after_canonical_empty",
+                "parser": "fallback_flat_text_after_canonical_empty",
+                "file_type": file_type,
+                "chunk_strategy": "fallback_flat_text",
+                "chunk_role": "child",
+                "fallback_reason": "canonical_weknora_produced_zero_chunks",
+                **(parsed.metadata or {}),
+            }
+            new_chunks.append(
+                _make_chunk(
+                    document=document,
+                    chunk_id=new_id(),
+                    content=content,
+                    chunk_index=len(new_chunks),
+                    file_type=file_type,
+                    chunk_type="text",
+                    start_at=global_offset + parsed.start,
+                    end_at=global_offset + parsed.end,
+                    context_header=parsed.context_header or getattr(block, "context_header", "") or "",
+                    flags={
+                        "fallback_flat_text": True,
+                        "chunk_strategy": "fallback_flat_text",
+                    },
+                    metadata=block_meta,
+                )
+            )
+        global_offset += len(text) + 2
+
+    _link_neighbors(new_chunks, {"text"})
+    return new_chunks, len(new_chunks)
+
+
 def _rebuild_canonical_weknora_parent_child(
     document: Document,
     parsed_document: ParsedDocument,
@@ -985,7 +1069,28 @@ def _rebuild_canonical_weknora_parent_child(
         file_type=file_type,
         document_title=document.title,
     )
+    block_count = len(parsed_document.blocks or [])
     if not canonical.markdown_content.strip():
+        logger.warning(
+            "canonical markdown is empty — chunk rebuild returning 0 chunks. "
+            "document_id=%s file_type=%s blocks=%s canonical_source_format=%s assets=%s",
+            document.id,
+            file_type,
+            block_count,
+            getattr(canonical, "source_format", "?"),
+            len(getattr(canonical, "assets", []) or []),
+        )
+        if block_count:
+            fallback_chunks, fallback_inserted = _rebuild_fallback_flat_text_from_blocks(
+                document, parsed_document, file_type, cfg
+            )
+            if fallback_inserted:
+                logger.info(
+                    "canonical-empty fallback produced flat text chunks: "
+                    "document_id=%s inserted=%s",
+                    document.id, fallback_inserted,
+                )
+                return fallback_chunks, fallback_inserted
         return [], 0
 
     materialize_parents = bool(getattr(cfg, "enable_parent_child", False))
@@ -1121,6 +1226,20 @@ def _rebuild_canonical_weknora_parent_child(
         runtime_cfg.parent_chunk_size,
         runtime_cfg.child_chunk_size,
     )
+
+    if not new_chunks and block_count:
+        logger.warning(
+            "canonical markdown non-empty but 0 children materialized — "
+            "falling back to flat text chunks. document_id=%s file_type=%s "
+            "blocks=%s canonical_chars=%s",
+            document.id, file_type, block_count, len(plan.markdown_content),
+        )
+        fallback_chunks, fallback_inserted = _rebuild_fallback_flat_text_from_blocks(
+            document, parsed_document, file_type, cfg
+        )
+        if fallback_inserted:
+            return fallback_chunks, fallback_inserted
+
     return new_chunks, len(new_chunks)
 
 

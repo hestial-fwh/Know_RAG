@@ -135,7 +135,6 @@ def ensure_supported_file(filename: str) -> str | None:
 def save_upload_file(upload: UploadFile, target: Path) -> tuple[int, str]:
     hasher = hashlib.sha256()
     size = 0
-    max_size = settings.max_file_size_mb * 1024 * 1024
     ensure_dir(target.parent)
     with target.open("wb") as output:
         while True:
@@ -143,10 +142,6 @@ def save_upload_file(upload: UploadFile, target: Path) -> tuple[int, str]:
             if not chunk:
                 break
             size += len(chunk)
-            if size > max_size:
-                output.close()
-                target.unlink(missing_ok=True)
-                raise ValueError(f"文件超过大小限制：{settings.max_file_size_mb}MB")
             hasher.update(chunk)
             output.write(chunk)
     return size, hasher.hexdigest()
@@ -519,34 +514,6 @@ async def parse_document(
                     block_stats,
                 )
 
-                for idx, block in enumerate(parsed_document.blocks[:120]):
-                    preview = (block.text or block.table_html or block.image_url or "")[:300]
-                    parse_task_service.add_event(
-                        db,
-                        task_id,
-                        "parsed_block",
-                        "parse",
-                        f"识别到{block.block_type}块 #{idx}",
-                        {
-                            "block_index": idx,
-                            "block_type": block.block_type,
-                            "page_no": block.page_no,
-                            "preview_text": preview,
-                            "image_url": block.image_url,
-                            "image_info": block.metadata or {},
-                        },
-                    )
-
-                if len(parsed_document.blocks) > 120:
-                    parse_task_service.add_event(
-                        db,
-                        task_id,
-                        "stage_note",
-                        "parse",
-                        f"其余 {len(parsed_document.blocks) - 120} 个 block 将在切片入库后统一查看",
-                        {"hidden_block_count": len(parsed_document.blocks) - 120},
-                    )
-
             if task_id:
                 parse_task_service.update_task(
                     db,
@@ -663,7 +630,7 @@ async def parse_document(
                     "ocr_enhanced_count": ocr_enhanced,
                     "ocr_failed_count": ocr_failed_count,
                     "vlm_failed_count": vlm_failed_count,
-                    "parse_preview_available": True,
+                    "parse_preview_available": False,
                     "auto_vectorize": False,
                     **parsed_metadata,
                 }
@@ -809,7 +776,7 @@ async def parse_document(
                             {
                                 "document_id": doc_id,
                                 "chunk_store_error": chunk_error,
-                                "parse_preview_available": True,
+                                "parse_preview_available": False,
                             },
                         )
                         parse_task_service.add_event(
@@ -817,7 +784,7 @@ async def parse_document(
                             task_id,
                             "task_finished_with_warning",
                             "done",
-                            "解析结果已保留，工作台可查看解析块；本次未生成切片和向量。",
+                            "解析已完成，但切片入库失败；过程解析块未保留，本次未生成切片和向量。",
                             {
                                 "document_id": doc_id,
                                 "parse_statistics": final_data.get("parse_statistics")
@@ -829,15 +796,13 @@ async def parse_document(
                 return error_response(warning_message)
 
             if task_id:
-                chunk_rows = (
-                    db.query(Chunk)
+                type_rows = (
+                    db.query(Chunk.chunk_type, func.count())
                     .filter(Chunk.document_id == document.id)
-                    .order_by(Chunk.chunk_index.asc())
+                    .group_by(Chunk.chunk_type)
                     .all()
                 )
-                type_counts: dict[str, int] = {}
-                for chunk in chunk_rows:
-                    type_counts[chunk.chunk_type or "text"] = type_counts.get(chunk.chunk_type or "text", 0) + 1
+                type_counts = {chunk_type or "text": int(count) for chunk_type, count in type_rows}
 
                 parse_task_service.update_task(
                     db,
@@ -862,31 +827,15 @@ async def parse_document(
                     },
                 )
 
-                for chunk in chunk_rows[:180]:
-                    payload = parse_task_service.chunk_event_payload(chunk)
-                    parse_task_service.add_event(
-                        db,
-                        task_id,
-                        "chunk_created",
-                        "chunk",
-                        f"切片 #{chunk.chunk_index} 已生成",
-                        payload,
-                    )
-
-                if len(chunk_rows) > 180:
-                    parse_task_service.add_event(
-                        db,
-                        task_id,
-                        "stage_note",
-                        "chunk",
-                        f"剩余 {len(chunk_rows) - 180} 个切片可在切片管理页查看",
-                        {"hidden_chunk_count": len(chunk_rows) - 180},
-                    )
-
             document.parse_status = "parsed"
-            document.error_message = ""
+            document.error_message = "" if chunk_count > 0 else "解析完成，但未生成切片，请检查 chunk rebuild 日志"
             document.processed_at = datetime.now(timezone.utc)
             document.enable_status = document.enable_status or "enabled"
+            document.metadata_json = sanitize_json_for_postgres({
+                **(document.metadata_json or {}),
+                "chunk_store_status": "success" if chunk_count > 0 else "empty",
+                "chunk_count": int(chunk_count or 0),
+            })
 
             record_audit(
                 db,

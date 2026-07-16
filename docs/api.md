@@ -111,6 +111,13 @@ Chunk 返回中的 `embedding_index_info` 可以包含模型、维度、向量�
 
 文档上传、解析、chunk 入库与 embedding 生成是解耦的。上传和解析流程不会依赖 `chunk_embeddings` 表；只有用户点击“生成向量”或调用 embedding API 时才会写入向量。
 
+上传接口不设置应用层文件大小上限，并以分块读取、临时文件落盘和 MinIO 流式写入控制内存。
+实际可上传大小仍受可用磁盘、MinIO 容量及外部代理限制。
+
+`GET /api/v1/parse-tasks/{task_id}/events` 只返回任务运行期间的轻量阶段事件。解析 block
+和 chunk 预览不写入事件表；任务完成或失败后，临时事件会被自动清空，最终内容统一从文档和
+chunk API 查询。
+
 PDF、txt、md、docx 解析出的文本会在入库前自动删除 PostgreSQL `TEXT` 不允许的 NUL 字符和大部分不可见控制字符。如果 PDF 是扫描件或图片型 PDF，基础解析可能无法抽取文本。
  
 ## WeKnora 对齐 Phase A API 返回兼容
