@@ -49,6 +49,7 @@ class CanonicalAsset:
     context_header: str = ""
     nearby_before: str = ""
     nearby_after: str = ""
+    footnote: str = ""
     source_block_order: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -151,6 +152,13 @@ def _block_vlm(block: ParsedBlock) -> str:
     return _first_text_deep(
         _block_meta(block),
         ["vlm_description", "image_description", "vision_description", "description"],
+    )
+
+
+def _block_footnote(block: ParsedBlock) -> str:
+    return _first_text_deep(
+        _block_meta(block),
+        ["image_footnote", "footnote", "chart_footnote", "figure_footnote"],
     )
 
 
@@ -408,14 +416,28 @@ def _semantic_neighbor_text(block: ParsedBlock) -> str:
         return ""
     return _clean_context(text)
 
-
-def _nearest_text(blocks: list[ParsedBlock], index: int, direction: int) -> str:
+def _nearest_text(
+    blocks: list[ParsedBlock],
+    index: int,
+    direction: int,
+    *,
+    page_no: int | None = None,
+    max_steps: int = 5,
+) -> str:
     cursor = index + direction
     while 0 <= cursor < len(blocks):
         block = blocks[cursor]
+        if max_steps <= 0:
+            return ""
+        if page_no is not None and block.page_no is not None and block.page_no != page_no:
+            return ""
+        raw_text = _preserve_text(block.text or block.index_text()).strip()
+        if block.block_type == "text" and raw_text and _heading_level(block, raw_text) is not None:
+            return ""
         value = _semantic_neighbor_text(block)
         if value:
             return value
+        max_steps -= 1
         cursor += direction
     return ""
 
@@ -531,6 +553,7 @@ def build_canonical_document(
                 asset_id=asset_id,
                 alt_text=alt_text,
                 caption=caption,
+                footnote=_block_footnote(block),
                 ocr_text=_block_ocr(block),
                 vlm_description=_block_vlm(block),
                 image_path=_preserve_text(block.image_path),
@@ -539,8 +562,8 @@ def build_canonical_document(
                 page_no=block.page_no,
                 bbox=block.bbox,
                 context_header=_preserve_text(block.context_header).strip(),
-                nearby_before=_nearest_text(blocks, index, -1),
-                nearby_after=_nearest_text(blocks, index, 1),
+                nearby_before=_nearest_text(blocks, index, -1, page_no=block.page_no),
+                nearby_after=_nearest_text(blocks, index, 1, page_no=block.page_no),
                 source_block_order=block.order_index,
                 metadata=dict(_block_meta(block)),
             )

@@ -109,7 +109,9 @@ def test_image_asset_sidecar_is_materialized_as_one_image_child_with_vlm_and_ocr
     assert "图片标题：图 1 系统总体架构" in image.content
     assert "图片描述：左侧为 Vue3 前端" in image.content
     assert "图片文字：Vue3 FastAPI PostgreSQL Elasticsearch MinIO" in image.content
-    assert "系统整体架构如下" in image.content
+    # When caption exists, nearby_before/after are excluded; only local_context (tail) is kept.
+    assert "系统整体架构如下" not in image.content
+    assert "系统采用前后端分离设计" in image.content  # local_context (tail)
     assert image.image_info["image_url"] == "/files/kb/doc/media/arch.png"
     assert image.metadata["vlm_description"]
     assert image.metadata["ocr_text"]

@@ -635,6 +635,7 @@ chunk_service.rebuild_document_chunks()
       │  ├─ Table 转 Markdown/HTML 可用表达
       │  ├─ Image 转 asset:// 引用
       │  └─ CanonicalAsset 放 sidecar
+      │     └─ MinerU caption / footnote / OCR / VLM / page / bbox 进入图片语义
       │
       ├─ canonical_parent_child.build_canonical_parent_child_plan()
       │  │

@@ -460,6 +460,35 @@ def _truncate(value: str, limit: int) -> str:
     return text[: max(0, limit - 1)].rstrip() + "…"
 
 
+def _normalized_comparison_text(value: str) -> str:
+    return re.sub(r"\s+", " ", _preserve(value)).strip()
+
+
+def _has_reliable_parser_order(asset: CanonicalAsset) -> bool:
+    metadata = asset.metadata if isinstance(asset.metadata, dict) else {}
+    parser = str(metadata.get("parser") or "").strip().lower()
+    source = str(metadata.get("source") or "").strip().lower()
+    return asset.page_no is not None and (
+        parser == "mineru" or source == "mineru_content_list"
+    )
+
+
+def _immediate_tail_context(text: str, start: int, stop: int) -> str:
+    """Return prose immediately following an asset within one source child.
+
+    Context stops before the next asset, Markdown heading, or paragraph boundary.
+    This deliberately favors missing optional context over cross-section pollution.
+    """
+    tail = _preserve(text[start:stop]).lstrip()
+    if not tail:
+        return ""
+    boundary = re.search(r"(?m)^\s*#{1,6}\s+|\n\s*\n", tail)
+    if boundary:
+        tail = tail[: boundary.start()]
+    tail = tail.strip()
+    return "" if not tail or is_structural_only(tail) else _truncate(tail, 360)
+
+
 def _asset_image_info(asset: CanonicalAsset) -> dict[str, Any]:
     info: dict[str, Any] = {
         "asset_id": asset.asset_id,
@@ -504,8 +533,20 @@ def compose_image_child_content(
 
     if asset.caption or asset.alt_text:
         parts.append(f"图片标题：{_truncate(asset.caption or asset.alt_text, 360)}")
-
-    nearby = _join_context(local_context, asset.nearby_before, asset.nearby_after)
+    if asset.footnote:
+        footnote = _normalized_comparison_text(asset.footnote)
+        ocr_text = _normalized_comparison_text(asset.ocr_text)
+        if not ocr_text or footnote not in ocr_text:
+            parts.append(f"图片脚注：{_truncate(asset.footnote, 300)}")
+    # Captioned images may keep bounded preceding prose only when the parser
+    # supplies reliable page/order metadata. Other parsers get local tail only.
+    if asset.caption:
+        if local_context.strip() and asset.caption.strip() in local_context:
+            local_context = local_context.replace(asset.caption.strip(), "", 1).strip()
+        trusted_before = asset.nearby_before if _has_reliable_parser_order(asset) else ""
+        nearby = _join_context(trusted_before, local_context)
+    else:
+        nearby = _join_context(local_context, asset.nearby_before, asset.nearby_after)
     if nearby:
         parts.append(f"上下文：{_truncate(nearby, 600)}")
 
@@ -676,7 +717,7 @@ def _materialize_text_segment_with_assets(
     cursor = 0
     pending_structure = ""
 
-    for asset_id, alt, start, end in refs:
+    for ref_index, (asset_id, alt, start, end) in enumerate(refs):
         before = text[cursor:start]
         if before.strip():
             if is_structural_only(before):
@@ -698,13 +739,8 @@ def _materialize_text_segment_with_assets(
         if asset is not None:
             local_heading = _last_heading(pending_structure)
             image_context = _join_context(source_child.context_header, local_heading)
-            local_prose = ""
-            # The remaining source-child text is often the best immediate
-            # context for the image, but do not feed another asset marker.
-            tail = text[end:]
-            tail = re.sub(r"!\[[^\]]*\]\(asset://[^)]+\)", "", tail)
-            if tail.strip() and not is_structural_only(tail):
-                local_prose = _truncate(tail, 360)
+            next_asset_start = refs[ref_index + 1][2] if ref_index + 1 < len(refs) else len(text)
+            local_prose = _immediate_tail_context(text, end, next_asset_start)
 
             content = compose_image_child_content(
                 asset,
@@ -720,6 +756,7 @@ def _materialize_text_segment_with_assets(
                 "asset_type": asset.asset_type,
                 "asset_alt_text": alt or asset.alt_text,
                 "caption": asset.caption,
+                "footnote": asset.footnote,
                 "ocr_text": asset.ocr_text,
                 "vlm_description": asset.vlm_description,
                 "page_no": asset.page_no,

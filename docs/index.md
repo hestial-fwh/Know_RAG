@@ -27,6 +27,7 @@
 - `elasticsearch_hybrid_search.md`：Elasticsearch BM25 与混合检索配置。
 - `minio_storage.md`：MinIO 对象存储边界。
 - `mineru_docker.md`：MinerU 容器部署说明。
+- `image_chunk_binding_plan.md`：MinerU 主链路图文绑定边界、当前 P0 与后续阶段设计。
 - `backend/app/integrations/mcp/README.md`：MCP 工具与传输层契约。
 - `backend/app/plugins/parse_eval/README.md`：解析质量评测插件。
 

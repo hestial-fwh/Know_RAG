@@ -20,7 +20,6 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Iterable
 
 import httpx
@@ -1168,6 +1167,9 @@ def _content_list_to_blocks(
                 meta["caption"] = caption
                 meta["figure_caption"] = caption
                 meta["image_caption"] = caption
+            if footnote:
+                meta["footnote"] = footnote
+                meta["image_footnote"] = footnote
             if ocr_text:
                 meta["ocr_raw_text"] = ocr_text
                 meta["ocr_cleaned_text"] = ocr_text

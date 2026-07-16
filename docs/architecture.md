@@ -1,7 +1,7 @@
 # Architecture
 
 > 状态：Current
-> 维护日期：2026-07-15
+> 维护日期：2026-07-16
 
 `know_rag` 是本地优先的 RAG 知识库构建、解析、切分、索引和检索系统。
 
@@ -35,6 +35,11 @@ Gateway (:8483) ────────▶ FastAPI + MCP
 → pgvector / 可选外部向量库 + Elasticsearch BM25
 → Hybrid Retrieval / KnowledgeContextService / MCP
 ```
+
+图片语义首期以 MinerU 主路径为可靠输入：MinerU adapter 将 caption、footnote、OCR、page
+和 bbox 标准化到 `ParsedBlock`，随后 `vision_service.enhance_image_blocks()` 补充 VLM 描述，
+Canonical 层再写入 Asset Sidecar 和 image child。RAGFlow 可作为显式辅助解析器或 MinerU
+文档级 fallback，但不是 MinerU 图文绑定的运行依赖；正文引用与图片的持久化关系仍属于后续阶段。
 
 数据库 `chunker_config` 决定父子切分是否启用，不能只通过 `.env` 判断部署实例的实际切分分支。
 
