@@ -241,9 +241,19 @@ def build_embedding_content(chunk, document) -> str:
 
     flags = getattr(chunk, "flags", None) or {}
     metadata = getattr(chunk, "metadata_json", None) or {}
-    content = clean_text_for_embedding(_semantic_body_from_chunk(chunk))
+    content_kind = str(metadata.get("content_kind") or "").lower()
+    cleaning_type = "code_block" if content_kind == "code_block" else chunk_type
+    content = clean_text_for_embedding(
+        _semantic_body_from_chunk(chunk),
+        chunk_type=cleaning_type,
+    )
 
-    if should_skip_text_chunk(content, chunk_type=chunk_type, flags=flags, metadata=metadata):
+    if should_skip_text_chunk(
+        content,
+        chunk_type=cleaning_type,
+        flags=flags,
+        metadata=metadata,
+    ):
         return ""
 
     title = clean_text_for_embedding(
@@ -262,5 +272,6 @@ def build_embedding_content(chunk, document) -> str:
         parts.append(content)
 
     return clean_text_for_embedding(
-        _truncate_embedding_content("", "", "\n".join(parts))
+        _truncate_embedding_content("", "", "\n".join(parts)),
+        chunk_type=cleaning_type,
     )

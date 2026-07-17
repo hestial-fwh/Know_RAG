@@ -49,7 +49,13 @@ _MEDIA_PLACEHOLDER_COMPACT = {
 # Tags that often appear inside extracted scientific text.  For text content we
 # keep the inner value but remove the markup, e.g. TGF-β<sub>1</sub> -> TGF-β1.
 _INLINE_HTML_TAG_RE = re.compile(
-    r"</?\s*(?:sub|sup|span|font|b|strong|i|em|u|small|mark|ruby|rt|rp)[^>]*>",
+    r"</?(?:sub|sup|span|font|b|strong|i|em|u|s|strike|del|ins|small|mark|"
+    r"ruby|rt|rp|q|cite|abbr|dfn|time|var|samp|kbd)[^>]*>",
+    re.I,
+)
+_FENCED_CODE_LINE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})")
+_GENERIC_MARKUP_TAG_RE = re.compile(
+    r"</?[A-Za-z][A-Za-z0-9:._-]*(?:\s+[^<>]*?)?\s*/?>",
     re.I,
 )
 
@@ -97,23 +103,11 @@ def is_standalone_noise_text(text: Any) -> bool:
     return is_low_information_text(cleaned)
 
 
-def _strip_inline_html(text: str, *, chunk_type: str = "text") -> str:
-    """Remove noisy HTML from chunk.content without touching metadata.
-
-    Important: table structure should be preserved in metadata_json.table_html /
-    image_info.table_html.  This function only cleans the plain content string
-    that is stored in chunks.content or embedded.  For table content that is
-    already HTML, we convert cells/rows to a readable plain-text representation
-    rather than deleting the table fields from metadata.
-    """
-    value = unescape(str(text or ""))
-    if "<" not in value or ">" not in value:
+def _strip_html_fragment(value: str, *, chunk_type: str) -> str:
+    kind = (chunk_type or "text").lower()
+    if kind in {"code", "code_block"}:
         return value
 
-    kind = (chunk_type or "text").lower()
-
-    # Preserve rough row/cell boundaries when the content string itself contains
-    # table HTML.  The original table_html remains in metadata/image_info.
     if kind in {"table", "table_body"} or re.search(r"<\s*table\b|<\s*tr\b|<\s*t[dh]\b", value, re.I):
         value = re.sub(r"<\s*/\s*t[dh]\s*>", " | ", value, flags=re.I)
         value = re.sub(r"<\s*/\s*tr\s*>", "\n", value, flags=re.I)
@@ -122,11 +116,74 @@ def _strip_inline_html(text: str, *, chunk_type: str = "text") -> str:
         value = re.sub(r"<[^>]+>", " ", value)
         return value
 
+    value = re.sub(r"<!--[\s\S]*?-->", " ", value)
+    value = re.sub(
+        r"<\s*(?:script|style|noscript|svg)\b[^>]*>[\s\S]*?<\s*/\s*(?:script|style|noscript|svg)\s*>",
+        " ",
+        value,
+        flags=re.I,
+    )
     value = re.sub(r"<\s*br\s*/?\s*>", "\n", value, flags=re.I)
-    value = re.sub(r"<\s*/\s*(?:p|div|li|h[1-6])\s*>", "\n", value, flags=re.I)
+    value = re.sub(
+        r"<\s*/\s*(?:p|div|li|ul|ol|section|article|header|footer|blockquote|pre|h[1-6])\s*>",
+        "\n",
+        value,
+        flags=re.I,
+    )
     value = _INLINE_HTML_TAG_RE.sub("", value)
-    value = re.sub(r"<[^>]+>", "", value)
+    value = re.sub(r"<\s*[!?][^>]*>", "", value)
+    value = _GENERIC_MARKUP_TAG_RE.sub("", value)
     return value
+
+
+def _strip_inline_html(text: str, *, chunk_type: str = "text") -> str:
+    """Remove extracted rich-text markup while preserving fenced source code."""
+    value = unescape(str(text or ""))
+    if "<" not in value or ">" not in value:
+        return value
+    kind = (chunk_type or "text").lower()
+    if kind in {"table", "table_body", "code", "code_block"}:
+        return _strip_html_fragment(value, chunk_type=kind)
+
+    output: list[str] = []
+    plain_lines: list[str] = []
+    fence = ""
+
+    def flush_plain_lines() -> None:
+        if not plain_lines:
+            return
+        output.append(_strip_html_fragment("".join(plain_lines), chunk_type=kind))
+        plain_lines.clear()
+
+    for line in value.splitlines(keepends=True):
+        match = _FENCED_CODE_LINE_RE.match(line)
+        if fence:
+            output.append(line)
+            if (
+                match
+                and match.group(1)[0] == fence[0]
+                and len(match.group(1)) >= len(fence)
+            ):
+                fence = ""
+            continue
+        if match:
+            flush_plain_lines()
+            marker = match.group(1)
+            fence = marker
+            output.append(line)
+            continue
+        plain_lines.append(line)
+    flush_plain_lines()
+    return "".join(output)
+
+
+def normalize_extracted_rich_text(text: Any, *, chunk_type: str = "text") -> str:
+    """Normalize parser presentation markup before canonical splitting."""
+    value = _strip_inline_html(str(text or ""), chunk_type=chunk_type)
+    value = re.sub(r"[ \t\u00a0]+", " ", value)
+    value = re.sub(r"[ \t]+\n", "\n", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return sanitize_text_for_postgres(value.strip())
 
 _DROP_LINE_LABELS = {
     "文档标题",
@@ -189,8 +246,8 @@ _CJK_SPACE_RE = re.compile(r"(?<=[\u4e00-\u9fff])[ \t]+(?=[\u4e00-\u9fff])")
 _CJK_PUNCT_SPACE_RE = re.compile(r"(?<=[\u4e00-\u9fff])[ \t]+(?=[，。！？；：、])|(?<=[，。！？；：、])[ \t]+(?=[\u4e00-\u9fff])")
 
 
-def _normalize_lines(text: str) -> list[str]:
-    value = _strip_inline_html(str(text or ""))
+def _normalize_lines(text: str, *, chunk_type: str = "text") -> list[str]:
+    value = _strip_inline_html(str(text or ""), chunk_type=chunk_type)
     value = sanitize_text_for_postgres(value)
     value = value.replace("\r\n", "\n").replace("\r", "\n")
     value = _URL_RE.sub("", value)
@@ -240,7 +297,7 @@ def clean_chunk_content_for_storage(text: Any, *, chunk_type: str = "text") -> s
     """
     lines: list[str] = []
     normalized_text = _strip_inline_html(str(text or ""), chunk_type=chunk_type)
-    for line in _normalize_lines(normalized_text):
+    for line in _normalize_lines(normalized_text, chunk_type=chunk_type):
         cleaned = _strip_wrapper_line(line)
         if cleaned:
             lines.append(cleaned)
@@ -265,9 +322,9 @@ def normalize_chunk_text(text: str) -> str:
     return sanitize_text_for_postgres(value)
 
 
-def clean_text_for_embedding(text: Any) -> str:
+def clean_text_for_embedding(text: Any, *, chunk_type: str = "text") -> str:
     """Clean text before embedding/BM25 indexing."""
-    value = clean_chunk_content_for_storage(str(text or ""))
+    value = clean_chunk_content_for_storage(str(text or ""), chunk_type=chunk_type)
     value = _URL_RE.sub("", value)
     value = _FILE_PATH_RE.sub("", value)
     value = re.sub(r"\n{3,}", "\n\n", value)
@@ -476,7 +533,7 @@ def should_skip_text_chunk(text: Any, *, chunk_type: str = "text", flags: dict |
     flags = flags or {}
     metadata = metadata or {}
     kind = (chunk_type or "text").lower()
-    cleaned = clean_text_for_embedding(text)
+    cleaned = clean_text_for_embedding(text, chunk_type=kind)
     compact = compact_text_for_label_check(cleaned)
 
     if is_url_or_path_only_text(text):

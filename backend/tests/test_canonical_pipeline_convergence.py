@@ -124,6 +124,31 @@ def test_native_markdown_numeric_data_is_authoritative_and_not_filtered():
     assert canonical.markdown_content == markdown
 
 
+def test_parser_rich_text_is_normalized_but_fenced_xml_is_preserved():
+    parsed = ParsedDocument(
+        content="",
+        blocks=[
+            ParsedBlock(
+                block_type="text",
+                text=(
+                    "H<sub>2</sub>O 与 x<sup>2</sup> 的分析，"
+                    "<span class='ocr'>保留正文</span><br>下一行。\n\n"
+                    "```xml\n<field name=\"title\"><token>value</token></field>\n```"
+                ),
+                order_index=0,
+            )
+        ],
+    )
+
+    canonical = build_canonical_document(parsed, file_type="pdf")
+
+    assert "H2O" in canonical.markdown_content
+    assert "x2" in canonical.markdown_content
+    assert "<sub>" not in canonical.markdown_content
+    assert "<span" not in canonical.markdown_content
+    assert '<field name="title"><token>value</token></field>' in canonical.markdown_content
+
+
 def test_standalone_short_text_children_can_merge_when_context_matches():
     short_head = _child("## March 2024 Vol. 46 No. 3\n\n恶病质是一切恶性肿瘤发展的最终结局。", seq=0)
     following = _child("后续正文" * 20, seq=1)

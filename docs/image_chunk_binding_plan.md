@@ -1,13 +1,16 @@
 # MinerU 主链路图文绑定方案
 
-> 状态：Current（P0 已实现，P1-P5 规划中）  
-> 维护日期：2026-07-16  
+> 状态：Current（P0、P1 已完成并通过字段链路验收；P2-P5 规划中）
+> 维护日期：2026-07-17
 > 首期范围：MinerU 主解析链路  
 > 非首期范围：RAGFlow/DeepDoc fallback 的高质量图文绑定
 
 ## 1. 结论
 
 图文绑定是 Know_RAG 自己的 Canonical/Relation 层能力，不依赖 RAGFlow 运行链路。
+
+当前状态：P0、P1 已完成并通过字段链路验收；低质量 caption、多图号合并及同页空间
+候选问题已在 P1 处理。正文引用到图片 Chunk 的关系仍从 P2 开始。
 
 - MinerU 是首期可靠输入，提供 caption、footnote、OCR、VLM、page 和 bbox。
 - RAGFlow 是可显式选择的辅助解析器，同时也是 MinerU 整篇解析失败时的文档级 fallback；
@@ -103,7 +106,7 @@ child materialize 时进入 `Chunk.content` 和 `metadata_json`。
 | 邻居页边界 | 已知 `page_no` 时遇到其他页立即停止 |
 | 邻居扫描上限 | 最多检查 5 个 block |
 | 标题边界 | 遇到标题 block 停止，不跨 section 找邻居 |
-| caption 图片上下文 | 只接受当前 source child 中图片后的立即正文，不回退顺序邻居 |
+| caption 图片上下文 | MinerU 保留受页/标题/步数保护的前文和立即 tail；其他 parser 不回退不可靠前文 |
 | tail 边界 | 在下一图片、下一 Markdown 标题或下一段落前停止 |
 
 ### 5.2 P0 明确不做
@@ -145,23 +148,70 @@ MinerU
 
 目标是校验图片自身与 caption/footnote 的局部关系，不负责全文引用。
 
+### 7.1 已实现：caption 质量与歧义规则
+
 ```python
 @dataclass
 class ImageRelation:
     caption: str = ""
+    original_caption: str = ""
     footnote: str = ""
     caption_method: str = ""
     binding_score: float = 0.0
+    ambiguous: bool = False
+    caption_ambiguous: bool = False
+    footnote_ambiguous: bool = False
+    figure_ids: list[str] = field(default_factory=list)
+    caption_suppressed: bool = False
+    deterministic_binding_allowed: bool = False
+    spatial_status: str = "not_evaluated"
+    normalized_bbox: tuple[float, float, float, float] | None = None
+    raw_bbox: tuple[float, float, float, float] | None = None
+    normalization_page_extent: tuple[float, float, float, float] | None = None
+    bbox_coordinate_space: str = ""
+    selected_candidate_orders: list[int] = field(default_factory=list)
+    spatial_candidates: list[dict] = field(default_factory=list)
 ```
 
-规则优先级：
+已接入 `build_canonical_document()` 生产入口，结果写入 `CanonicalAsset` 和 image Chunk
+metadata。当前规则：
 
-1. MinerU 已绑定到 image block 的原生 caption/footnote。
-2. 同页 bbox 候选：水平重叠、垂直距离、阅读方向。
-3. 仅有顺序、没有 page/bbox 的候选不做高分绑定。
-4. 无唯一候选时不绑定。
+1. caption 与 OCR 归一化后完全相同，且 caption 仅为纯数字或部件编号时：保留
+   `original_caption` 供审计，清空可绑定 caption，设置
+   `caption_method=suppressed_duplicate_identifier`、`binding_score=0.05`。
+2. 单张图片 caption 中出现两个及以上不同图号（例如“图7、图8”）时：保留 caption，
+   写入全部 `figure_ids`，设置 `ambiguous=true`、
+   `ambiguity_reasons=[multiple_figure_ids_in_single_caption]`、`binding_score<=0.25`，并设置
+   `deterministic_binding_allowed=false`。
+3. 同一图号在 caption 中重复出现不构成 ambiguous。
+4. 描述性 caption 即使与 OCR 相同也不按编号噪声清除。
 
-bbox 在进入 resolver 前统一成 `[0,1]` 坐标，并保留原坐标和 coordinate space 供审计。
+### 7.2 已实现：空间关系校验
+
+规则优先级和边界：
+
+1. MinerU 已挂在 image block 上的原生 caption/footnote 优先，标记
+   `spatial_status=parser_attached`，不会被同页候选覆盖。
+2. 仅在原生字段缺失时检查同页独立 caption/footnote block；非 MinerU parser 标记
+   `disabled_unreliable_parser`，不启用空间确定绑定。
+3. bbox 在进入 resolver 前按当前页有效 block extent 归一化到 `[0,1]`；同时保留图片和候选
+   raw bbox、`normalization_page_extent` 与 `bbox_coordinate_space` 供审计。
+4. 候选必须与图片水平重叠至少 `0.35`，垂直间距不得超过图片/候选最大高度的 `1.5` 倍；
+   下方候选优先于上方候选，并结合 source order 评分。
+5. 空间绑定最低分为 `0.62`；最高两个候选分差小于 `0.08` 时标记
+   `ambiguous_candidates`，不选择 caption/footnote。
+6. 同页所有图片会共同参与候选所有权判定；同一候选被多张图片近似同分接受时，相关图片标记
+   `spatial_caption_candidate_shared_between_images`，不允许重复确定占用。
+7. caption 与 footnote 歧义分别写入 `caption_ambiguous`、`footnote_ambiguous`；footnote
+   候选冲突不会关闭可靠原生 caption 的图号确定绑定。
+8. 缺失图片 bbox、候选 bbox 不完整、双栏无水平重叠、无候选时分别降级为
+   `missing_image_geometry`、`missing_candidate_geometry` 或 `no_candidate`，不做高分绑定。
+9. 空间选中的 caption 继续执行 OCR 编号降噪、多图号 ambiguous 和
+   `deterministic_binding_allowed` 规则；被 OCR 编号规则清除时标记
+   `spatial_candidate_suppressed`。
+
+空间结果已进入 `CanonicalAsset`、image child `metadata_json` 和生产 ORM Chunk；详细候选
+评分保存在嵌套 `image_relation.spatial_candidates` 中。P1 不创建正文引用关系。
 
 ## 8. P2：FigureLinker
 
@@ -278,3 +328,13 @@ text/table/image chunk 检索，不影响文档基础可用性。
 | P5 | 双向扩展、跨文档隔离、数量限制、失败回落 |
 
 每阶段必须覆盖生产入口 `rebuild_document_chunks()`，不能只测试未接入 dispatcher 的辅助模块。
+
+### 13.1 已落地的跨阶段 Chunk 质量约束
+
+- WeKnora overlap 将同一 `asset://` marker 带入相邻 source child 时，按文档内稳定
+  `asset_id` 只物化一个 image child，并记录被折叠的 source child 序号。
+- 普通解析正文、caption、OCR、VLM、脚注和图片邻近上下文在进入 Canonical/Embedding 前移除
+  展示型 HTML 标签并保留内文；`script/style/noscript/svg` 内容不入向量。
+- 围栏代码以及 `content_kind=code_block` 保留 XML/配置标签，避免把真实源码当作展示标签删除。
+- 一句话短尾只在来源范围重叠且存在至少 16 字符精确后缀/前缀重叠时并回前块；不启用
+  `merge_short_text_siblings()` 通用合并。

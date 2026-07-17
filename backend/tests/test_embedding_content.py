@@ -42,6 +42,47 @@ class EmbeddingContentTests(unittest.TestCase):
         document = SimpleNamespace(title="标题", file_name="")
         self.assertEqual(build_embedding_content(chunk, document), "")
 
+    def test_presentation_html_is_removed_from_text_embedding(self):
+        chunk = SimpleNamespace(
+            context_header="",
+            content=(
+                "H<sub>2</sub>O 与 x<sup>2</sup> 的结果，"
+                "<span class='ocr'>这是有效正文。</span>"
+                "统计结果 p &lt; 0.05，且 a < b > c。"
+                "<script>\nwindow.secret = true\n</script>"
+            )
+            * 8,
+            chunk_type="text",
+            flags={},
+            metadata_json={"content_kind": "text"},
+        )
+        content = build_embedding_content(chunk, SimpleNamespace(title="实验", file_name=""))
+
+        self.assertIn("H2O", content)
+        self.assertIn("x2", content)
+        self.assertIn("这是有效正文", content)
+        self.assertIn("p < 0.05", content)
+        self.assertIn("a < b > c", content)
+        self.assertNotIn("<sub>", content)
+        self.assertNotIn("<span", content)
+        self.assertNotIn("window.secret", content)
+
+    def test_xml_tags_are_preserved_for_code_block_embedding(self):
+        chunk = SimpleNamespace(
+            context_header="## 配置示例",
+            content='<field name="title"><token>value</token></field>',
+            chunk_type="text",
+            flags={"content_kind": "code_block"},
+            metadata_json={"content_kind": "code_block"},
+        )
+        content = build_embedding_content(
+            chunk,
+            SimpleNamespace(title="Schema 配置", file_name=""),
+        )
+
+        self.assertIn('<field name="title">', content)
+        self.assertIn("<token>value</token>", content)
+
 
 if __name__ == "__main__":
     unittest.main()

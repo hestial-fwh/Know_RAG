@@ -14,13 +14,23 @@ child whose searchable content contains the image semantics.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import html
 import re
 from typing import Any, Iterable
 
-from app.services.chunker.heading_utils import is_page_noise_text
+from app.services.chunker.heading_utils import is_caption_text, is_page_noise_text
+from app.services.content_cleaning import normalize_extracted_rich_text
+from app.services.document_parser.image_relation_resolver import (
+    SPATIAL_AMBIGUITY_MARGIN,
+    SpatialRelationCandidate,
+    normalize_bbox,
+    relation_text_key,
+    resolve_image_relation,
+    score_spatial_candidate,
+    valid_bbox,
+)
 from app.services.document_parser.types import ParsedBlock, ParsedDocument
 
 
@@ -39,6 +49,17 @@ class CanonicalAsset:
     asset_type: str = "image"
     alt_text: str = ""
     caption: str = ""
+    caption_method: str = "missing"
+    binding_score: float = 0.0
+    ambiguous: bool = False
+    caption_ambiguous: bool = False
+    footnote_ambiguous: bool = False
+    figure_ids: list[str] = field(default_factory=list)
+    deterministic_binding_allowed: bool = False
+    spatial_status: str = "not_evaluated"
+    normalized_bbox: tuple[float, float, float, float] | None = None
+    bbox_coordinate_space: str = ""
+    selected_candidate_orders: list[int] = field(default_factory=list)
     ocr_text: str = ""
     vlm_description: str = ""
     image_path: str = ""
@@ -85,11 +106,11 @@ def _first_text_deep(source: Any, keys: Iterable[str]) -> str:
     wanted = {str(key).lower() for key in keys}
     seen: set[int] = set()
 
-    def walk(value: Any) -> str:
+    def walk(value: Any, *, allow_scalar: bool = False) -> str:
         if value is None:
             return ""
         if isinstance(value, (str, int, float)):
-            return _preserve_text(value).strip()
+            return _preserve_text(value).strip() if allow_scalar else ""
         if isinstance(value, dict):
             marker = id(value)
             if marker in seen:
@@ -97,7 +118,7 @@ def _first_text_deep(source: Any, keys: Iterable[str]) -> str:
             seen.add(marker)
             for key, item in value.items():
                 if str(key).lower() in wanted:
-                    text = walk(item)
+                    text = walk(item, allow_scalar=True)
                     if text:
                         return text
             for item in value.values():
@@ -112,7 +133,10 @@ def _first_text_deep(source: Any, keys: Iterable[str]) -> str:
                 return ""
             seen.add(marker)
             for item in value:
-                text = walk(item)
+                if allow_scalar or isinstance(item, (dict, list, tuple)):
+                    text = walk(item, allow_scalar=allow_scalar)
+                else:
+                    text = ""
                 if text:
                     return text
         return ""
@@ -135,31 +159,160 @@ def _block_meta(block: ParsedBlock) -> dict[str, Any]:
 
 def _block_caption(block: ParsedBlock) -> str:
     meta = _block_meta(block)
-    return _first_text_deep(
-        meta,
-        ["caption", "figure_caption", "image_caption", "title", "alt_text", "alt"],
-    ) or _preserve_text(block.context_header).strip()
+    return normalize_extracted_rich_text(
+        _first_text_deep(
+            meta,
+            ["caption", "figure_caption", "image_caption", "title", "alt_text", "alt"],
+        )
+    )
 
 
 def _block_ocr(block: ParsedBlock) -> str:
-    return _first_text_deep(
-        _block_meta(block),
-        ["ocr_cleaned_text", "ocr_raw_text", "ocr_text", "normalized_text"],
+    return normalize_extracted_rich_text(
+        _first_text_deep(
+            _block_meta(block),
+            ["ocr_cleaned_text", "ocr_raw_text", "ocr_text", "normalized_text"],
+        )
     )
 
 
 def _block_vlm(block: ParsedBlock) -> str:
-    return _first_text_deep(
-        _block_meta(block),
-        ["vlm_description", "image_description", "vision_description", "description"],
+    return normalize_extracted_rich_text(
+        _first_text_deep(
+            _block_meta(block),
+            ["vlm_description", "image_description", "vision_description", "description"],
+        )
     )
 
 
 def _block_footnote(block: ParsedBlock) -> str:
-    return _first_text_deep(
-        _block_meta(block),
-        ["image_footnote", "footnote", "chart_footnote", "figure_footnote"],
+    return normalize_extracted_rich_text(
+        _first_text_deep(
+            _block_meta(block),
+            ["image_footnote", "footnote", "chart_footnote", "figure_footnote"],
+        )
     )
+
+
+def _is_reliable_mineru_block(block: ParsedBlock) -> bool:
+    meta = _block_meta(block)
+    parser = _preserve_text(meta.get("parser")).strip().lower()
+    source = _preserve_text(meta.get("source")).strip().lower()
+    return parser == "mineru" or source == "mineru_content_list"
+
+
+def _page_extent(blocks: list[ParsedBlock], page_no: int | None) -> tuple[float, float, float, float] | None:
+    if page_no is None:
+        return None
+    boxes = [valid_bbox(block.bbox) for block in blocks if block.page_no == page_no]
+    boxes = [box for box in boxes if box is not None]
+    if not boxes:
+        return None
+    return (
+        min(0.0, min(box[0] for box in boxes)),
+        min(0.0, min(box[1] for box in boxes)),
+        max(box[2] for box in boxes),
+        max(box[3] for box in boxes),
+    )
+
+
+def _spatial_candidate_kind(block: ParsedBlock) -> str:
+    if block.block_type != "text":
+        return ""
+    text = _preserve_text(block.text).strip()
+    if not text:
+        return ""
+    meta = _block_meta(block)
+    role = " ".join(
+        _preserve_text(meta.get(key)).strip().lower()
+        for key in ("role", "layout_role", "raw_block_type", "type", "subtype")
+    )
+    has_explicit_relation_role = meta.get("is_caption") is True or any(
+        marker in role for marker in ("caption", "footnote")
+    )
+    if is_page_noise_text(text) and not has_explicit_relation_role:
+        return ""
+    if "footnote" in role or re.match(r"^(?:来源|资料来源|注)\s*[:：]", text):
+        return "footnote"
+    if meta.get("is_caption") is True or "caption" in role or is_caption_text(text):
+        return "caption"
+    return ""
+
+
+def _spatial_relation_candidates(
+    blocks: list[ParsedBlock],
+    *,
+    image_index: int,
+    page_no: int | None,
+    page_extent: tuple[float, float, float, float] | None,
+) -> list[SpatialRelationCandidate]:
+    if page_no is None or page_extent is None:
+        return []
+    candidates: list[SpatialRelationCandidate] = []
+    for index, block in enumerate(blocks):
+        if index == image_index or block.page_no != page_no:
+            continue
+        kind = _spatial_candidate_kind(block)
+        if not kind:
+            continue
+        raw_bbox = valid_bbox(block.bbox)
+        candidates.append(
+            SpatialRelationCandidate(
+                text=_preserve_text(block.text).strip(),
+                kind=kind,
+                page_no=page_no,
+                bbox=normalize_bbox(raw_bbox, page_extent=page_extent),
+                source_order=block.order_index,
+                raw_bbox=raw_bbox,
+            )
+        )
+    owned_candidates: list[SpatialRelationCandidate] = []
+    for candidate in candidates:
+        scored_images: list[tuple[float, int]] = []
+        for candidate_image_index, image_block in enumerate(blocks):
+            if image_block.block_type != "image" or image_block.page_no != page_no:
+                continue
+            if not _is_reliable_mineru_block(image_block):
+                continue
+            if candidate.kind == "caption":
+                attached_relation = resolve_image_relation(
+                    caption=_block_caption(image_block),
+                    ocr_text=_block_ocr(image_block),
+                    footnote=_block_footnote(image_block),
+                    enable_spatial=False,
+                )
+                if attached_relation.caption:
+                    continue
+            if candidate.kind == "footnote" and _block_footnote(image_block):
+                continue
+            image_bbox = normalize_bbox(image_block.bbox, page_extent=page_extent)
+            if image_bbox is None:
+                continue
+            metrics = score_spatial_candidate(
+                image_bbox,
+                image_block.order_index,
+                candidate,
+            )
+            if metrics.get("accepted"):
+                scored_images.append((float(metrics["score"]), candidate_image_index))
+
+        scored_images.sort(key=lambda item: (-item[0], item[1]))
+        if not scored_images:
+            owned_candidates.append(candidate)
+            continue
+        top_score = scored_images[0][0]
+        contenders = [
+            candidate_image_index
+            for score, candidate_image_index in scored_images
+            if top_score - score < SPATIAL_AMBIGUITY_MARGIN
+        ]
+        if len(contenders) > 1:
+            if image_index in contenders:
+                owned_candidates.append(replace(candidate, ownership_ambiguous=True))
+            continue
+        if scored_images[0][1] == image_index:
+            owned_candidates.append(candidate)
+    return owned_candidates
 
 
 def _heading_level(block: ParsedBlock, text: str) -> int | None:
@@ -191,7 +344,9 @@ def _heading_level(block: ParsedBlock, text: str) -> int | None:
 
 
 def _as_markdown_text(block: ParsedBlock, text: str | None = None) -> str:
-    text = _preserve_text(text if text is not None else (block.text or block.index_text())).strip("\n")
+    text = normalize_extracted_rich_text(
+        _preserve_text(text if text is not None else (block.text or block.index_text()))
+    ).strip("\n")
     if not text:
         return ""
     level = _heading_level(block, text)
@@ -404,7 +559,9 @@ def _table_markdown(block: ParsedBlock) -> str:
 def _semantic_neighbor_text(block: ParsedBlock) -> str:
     if block.block_type != "text":
         return ""
-    text = _preserve_text(block.text or block.index_text()).strip()
+    text = normalize_extracted_rich_text(
+        _preserve_text(block.text or block.index_text())
+    ).strip()
     if not text:
         return ""
     if _is_explicit_parser_noise_block(block, text) or is_page_noise_text(text):
@@ -547,25 +704,78 @@ def build_canonical_document(
         if block.block_type == "image":
             image_ordinal += 1
             asset_id = _asset_id(block, image_ordinal)
-            caption = _block_caption(block)
-            alt_text = caption or _preserve_text(block.text).strip() or f"图片 {image_ordinal}"
+            raw_caption = _block_caption(block)
+            ocr_text = _block_ocr(block)
+            footnote = _block_footnote(block)
+            page_extent = _page_extent(blocks, block.page_no)
+            normalized_bbox = (
+                normalize_bbox(block.bbox, page_extent=page_extent)
+                if page_extent is not None
+                else None
+            )
+            spatial_enabled = _is_reliable_mineru_block(block)
+            relation = resolve_image_relation(
+                caption=raw_caption,
+                ocr_text=ocr_text,
+                footnote=footnote,
+                page_no=block.page_no,
+                image_bbox=normalized_bbox,
+                raw_image_bbox=valid_bbox(block.bbox),
+                normalization_page_extent=page_extent,
+                image_order=block.order_index,
+                spatial_candidates=_spatial_relation_candidates(
+                    blocks,
+                    image_index=index,
+                    page_no=block.page_no,
+                    page_extent=page_extent,
+                ),
+                bbox_coordinate_space=(
+                    "normalized_page_extent_derived_from_mineru" if normalized_bbox else ""
+                ),
+                enable_spatial=spatial_enabled,
+            )
+            block_text = normalize_extracted_rich_text(block.text).strip()
+            if relation.caption_suppressed and relation_text_key(block_text) == relation_text_key(raw_caption):
+                block_text = ""
+            alt_text = relation.caption or block_text or f"图片 {image_ordinal}"
+            context_header = normalize_extracted_rich_text(block.context_header).strip()
+            if (
+                relation.caption_suppressed
+                and relation_text_key(context_header) == relation_text_key(raw_caption)
+            ):
+                context_header = ""
+            asset_metadata = {
+                **dict(_block_meta(block)),
+                "image_relation": relation.to_metadata(),
+            }
             asset = CanonicalAsset(
                 asset_id=asset_id,
                 alt_text=alt_text,
-                caption=caption,
-                footnote=_block_footnote(block),
-                ocr_text=_block_ocr(block),
+                caption=relation.caption,
+                caption_method=relation.caption_method,
+                binding_score=relation.binding_score,
+                ambiguous=relation.ambiguous,
+                caption_ambiguous=relation.caption_ambiguous,
+                footnote_ambiguous=relation.footnote_ambiguous,
+                figure_ids=list(relation.figure_ids),
+                deterministic_binding_allowed=relation.deterministic_binding_allowed,
+                spatial_status=relation.spatial_status,
+                normalized_bbox=relation.normalized_bbox,
+                bbox_coordinate_space=relation.bbox_coordinate_space,
+                selected_candidate_orders=list(relation.selected_candidate_orders),
+                footnote=relation.footnote,
+                ocr_text=ocr_text,
                 vlm_description=_block_vlm(block),
                 image_path=_preserve_text(block.image_path),
                 image_url=_preserve_text(block.image_url),
                 image_base64=_preserve_text(block.image_base64),
                 page_no=block.page_no,
                 bbox=block.bbox,
-                context_header=_preserve_text(block.context_header).strip(),
+                context_header=context_header,
                 nearby_before=_nearest_text(blocks, index, -1, page_no=block.page_no),
                 nearby_after=_nearest_text(blocks, index, 1, page_no=block.page_no),
                 source_block_order=block.order_index,
-                metadata=dict(_block_meta(block)),
+                metadata=asset_metadata,
             )
             assets[asset_id] = asset
             parts.append(asset.marker)

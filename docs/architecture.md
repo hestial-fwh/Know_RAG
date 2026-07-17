@@ -1,7 +1,7 @@
 # Architecture
 
 > 状态：Current
-> 维护日期：2026-07-16
+> 维护日期：2026-07-17
 
 `know_rag` 是本地优先的 RAG 知识库构建、解析、切分、索引和检索系统。
 
@@ -29,6 +29,7 @@ Gateway (:8483) ────────▶ FastAPI + MCP
 上传 → MinIO → ParseTask
 → MinerU / RAGFlow / Legacy fallback
 → ParsedDocument / ParsedBlock
+→ 展示型富文本规范化（代码围栏除外）
 → Canonical Markdown + Asset Sidecar
 → Parent/Child 或 flat compatibility chunk
 → PostgreSQL chunks
@@ -40,6 +41,18 @@ Gateway (:8483) ────────▶ FastAPI + MCP
 和 bbox 标准化到 `ParsedBlock`，随后 `vision_service.enhance_image_blocks()` 补充 VLM 描述，
 Canonical 层再写入 Asset Sidecar 和 image child。RAGFlow 可作为显式辅助解析器或 MinerU
 文档级 fallback，但不是 MinerU 图文绑定的运行依赖；正文引用与图片的持久化关系仍属于后续阶段。
+
+Canonical 构建图片 asset 前会调用 `image_relation_resolver`：过滤与 OCR 重复的纯编号 caption，
+将包含多个不同图号的单图 caption 标记为 ambiguous，并在 MinerU 原生字段缺失时使用归一化
+同页 bbox、水平重叠、垂直距离和阅读顺序选择唯一 caption/footnote 候选。候选不唯一或坐标
+不可靠时保持图片 Chunk 可用但禁止确定绑定；同页候选会先进行多图片所有权判定，caption 与
+footnote 歧义分别记录，脚注冲突不会污染可靠 caption 的图号绑定资格。
+
+非 Markdown parser 输出进入 Canonical 前会移除 `<sub>/<sup>/<span>/<font>/<em>` 等展示型
+HTML 标签并保留标签内文本；脚本、样式和 SVG 内容不进入检索正文。围栏代码及
+`content_kind=code_block` 的 XML/配置标签保持原样。父子物化后，同一 `asset_id` 因 overlap
+落入相邻 source child 时只生成一个 image child；正文仅对“来源范围重叠 + 精确后缀/前缀重叠”
+产生的一句话短尾做定向合并，不启用通用短块合并。
 
 数据库 `chunker_config` 决定父子切分是否启用，不能只通过 `.env` 判断部署实例的实际切分分支。
 

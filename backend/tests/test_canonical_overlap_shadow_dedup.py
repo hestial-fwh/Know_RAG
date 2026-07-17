@@ -1,6 +1,8 @@
 from app.services.chunker.canonical_parent_child import (
     CanonicalChildDraft,
+    deduplicate_repeated_asset_children,
     deduplicate_overlap_shadow_children,
+    merge_overlap_tail_text_children,
 )
 
 
@@ -159,6 +161,111 @@ def test_reverse_shadow_can_be_removed_defensively():
     assert len(result) == 1
     assert result[0].source_child_seq == 10
     assert result[0].metadata["overlap_shadow_last_direction"] == "right_shadowed_by_left"
+
+
+def test_same_asset_copied_by_overlap_is_materialized_only_once():
+    first = CanonicalChildDraft(
+        content="图片标题：UV-vis 光谱图",
+        chunk_type="image",
+        parent_index=0,
+        context_header="## 结构表征分析",
+        start=100,
+        end=300,
+        source_child_seq=21,
+        metadata={"asset_id": "image-0001-fixed", "content_kind": "image"},
+        image_info={"asset_id": "image-0001-fixed"},
+        flags={"content_kind": "image"},
+    )
+    repeated = CanonicalChildDraft(
+        content=first.content,
+        chunk_type="image",
+        parent_index=0,
+        context_header=first.context_header,
+        start=220,
+        end=420,
+        source_child_seq=22,
+        metadata={"asset_id": "image-0001-fixed", "content_kind": "image"},
+        image_info={"asset_id": "image-0001-fixed"},
+        flags={"content_kind": "image"},
+    )
+
+    result = deduplicate_repeated_asset_children([first, repeated])
+
+    assert result == [first]
+    assert first.metadata["asset_overlap_dedup_applied"] is True
+    assert first.metadata["deduplicated_asset_source_child_seqs"] == [22]
+
+
+def test_same_asset_reference_at_independent_source_position_is_preserved():
+    first = CanonicalChildDraft(
+        content="图片说明",
+        chunk_type="image",
+        parent_index=None,
+        context_header="## 第一处",
+        start=0,
+        end=100,
+        source_child_seq=1,
+        metadata={"asset_id": "shared-asset", "content_kind": "image"},
+        flags={"content_kind": "image"},
+    )
+    second = CanonicalChildDraft(
+        content="图片说明",
+        chunk_type="image",
+        parent_index=None,
+        context_header="## 第二处",
+        start=500,
+        end=600,
+        source_child_seq=8,
+        metadata={"asset_id": "shared-asset", "content_kind": "image"},
+        flags={"content_kind": "image"},
+    )
+
+    assert deduplicate_repeated_asset_children([first, second]) == [first, second]
+
+
+def test_short_overlap_tail_is_merged_without_repeating_the_overlap():
+    repeated_prefix = "上一块末尾的完整重叠句子，用来验证精确边界。"
+    left = _text_child(
+        "主体内容。" * 60 + repeated_prefix,
+        seq=100,
+        start=25825,
+        end=26414,
+        header="## Activity analysis",
+    )
+    right = _text_child(
+        repeated_prefix + "最后一句补充结论。",
+        seq=101,
+        start=26314,
+        end=26432,
+        header="## Activity analysis",
+    )
+
+    result = merge_overlap_tail_text_children([left, right], child_size=600)
+
+    assert len(result) == 1
+    assert result[0].content.count(repeated_prefix) == 1
+    assert result[0].content.endswith("最后一句补充结论。")
+    assert result[0].metadata["overlap_tail_merged"] is True
+
+
+def test_short_tail_without_source_overlap_is_not_merged():
+    repeated_prefix = "文本相同也不能仅凭内容跨位置合并。"
+    left = _text_child(
+        "主体内容。" * 30 + repeated_prefix,
+        seq=1,
+        start=0,
+        end=300,
+        header="## 同一章节",
+    )
+    right = _text_child(
+        repeated_prefix + "另一处结论。",
+        seq=2,
+        start=500,
+        end=550,
+        header="## 同一章节",
+    )
+
+    assert merge_overlap_tail_text_children([left, right], child_size=600) == [left, right]
 
 
 def test_plan_builder_runs_overlap_shadow_dedup_before_parent_validation(monkeypatch):

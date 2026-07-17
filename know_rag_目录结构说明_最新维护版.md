@@ -1,7 +1,7 @@
 # Know_RAG 项目目录结构与主链路维护手册（最新代码基线）
 
 > **代码基线**：当前工作区
-> **维护日期**：2026-07-15
+> **维护日期**：2026-07-17
 > **用途**：用于后续项目维护、功能定位、主链路排查、代码重构和新人接手。  
 > **分析原则**：以本次上传代码的**真实调用关系**为准，不以历史设计文档或曾经存在的重构方案代替当前运行时事实。
 
@@ -45,12 +45,14 @@ Canonical Markdown
 → 原 Old 两阶段 Parent/Child 骨架
 → 全局 heading context 继承
 → Text / Table / Image 物化
+→ 同 asset_id 图片 overlap 副本去重
 → 精确 overlap shadow 去重
+→ 精确 overlap 短尾合并
 → Parent 0/1 完整性校验
 → 持久化
 ```
 
-5. `merge_short_text_siblings()` 仍保留在代码中，但**当前生产 `build_canonical_parent_child_plan()` 不调用它**；这是有意保持 Structure First，而不是遗漏。
+5. `merge_short_text_siblings()` 仍保留在代码中，但**当前生产 `build_canonical_parent_child_plan()` 不调用它**；生产只运行有来源范围和精确文本重叠双重证据的 `merge_overlap_tail_text_children()`。
 6. 默认关键词检索后端是 Elasticsearch BM25，PostgreSQL ILIKE 仅是显式配置的故障回退。
 7. 真实只读 MCP 服务位于 `backend/app/integrations/mcp/`；`routes_mcp_placeholder.py` 只是兼容占位路由。
 8. 普通 chunk API 不返回完整 embedding，只返回索引状态、维度、范数和最多 16 维预览。
@@ -283,6 +285,7 @@ backend/app/services/document_parser/
 ├─ generic_parsers.py                     # 通用格式解析器
 ├─ media_storage.py                       # 解析媒体文件保存
 ├─ block_reflow.py                        # ParsedBlock 重排、OCR 文本修复、标题路径继承 [主链路]
+├─ image_relation_resolver.py             # 图片 caption 质量、图号歧义、bbox 空间候选与 binding_score [主链路]
 └─ canonical_document.py                  # ParsedDocument → Canonical Markdown + Asset sidecar [核心算法]
 ```
 
@@ -674,7 +677,7 @@ chunk_service.rebuild_document_chunks()
 
 ### 原则 1：先保结构，再优化长度
 
-当前生产计划**不自动合并短兄弟块**。短块可能是：
+当前生产计划**不做通用短兄弟块合并**。只有来源范围确实重叠、且右块由左块精确后缀加少量新尾句组成时，才合并 overlap 短尾。其他短块可能是：
 
 - 标题后的定义；
 - 列表项；
@@ -805,8 +808,9 @@ POST /documents/{document_id}/embedding
 1. `parent_text` 不向量化。
 2. 不是所有存在的 Chunk 都必须向量化；低信息块、占位块可跳过。
 3. 真正送给 Embedding 模型的内容由 `build_embedding_content()` 决定，而不是简单使用 `chunk.content`。
-4. PostgreSQL `chunk_embeddings` 是本地状态判断和回退检索的重要依据。
-5. 外部向量库是 mirror/search provider，不应破坏 PostgreSQL 侧文档与 Chunk 的关系真值。
+4. 普通正文向量化前移除展示型 HTML 标签并保留内文；`script/style/noscript/svg` 内容丢弃；围栏代码和 `content_kind=code_block` 的 XML/配置标签保留。
+5. PostgreSQL `chunk_embeddings` 是本地状态判断和回退检索的重要依据。
+6. 外部向量库是 mirror/search provider，不应破坏 PostgreSQL 侧文档与 Chunk 的关系真值。
 
 ## 10.3 主要 Python 文件
 
@@ -1202,7 +1206,7 @@ _rebuild_document_chunks_structured_parent_child()
 
 ## 18.3 不要看到短块就自动合并
 
-`merge_short_text_siblings()` 当前保留但不进入生产 plan，原因是上一轮优化已经验证：单纯追求“没有短块”会损害文档结构。
+`merge_short_text_siblings()` 当前保留但不进入生产 plan，原因是单纯追求“没有短块”会损害文档结构。生产只定向修复有来源范围重叠和精确文本重叠证据的短尾。
 
 处理短块问题时先分类：
 
@@ -1211,6 +1215,8 @@ _rebuild_document_chunks_structured_parent_child()
 结构噪声            → Canonical/quality gate 清理
 错误断句            → 修边界算法
 纯 overlap shadow   → 精确去重
+overlap 加少量新尾句 → 定向合并回前块
+重复 asset marker   → 按 asset_id 只物化一次
 错误 Parent 关系    → integrity 修复
 ```
 

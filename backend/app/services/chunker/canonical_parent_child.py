@@ -756,6 +756,17 @@ def _materialize_text_segment_with_assets(
                 "asset_type": asset.asset_type,
                 "asset_alt_text": alt or asset.alt_text,
                 "caption": asset.caption,
+                "caption_method": asset.caption_method,
+                "binding_score": asset.binding_score,
+                "ambiguous": asset.ambiguous,
+                "caption_ambiguous": asset.caption_ambiguous,
+                "footnote_ambiguous": asset.footnote_ambiguous,
+                "figure_ids": list(asset.figure_ids),
+                "deterministic_binding_allowed": asset.deterministic_binding_allowed,
+                "spatial_status": asset.spatial_status,
+                "normalized_bbox": list(asset.normalized_bbox) if asset.normalized_bbox else None,
+                "bbox_coordinate_space": asset.bbox_coordinate_space,
+                "selected_candidate_orders": list(asset.selected_candidate_orders),
                 "footnote": asset.footnote,
                 "ocr_text": asset.ocr_text,
                 "vlm_description": asset.vlm_description,
@@ -849,6 +860,53 @@ def _materialize_source_child(
 # ---------------------------------------------------------------------------
 # Overlap shadow deduplication
 # ---------------------------------------------------------------------------
+
+
+def deduplicate_repeated_asset_children(
+    children: list[CanonicalChildDraft],
+) -> list[CanonicalChildDraft]:
+    """Materialize each canonical image asset at most once.
+
+    WeKnora overlap reuses complete split units, including ``asset://`` markers.
+    The same marker can therefore occur in adjacent source children even though
+    it represents one parser block. ``asset_id`` is document-local and stable,
+    so repeated image drafts with the same id are overlap copies.
+    """
+    result: list[CanonicalChildDraft] = []
+    carriers: dict[str, CanonicalChildDraft] = {}
+    for child in children:
+        asset_id = str(child.metadata.get("asset_id") or "").strip()
+        if child.chunk_type != "image" or not asset_id:
+            result.append(child)
+            continue
+        carrier = carriers.get(asset_id)
+        if carrier is None:
+            carriers[asset_id] = child
+            result.append(child)
+            continue
+        source_overlap_chars, _, _ = _source_spans_overlap(carrier, child)
+        if source_overlap_chars <= 0:
+            # The same asset may be referenced deliberately in two independent
+            # source locations. Only collapse copies proven to come from an
+            # overlapping splitter window.
+            carriers[asset_id] = child
+            result.append(child)
+            continue
+        previous = carrier.metadata.get("deduplicated_asset_source_child_seqs")
+        source_seqs = list(previous) if isinstance(previous, list) else []
+        source_seqs.extend(_merged_source_sequences(child))
+        carrier.metadata.update(
+            {
+                "asset_overlap_dedup_applied": True,
+                "asset_overlap_dedup_count": int(
+                    carrier.metadata.get("asset_overlap_dedup_count") or 0
+                )
+                + 1,
+                "deduplicated_asset_source_child_seqs": list(dict.fromkeys(source_seqs)),
+            }
+        )
+        carrier.flags["asset_overlap_dedup_applied"] = True
+    return result
 
 
 def _source_spans_overlap(left: CanonicalChildDraft, right: CanonicalChildDraft) -> tuple[int, float, float]:
@@ -1279,6 +1337,61 @@ def merge_short_text_siblings(
     return work
 
 
+def merge_overlap_tail_text_children(
+    children: list[CanonicalChildDraft],
+    *,
+    child_size: int,
+    short_threshold: int = 120,
+) -> list[CanonicalChildDraft]:
+    """Merge a short overlap-dominated tail into its preceding text child.
+
+    Both children must share parent/context, their source ranges must overlap,
+    and the right child must start with an exact suffix copied from the left.
+    This keeps the production repair narrower than generic short-text merging.
+    """
+    if len(children) < 2:
+        return list(children)
+    work = list(children)
+    max_size = max(int(child_size or 1), 1)
+    max_merged_size = max_size + min(80, max(24, max_size // 8))
+    index = 1
+    while index < len(work):
+        left = work[index - 1]
+        right = work[index]
+        if not _children_are_merge_compatible(left, right):
+            index += 1
+            continue
+        overlap_chars, _, _ = _source_spans_overlap(left, right)
+        if overlap_chars <= 0 or _semantic_text_length(right.content) >= short_threshold:
+            index += 1
+            continue
+        left_text = left.content.strip()
+        right_text = right.content.strip()
+        text_overlap = _exact_suffix_prefix_overlap(left_text, right_text)
+        if text_overlap < 16:
+            index += 1
+            continue
+        unique_tail = right_text[text_overlap:].strip()
+        if not unique_tail or _semantic_text_length(unique_tail) >= short_threshold:
+            index += 1
+            continue
+        merged = _merge_two_text_children(left, right, threshold=short_threshold)
+        if len(merged.content) > max_merged_size:
+            index += 1
+            continue
+        merged.metadata.update(
+            {
+                "overlap_tail_merged": True,
+                "overlap_tail_source_overlap_chars": overlap_chars,
+                "overlap_tail_text_overlap_chars": text_overlap,
+            }
+        )
+        merged.flags["overlap_tail_merged"] = True
+        work[index - 1 : index + 1] = [merged]
+        index = max(1, index - 1)
+    return work
+
+
 def _flatten_underfilled_parent_links(
     children: list[CanonicalChildDraft],
     *,
@@ -1325,14 +1438,13 @@ def build_canonical_parent_child_plan(
 
     # Structure-first post-processing policy.
     #
-    # Keep only the deterministic exact-overlap cleanup.  Do NOT run automatic
-    # short-sibling merging in the runtime plan: a short child can be a complete
-    # section, conclusion, captioned note, or other meaningful structural unit.
-    # Pairwise merging optimizes length at the cost of the Old pipeline's main
-    # advantage—stable document/heading boundaries.  The helper remains public
-    # for compatibility and experiments, but it is intentionally not part of
-    # the production parent-child path.
+    # Keep only repairs backed by exact overlap evidence. Do NOT run generic
+    # short-sibling merging: a short child can be a complete section,
+    # conclusion, captioned note, or other meaningful structural unit. The
+    # compatibility helper remains public but is not part of the runtime path.
+    children = deduplicate_repeated_asset_children(children)
     children = deduplicate_overlap_shadow_children(children)
+    children = merge_overlap_tail_text_children(children, child_size=child_size)
     for child in children:
         child.metadata["runtime_postprocess_policy"] = "structure_first"
         child.flags["runtime_postprocess_policy"] = "structure_first"
@@ -1386,6 +1498,8 @@ __all__ = [
     "split_oversize_fenced_blocks",
     "split_oversize_markdown_tables",
     "normalize_canonical_markdown",
+    "deduplicate_repeated_asset_children",
     "deduplicate_overlap_shadow_children",
+    "merge_overlap_tail_text_children",
     "merge_short_text_siblings",
 ]
