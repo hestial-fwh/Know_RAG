@@ -182,6 +182,31 @@ def test_flat_canonical_pipeline_uses_flat_chunk_size_and_overlap():
     assert runtime_cfg.child_chunk_overlap == 17
 
 
+def test_materialization_fallback_clears_non_matching_canonical_artifact():
+    parsed = ParsedDocument.from_text("Fallback body with enough semantic content to retain.")
+    artifact = {}
+
+    with patch(
+        "app.services.chunker.canonical_parent_child._materialize_source_child",
+        return_value=[],
+    ):
+        chunks, inserted = _rebuild_canonical_weknora_parent_child(
+            _document(),
+            parsed,
+            "txt",
+            _cfg(),
+            artifact_out=artifact,
+        )
+
+    assert inserted == len(chunks) > 0
+    assert artifact == {}
+    assert all(
+        chunk.metadata_json.get("fallback_reason")
+        == "canonical_weknora_produced_zero_chunks"
+        for chunk in chunks
+    )
+
+
 def test_keyword_sync_indexes_new_chunks_before_stale_cleanup():
     from app.services import keyword_index_service
 

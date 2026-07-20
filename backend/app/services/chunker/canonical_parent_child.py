@@ -23,8 +23,11 @@ from app.services.chunker.parent_child_splitter import split_parent_child_result
 from app.services.document_parser.canonical_document import (
     CanonicalAsset,
     CanonicalDocument,
+    CanonicalSourceNode,
     find_image_asset_refs,
+    ground_canonical_provenance,
 )
+from app.services.document_parser.figure_linker import FigureLinkResult, link_figure_references
 
 
 _FENCE_START_RE = re.compile(r"(?m)^[ \t]*(`{3,}|~{3,})([^\n]*)\n")
@@ -68,6 +71,8 @@ class CanonicalChunkPlan:
     parents: list[CanonicalParentDraft]
     children: list[CanonicalChildDraft]
     assets: dict[str, CanonicalAsset] = field(default_factory=dict)
+    provenance_nodes: list[CanonicalSourceNode] = field(default_factory=list)
+    figure_links: FigureLinkResult = field(default_factory=FigureLinkResult)
 
 
 # ---------------------------------------------------------------------------
@@ -773,6 +778,9 @@ def _materialize_text_segment_with_assets(
                 "page_no": asset.page_no,
                 "bbox": list(asset.bbox) if asset.bbox else None,
                 "source_block_order": asset.source_block_order,
+                "source_node_id": asset.source_node_id,
+                "source_node_ids": [asset.source_node_id] if asset.source_node_id else [],
+                "source_provenance_resolution": "asset_node_exact",
                 "image_semantics_in_child": True,
             }
             children.append(
@@ -1429,6 +1437,15 @@ def build_canonical_parent_child_plan(
 ) -> CanonicalChunkPlan:
     child_size = max(getattr(cfg, "child_chunk_size", 384) or 384, 1)
     normalized_markdown = normalize_canonical_markdown(canonical.markdown_content, child_size)
+    provenance_nodes = ground_canonical_provenance(
+        normalized_markdown,
+        canonical.provenance_nodes,
+    )
+    figure_links = link_figure_references(
+        normalized_markdown,
+        canonical.assets,
+        provenance_nodes=provenance_nodes,
+    )
     result = split_parent_child_result(normalized_markdown, cfg)
     _apply_heading_context_to_source_children(result.children)
 
@@ -1448,6 +1465,22 @@ def build_canonical_parent_child_plan(
     for child in children:
         child.metadata["runtime_postprocess_policy"] = "structure_first"
         child.flags["runtime_postprocess_policy"] = "structure_first"
+
+        # P2.5 keeps the durable provenance ledger document-scoped while each
+        # chunk carries only the node references needed to trace it back. Image
+        # children already have an exact asset node; text/table ranges can be
+        # broader until P3 introduces exact post-split span mapping.
+        if not child.metadata.get("source_node_ids"):
+            source_node_ids = [
+                node.node_id
+                for node in provenance_nodes
+                if node.normalized_start is not None
+                and node.normalized_end is not None
+                and child.start < node.normalized_end
+                and child.end > node.normalized_start
+            ]
+            child.metadata["source_node_ids"] = list(dict.fromkeys(source_node_ids))
+            child.metadata["source_provenance_resolution"] = "source_child_overlap"
 
     # Final integrity rule only: parent materialization follows surviving child
     # links without changing child content or boundaries.
@@ -1485,6 +1518,8 @@ def build_canonical_parent_child_plan(
         parents=parents,
         children=children,
         assets=canonical.assets,
+        provenance_nodes=provenance_nodes,
+        figure_links=figure_links,
     )
 
 

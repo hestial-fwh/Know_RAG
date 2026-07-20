@@ -26,18 +26,16 @@
 ```text
 Document 解析完成
 └─ chunk_service.rebuild_document_chunks()
-   ├─ DB chunker_config.enable_parent_child = true
-   │  └─ Canonical Markdown + Old Structure First  【核心维护链路】
-   │
-   └─ DB chunker_config.enable_parent_child = false
-      └─ 按 ParsedBlock 直接物化/兼容切分      【兼容运行链路】
+   └─ Canonical Markdown + Old Structure First  【统一核心维护链路】
+      ├─ enable_parent_child = true：持久化 parent_text
+      └─ enable_parent_child = false：只持久化 child，仍使用同一 Canonical 计划
 ```
 
 **必须注意：**
 
-1. 当前切分分支由 `runtime_config_from_db(db)` 读取数据库中的 `chunker_config` 决定。
-2. 因此，不能只看 `.env` 判断当前环境是否实际启用了父子切分。
-3. 本次压缩包不包含运行中的数据库状态，所以本文可以确认**代码如何分支**，但不能脱离数据库断言某个已部署实例当前一定走哪一条分支。
+1. `runtime_config_from_db(db)` 读取数据库 `chunker_config`；`enable_parent_child` 当前只控制
+   parent context 是否物化，不切换解析/Canonical/child 算法。
+2. 因此，不能只看 `.env` 判断当前环境是否实际持久化 parent_text。
 4. 当前项目重点维护的父子切分方案是：
 
 ```text
@@ -49,7 +47,7 @@ Canonical Markdown
 → 精确 overlap shadow 去重
 → 精确 overlap 短尾合并
 → Parent 0/1 完整性校验
-→ 持久化
+→ 同事务持久化 Chunk + Canonical provenance artifact
 ```
 
 5. `merge_short_text_siblings()` 仍保留在代码中，但**当前生产 `build_canonical_parent_child_plan()` 不调用它**；生产只运行有来源范围和精确文本重叠双重证据的 `merge_overlap_tail_text_children()`。
@@ -194,7 +192,9 @@ backend/app/db/
       ├─ 0006_chunker_config.py           # ChunkerConfig
       ├─ 0007_retrieval_rrf_phase_d.py    # RRF 检索配置
       ├─ 0008_parse_workbench_phase_z.py  # Parse Workbench
-      └─ 0009_parse_eval_plugin_phase_aa.py# 解析评估插件
+      ├─ 0009_parse_eval_plugin_phase_aa.py# 解析评估插件
+      ├─ 0010_parse_event_retention.py    # 解析事件保留策略
+      └─ 0011_canonical_provenance_p25.py # Canonical provenance 当前 revision
 ```
 
 ### `models.py` 中的核心实体
@@ -209,6 +209,7 @@ backend/app/db/
 | `ChunkerConfig` | 切分运行时配置；`enable_parent_child` 在这里决定主分支 |
 | `AuditLog` | 操作审计 |
 | `Document` | 上传文档、解析状态、解析元数据 |
+| `DocumentCanonicalArtifact` | 当前规范化 Canonical、source nodes、assets 与引用证据账本 |
 | `Chunk` | 子块、父块、表格、图片、OCR 文本等统一存储 |
 | `ParseTask` | 解析任务状态 |
 | `ParseTaskEvent` | 运行期临时阶段事件；终态清空，不保存 block/chunk 预览 |
@@ -286,7 +287,8 @@ backend/app/services/document_parser/
 ├─ media_storage.py                       # 解析媒体文件保存
 ├─ block_reflow.py                        # ParsedBlock 重排、OCR 文本修复、标题路径继承 [主链路]
 ├─ image_relation_resolver.py             # 图片 caption 质量、图号歧义、bbox 空间候选与 binding_score [主链路]
-└─ canonical_document.py                  # ParsedDocument → Canonical Markdown + Asset sidecar [核心算法]
+├─ figure_linker.py                       # normalize 后正文图号引用 → asset 候选证据（P2/P2.5）[主链路]
+└─ canonical_document.py                  # Canonical Markdown + asset/source-node provenance [核心算法]
 ```
 
 ### 统一解析中间层
@@ -646,6 +648,12 @@ chunk_service.rebuild_document_chunks()
       │  │  ├─ 超长 fenced code 安全切分
       │  │  └─ 超长 Markdown table 保表头切分
       │  │
+      │  ├─ figure_linker.link_figure_references()
+      │  │  ├─ 排除 asset marker、围栏/内联代码和裸 caption
+      │  │  ├─ 唯一图号 / page 唯一 / section 唯一时确定绑定
+      │  │  ├─ 重复图号无法唯一确定时保留 ambiguous 候选
+      │  │  └─ 保存 page/section/距离/P1 依据与 heuristic_rule_score
+      │  │
       │  ├─ parent_child_splitter.split_parent_child_result()
       │  │  └─ weknora_splitter.split_parent_child()
       │  │     ├─ 第一阶段：Parent 级切分
@@ -669,7 +677,9 @@ chunk_service.rebuild_document_chunks()
       ├─ _enforce_parent_child_integrity()
       ├─ _link_neighbors()
       ├─ _finalize_chunk_skip_flags()
-      ├─ DB flush
+      ├─ _replace_canonical_artifact()
+      │  └─ Canonical Markdown / source nodes / assets / figure evidence
+      ├─ 与 Chunk 在调用方同一事务 DB flush
       └─ keyword_index_service.index_document_chunks()
 ```
 
@@ -1256,6 +1266,7 @@ backend/tests/
 ├─ test_canonical_parent_child_integration.py     # 集成行为
 ├─ test_canonical_pipeline_convergence.py         # Pipeline 收敛
 ├─ test_canonical_overlap_shadow_dedup.py         # overlap shadow 去重
+├─ test_figure_linker.py                           # P2 正文图号提取、消歧与生产计划接入
 ├─ test_canonical_short_sibling_merge.py          # 短兄弟 helper 行为（不代表生产调用）
 ├─ test_chunk_boundary_quality.py                 # 边界质量
 ├─ test_context_header_continuation.py            # 标题上下文继承

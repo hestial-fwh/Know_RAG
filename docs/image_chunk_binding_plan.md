@@ -1,6 +1,6 @@
 # MinerU 主链路图文绑定方案
 
-> 状态：Current（P0、P1 已完成并通过字段链路验收；P2-P5 规划中）
+> 状态：Current（P0-P2.5 已完成并通过链路验收；P3-P5 规划中）
 > 维护日期：2026-07-17
 > 首期范围：MinerU 主解析链路  
 > 非首期范围：RAGFlow/DeepDoc fallback 的高质量图文绑定
@@ -10,7 +10,10 @@
 图文绑定是 Know_RAG 自己的 Canonical/Relation 层能力，不依赖 RAGFlow 运行链路。
 
 当前状态：P0、P1 已完成并通过字段链路验收；低质量 caption、多图号合并及同页空间
-候选问题已在 P1 处理。正文引用到图片 Chunk 的关系仍从 P2 开始。
+候选问题已在 P1 处理。P2 已在 normalize 后的 Canonical Markdown 上生成正文 figure reference
+到 asset 的确定、歧义或未匹配结果。P2.5 已持久化规范化 Canonical Markdown、source node
+provenance、asset sidecar 和完整候选证据；chunk 继承 `source_node_ids`。引用到 text child 的
+精确 range 和 ORM 双侧关系仍由 P3/P4 完成。
 
 - MinerU 是首期可靠输入，提供 caption、footnote、OCR、VLM、page 和 bbox。
 - RAGFlow 是可显式选择的辅助解析器，同时也是 MinerU 整篇解析失败时的文档级 fallback；
@@ -37,9 +40,10 @@ POST /api/v1/documents/{id}/parse
          ├─ build_canonical_document()
          ├─ build_canonical_parent_child_plan()
          │  ├─ normalize_canonical_markdown()
+         │  ├─ provenance grounding + FigureLinker
          │  ├─ parent/child split
          │  └─ image asset materialization
-         └─ 在内存中生成 Chunk，统一替换数据库旧 Chunk
+         └─ 同一事务替换 Chunk 与 document_canonical_artifacts
 ```
 
 生产 RAGFlow 路径是 `ragflow_format_adapter.py`。`ragflow_deepdoc_adapter.py` 不是当前
@@ -137,6 +141,7 @@ MinerU
 → CanonicalDocument
 → Normalize Canonical Markdown（唯一正式坐标空间）
 → FigureLinker（P2）
+→ 持久化 Canonical provenance + evidence ledger（P2.5）
 → Parent/Child split + 精确 source_ranges（P3）
 → 内存中生成全部 Chunk ID
 → asset/range 映射并补全双侧 metadata（P4）
@@ -228,18 +233,60 @@ build_canonical_document()
 
 不能在 normalize 前计算 range；超长代码块和表格归一化可能改变后续字符偏移。
 
-图号规范化至少覆盖：
+图号规范化当前覆盖：
 
 | 输入 | figure_id |
 |---|---|
 | 图1 / Fig.1 / Figure 1 | `figure:1` |
 | 图1-2 / Figure 1.2 | `figure:1-2` |
 | 图1(a) | `figure:1:a` |
+| 图一 | `figure:1` |
+| 图S1 / Fig. S1 | `figure:s1` |
+| 图1、图2 / Figs. 1 and 2 | 两个独立引用 |
 
 重复图号不能仅凭 `figure_id` 强绑定。候选需结合 section、page、source order 和局部距离；
 不能唯一确定时保留候选或不绑定。
 
-## 9. P3：精确 source ranges
+P2 已实现：
+
+- `figure_linker.extract_explicit_figure_references()` 覆盖图/Fig./Figs./Figure/Figures、
+  中文数字、章节号、补充图、子图号和组合引用；
+- 仅识别带“如、见、所示、可见、中、see、as shown in、refer to”等引用语义的正文，
+  排除 `asset://` marker、围栏代码、内联代码和无引用语义的裸 caption；
+- 只使用 P1 `deterministic_binding_allowed=true` 的 asset；唯一图号使用
+  `figure_id_exact`，重复图号优先要求 page 唯一，其次才允许 section 唯一；已知页码全部冲突时
+  不跨页强绑；
+- 其他重复图号保持 `ambiguous` 并按 page、section、局部字符距离、source order 稳定排列候选，
+  不凭最近距离强绑定；
+- 每个候选记录图号相等、P1 分数、caption 方法、page/section 是否相符、source order 距离、
+  字符距离和 `rule_score`；该分数明确标记为 `heuristic_rule_score`，不是概率 confidence；
+- `FigureLinkResult.coordinate_space=normalized_canonical_markdown`，结果先挂在
+  `CanonicalChunkPlan.figure_links`，由 P2.5 随 Canonical artifact 持久化。
+
+## 9. P2.5：Canonical provenance 与证据模型持久化
+
+P2.5 使用文档级当前版本表 `document_canonical_artifacts`，由迁移
+`0011_canonical_provenance_p25.py` 创建。每次成功 reparse/rechunk 生成新 `parse_revision`，并保存：
+
+- `schema_version`、`algorithm_version`、`source_format` 和 `canonical_hash`；
+- 规范化后的 `canonical_markdown`；
+- `provenance_json.nodes`：稳定 `node_id`、node type、source order、原文 hash、page、bbox、
+  section、semantic role、asset ID，以及 normalize 前后字符范围和 resolution；
+- `assets_json.items`：caption/OCR/VLM/空间关系/图号/来源 node 等 asset sidecar；不保存
+  `image_base64`，原始媒体仍由既有文件/对象存储负责；
+- `figure_links_json`：bound/ambiguous/unmatched 结果与所有候选证据；
+- `stats_json`：节点 grounding、asset 和 link 状态统计。
+
+原子性约束：完整 plan 与 Chunk 必须先在内存构建并通过完整性校验，随后在调用方同一数据库
+事务内替换旧 embedding、旧 Chunk 和当前 Canonical artifact。任何 flush/commit 失败均由调用方
+回滚，不允许出现“新 provenance + 旧 chunk”或相反状态。Canonical-empty fallback 成功时删除
+旧 artifact，避免保留与新 Chunk 不一致的账本。
+
+chunk 仅保存必要引用：image child 使用准确的 asset source node；text/table child 在 P3 前保存
+`source_node_ids` 和 `source_provenance_resolution=source_child_overlap`，所有 Canonical chunk 保存
+与 artifact 一致的 `canonical_parse_revision`，不把宽范围伪装成精确范围。
+
+## 10. P3：精确 source ranges
 
 当前 materialize 后的多个 child 共享 source child 宽范围，不能直接用于关系映射。P3 必须为
 图片前正文、图片 marker、图片后正文分别生成 normalized Markdown 字符范围。
@@ -251,7 +298,7 @@ build_canonical_document()
 - `parent_text` 是 context-only，不写入 `reference_chunk_ids`。
 - 关系结果去重并保持文档顺序稳定。
 
-## 10. P4：Chunk 关系物化
+## 11. P4：Chunk 关系物化
 
 现有代码已在内存中生成全部 Chunk，再统一写数据库，因此不需要先写半成品 Chunk。
 
@@ -283,7 +330,8 @@ Phase D：同一事务替换旧 Chunk
     "version": 1,
     "figure_id": "figure:1",
     "binding_method": "figure_id_exact",
-    "binding_score": 0.98,
+    "binding_score": 0.82,
+    "score_kind": "heuristic_rule_score",
     "reference_chunk_ids": ["..."]
   }
 }
@@ -291,7 +339,7 @@ Phase D：同一事务替换旧 Chunk
 
 首期不复用 `relation_chunks` / `indirect_relation_chunks`。
 
-## 11. P5：检索扩展
+## 12. P5：检索扩展
 
 - 命中正文引用时补对应图片 Chunk。
 - 命中图片时补对应正文 child。
@@ -300,29 +348,30 @@ Phase D：同一事务替换旧 Chunk
 - 关系读取或扩展失败时返回原始检索结果。
 - `binding_score` 经标注集校准前不得改名为 confidence。
 
-## 12. 历史数据、开关和回滚
+## 13. 历史数据、开关和回滚
 
-当前数据库不持久化 ParsedBlock、Canonical Markdown 和 CanonicalAsset sidecar，因此 P0-P4 的
-历史文档更新统一使用 reparse。只有未来持久化版本化 canonical artifacts 后才能支持通用
-rechunk。
+当前数据库已持久化规范化 Canonical Markdown、CanonicalAsset sidecar 和 source provenance，
+但旧文档不会自动补齐，首次获得 P2.5 artifact 仍需 reparse。P2.5 保存的是当前 parse revision，
+不是 ParsedBlock 历史版本库；基于 artifact 的通用 rechunk API 尚未开放。
 
 以下能力在代码落地前均标记为 Planned，不能当作当前运维命令：
 
 - 图文绑定批处理脚本；
 - ImageRelation/FigureLinker/检索扩展开关；
-- canonical artifacts 持久化和 rechunk；
+- 基于 canonical artifact 的独立 rechunk API；
 - 前端人工覆盖。
 
 回滚原则：每个后续阶段先提供开关，再扩大生产范围；关系功能关闭时必须退化为当前普通
 text/table/image chunk 检索，不影响文档基础可用性。
 
-## 13. 测试计划
+## 14. 测试计划
 
 | 阶段 | 必测内容 |
 |---|---|
 | P0 | MinerU 字段贯通、footnote 去重、页/标题/步数/tail 边界 |
 | P1 | 同页候选、双栏、不完整 bbox、无候选不绑定 |
 | P2 | 图1≠图10、子图、英文图号、重复图号消歧 |
+| P2.5 | migration、node grounding、页码证据、无 base64 sidecar、chunk refs、同事务 upsert |
 | P3 | normalized range、overlap、图片前后 child 精确范围 |
 | P4 | 双侧 metadata、原子替换、幂等和删除清理 |
 | P5 | 双向扩展、跨文档隔离、数量限制、失败回落 |

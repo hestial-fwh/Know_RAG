@@ -78,6 +78,15 @@ def test_english_and_subfigure_ids_are_normalized():
     ]
 
 
+def test_grouped_supplementary_and_chinese_figure_ids_are_normalized():
+    assert extract_figure_ids("图一、图2（a）及图S3") == [
+        "figure:1",
+        "figure:2:a",
+        "figure:s3",
+    ]
+    assert extract_figure_ids("Figures S1 and S2") == ["figure:s1", "figure:s2"]
+
+
 def test_relation_metadata_reaches_image_chunk():
     parsed = ParsedDocument(
         content="",

@@ -43,6 +43,63 @@ _PARSER_NOISE_ROLES = {"header", "footer", "page_number", "page-number", "pagina
 _FENCE_LINE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})")
 
 
+def _without_binary_payloads(value: Any) -> Any:
+    """Remove parser binary blobs before storing the durable asset ledger."""
+    if isinstance(value, dict):
+        cleaned: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized_key = str(key).strip().lower().replace("-", "_")
+            if normalized_key.endswith("base64") or normalized_key in {
+                "image_bytes",
+                "binary_payload",
+            }:
+                continue
+            cleaned[str(key)] = _without_binary_payloads(item)
+        return cleaned
+    if isinstance(value, (list, tuple)):
+        return [_without_binary_payloads(item) for item in value]
+    if isinstance(value, str) and value.lstrip().lower().startswith("data:image/"):
+        return "[binary image omitted]"
+    return value
+
+
+@dataclass
+class CanonicalSourceNode:
+    node_id: str
+    node_type: str
+    source_order: int
+    canonical_text: str
+    text_hash: str
+    page_no: int | None = None
+    bbox: tuple[float, float, float, float] | None = None
+    section_path: str = ""
+    semantic_role: str = ""
+    asset_id: str = ""
+    canonical_start: int | None = None
+    canonical_end: int | None = None
+    normalized_start: int | None = None
+    normalized_end: int | None = None
+    resolution: str = "canonical_span"
+
+    def to_metadata(self) -> dict[str, Any]:
+        return {
+            "node_id": self.node_id,
+            "node_type": self.node_type,
+            "source_order": self.source_order,
+            "text_hash": self.text_hash,
+            "page_no": self.page_no,
+            "bbox": list(self.bbox) if self.bbox else None,
+            "section_path": self.section_path,
+            "semantic_role": self.semantic_role,
+            "asset_id": self.asset_id,
+            "canonical_start": self.canonical_start,
+            "canonical_end": self.canonical_end,
+            "normalized_start": self.normalized_start,
+            "normalized_end": self.normalized_end,
+            "resolution": self.resolution,
+        }
+
+
 @dataclass
 class CanonicalAsset:
     asset_id: str
@@ -72,6 +129,7 @@ class CanonicalAsset:
     nearby_after: str = ""
     footnote: str = ""
     source_block_order: int = 0
+    source_node_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -79,11 +137,46 @@ class CanonicalAsset:
         alt = _escape_markdown_alt(self.alt_text or self.caption or "图片")
         return f"![{alt}](asset://{self.asset_id})"
 
+    def to_metadata(self) -> dict[str, Any]:
+        """Return the durable asset ledger without embedding binary payloads."""
+        return {
+            "asset_id": self.asset_id,
+            "asset_type": self.asset_type,
+            "alt_text": self.alt_text,
+            "caption": self.caption,
+            "caption_method": self.caption_method,
+            "binding_score": self.binding_score,
+            "ambiguous": self.ambiguous,
+            "caption_ambiguous": self.caption_ambiguous,
+            "footnote_ambiguous": self.footnote_ambiguous,
+            "figure_ids": list(self.figure_ids),
+            "deterministic_binding_allowed": self.deterministic_binding_allowed,
+            "spatial_status": self.spatial_status,
+            "normalized_bbox": list(self.normalized_bbox) if self.normalized_bbox else None,
+            "bbox_coordinate_space": self.bbox_coordinate_space,
+            "selected_candidate_orders": list(self.selected_candidate_orders),
+            "ocr_text": self.ocr_text,
+            "vlm_description": self.vlm_description,
+            "image_path": self.image_path,
+            "image_url": self.image_url,
+            "page_no": self.page_no,
+            "bbox": list(self.bbox) if self.bbox else None,
+            "context_header": self.context_header,
+            "nearby_before": self.nearby_before,
+            "nearby_after": self.nearby_after,
+            "footnote": self.footnote,
+            "source_block_order": self.source_block_order,
+            "source_node_id": self.source_node_id,
+            "metadata": _without_binary_payloads(self.metadata),
+            "binary_payload_persisted": False,
+        }
+
 
 @dataclass
 class CanonicalDocument:
     markdown_content: str
     assets: dict[str, CanonicalAsset] = field(default_factory=dict)
+    provenance_nodes: list[CanonicalSourceNode] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     source_format: str = ""
 
@@ -614,6 +707,101 @@ def _asset_id(block: ParsedBlock, ordinal: int) -> str:
     return f"image-{ordinal:04d}-{digest}"
 
 
+def _source_node_id(block: ParsedBlock, canonical_text: str) -> str:
+    raw = "|".join(
+        [
+            str(block.order_index),
+            block.block_type,
+            str(block.page_no or ""),
+            str(block.bbox or ""),
+            hashlib.sha256(canonical_text.encode("utf-8", errors="ignore")).hexdigest(),
+        ]
+    )
+    return f"node-{block.order_index:06d}-{hashlib.sha1(raw.encode()).hexdigest()[:12]}"
+
+
+def _node_section_path(block: ParsedBlock) -> str:
+    meta = _block_meta(block)
+    heading_path = meta.get("heading_path")
+    if isinstance(heading_path, (list, tuple)):
+        return " > ".join(str(item).strip() for item in heading_path if str(item).strip())
+    return normalize_extracted_rich_text(block.context_header).strip()
+
+
+def _make_source_node(
+    block: ParsedBlock,
+    canonical_text: str,
+    *,
+    asset_id: str = "",
+) -> CanonicalSourceNode:
+    value = _preserve_text(canonical_text)
+    semantic_role = _block_role(block)
+    if _block_meta(block).get("is_caption") is True and not semantic_role:
+        semantic_role = "caption"
+    return CanonicalSourceNode(
+        node_id=_source_node_id(block, value),
+        node_type=block.block_type,
+        source_order=block.order_index,
+        canonical_text=value,
+        text_hash=hashlib.sha256(value.encode("utf-8", errors="ignore")).hexdigest(),
+        page_no=block.page_no,
+        bbox=valid_bbox(block.bbox),
+        section_path=_node_section_path(block),
+        semantic_role=semantic_role,
+        asset_id=asset_id,
+    )
+
+
+def _position_canonical_nodes(
+    parts: list[str],
+    nodes: list[CanonicalSourceNode],
+) -> list[CanonicalSourceNode]:
+    positioned: list[CanonicalSourceNode] = []
+    offset = 0
+    for index, (part, node) in enumerate(zip(parts, nodes, strict=True)):
+        start = offset
+        end = start + len(part)
+        positioned.append(replace(node, canonical_start=start, canonical_end=end))
+        offset = end + (2 if index < len(parts) - 1 else 0)
+    return positioned
+
+
+def ground_canonical_provenance(
+    normalized_markdown: str,
+    nodes: list[CanonicalSourceNode],
+) -> list[CanonicalSourceNode]:
+    """Ground source nodes into normalized Markdown without guessing duplicates."""
+    text = _preserve_text(normalized_markdown)
+    grounded: list[CanonicalSourceNode] = []
+    cursor = 0
+    for node in nodes:
+        needle = node.canonical_text
+        position = text.find(needle, cursor) if needle else -1
+        if position < 0 and needle and text.count(needle) == 1:
+            position = text.find(needle)
+        if position < 0:
+            grounded.append(
+                replace(
+                    node,
+                    normalized_start=None,
+                    normalized_end=None,
+                    resolution="source_node_only",
+                )
+            )
+            continue
+        end = position + len(needle)
+        grounded.append(
+            replace(
+                node,
+                normalized_start=position,
+                normalized_end=end,
+                resolution="normalized_span",
+            )
+        )
+        cursor = end
+    return grounded
+
+
 # ---------------------------------------------------------------------------
 # Canonicalization
 # ---------------------------------------------------------------------------
@@ -649,9 +837,15 @@ def build_canonical_document(
     )
     if source_format in {"md", "markdown"} and _preserve_text(authoritative_source).strip():
         markdown = _preserve_text(authoritative_source)
+        source_block = ParsedBlock(block_type="text", text=markdown, order_index=0)
+        provenance_nodes = _position_canonical_nodes(
+            [markdown],
+            [_make_source_node(source_block, markdown)],
+        )
         return CanonicalDocument(
             markdown_content=markdown,
             assets=assets,
+            provenance_nodes=provenance_nodes,
             metadata={
                 **(parsed_document.metadata or {}),
                 "canonical_markdown": True,
@@ -663,9 +857,15 @@ def build_canonical_document(
 
     if not blocks:
         markdown, noise_lines_dropped = _clean_non_native_fallback_content(parsed_document.content)
+        source_block = ParsedBlock(block_type="text", text=markdown, order_index=0)
+        provenance_nodes = _position_canonical_nodes(
+            [markdown],
+            [_make_source_node(source_block, markdown)],
+        ) if markdown else []
         return CanonicalDocument(
             markdown_content=markdown,
             assets=assets,
+            provenance_nodes=provenance_nodes,
             metadata={
                 **(parsed_document.metadata or {}),
                 "canonical_markdown": True,
@@ -678,6 +878,7 @@ def build_canonical_document(
         )
 
     parts: list[str] = []
+    provenance_nodes: list[CanonicalSourceNode] = []
     image_ordinal = 0
     repeated_numeric_noise_indexes = _repeated_numeric_noise_block_indexes(blocks)
     for index, block in enumerate(blocks):
@@ -692,13 +893,17 @@ def build_canonical_document(
                 continue
             value = _as_markdown_text(block, clean_text)
             if value.strip():
-                parts.append(value.strip("\n"))
+                part = value.strip("\n")
+                parts.append(part)
+                provenance_nodes.append(_make_source_node(block, part))
             continue
 
         if block.block_type == "table":
             value = _table_markdown(block)
             if value.strip():
-                parts.append(value.strip("\n"))
+                part = value.strip("\n")
+                parts.append(part)
+                provenance_nodes.append(_make_source_node(block, part))
             continue
 
         if block.block_type == "image":
@@ -778,12 +983,17 @@ def build_canonical_document(
                 metadata=asset_metadata,
             )
             assets[asset_id] = asset
-            parts.append(asset.marker)
+            marker_text = asset.marker
+            asset.source_node_id = _source_node_id(block, marker_text)
+            parts.append(marker_text)
+            provenance_nodes.append(_make_source_node(block, marker_text, asset_id=asset_id))
 
     markdown = "\n\n".join(part for part in parts if part.strip())
+    provenance_nodes = _position_canonical_nodes(parts, provenance_nodes)
     return CanonicalDocument(
         markdown_content=markdown,
         assets=assets,
+        provenance_nodes=provenance_nodes,
         metadata={
             **(parsed_document.metadata or {}),
             "canonical_markdown": True,
@@ -812,7 +1022,9 @@ def strip_image_asset_refs(text: str) -> str:
 __all__ = [
     "CanonicalAsset",
     "CanonicalDocument",
+    "CanonicalSourceNode",
     "build_canonical_document",
     "find_image_asset_refs",
+    "ground_canonical_provenance",
     "strip_image_asset_refs",
 ]

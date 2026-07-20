@@ -169,6 +169,45 @@ class Document(Base):
         back_populates="document",
         cascade="all, delete-orphan",
     )
+    canonical_artifact: Mapped["DocumentCanonicalArtifact | None"] = relationship(
+        back_populates="document",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class DocumentCanonicalArtifact(Base):
+    """Current versioned Canonical IR and deterministic provenance ledger."""
+
+    __tablename__ = "document_canonical_artifacts"
+
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    knowledge_base_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    parse_revision: Mapped[str] = mapped_column(String(36), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    algorithm_version: Mapped[str] = mapped_column(String(64), nullable=False, default="p2.5-v1")
+    source_format: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    canonical_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    canonical_markdown: Mapped[str] = mapped_column(Text, nullable=False)
+    provenance_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    assets_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    figure_links_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    stats_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    document: Mapped[Document] = relationship(back_populates="canonical_artifact")
 
 
 class Chunk(Base):

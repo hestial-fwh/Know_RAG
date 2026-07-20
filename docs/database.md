@@ -1,7 +1,7 @@
 # Database
 
 > 状态：Current（后续 Phase 小节为历史增量记录）
-> 维护日期：2026-07-15
+> 维护日期：2026-07-17
 
 执行迁移：
 
@@ -23,6 +23,21 @@ CREATE EXTENSION IF NOT EXISTS vector;
 `ELASTICSEARCH_FALLBACK_TO_SQL=true` 时，Elasticsearch 故障才回退到 ILIKE。
 
 ## 主要表
+
+### document_canonical_artifacts
+
+迁移 `0011_canonical_provenance_p25.py` 为每个文档保存一份当前 Canonical revision：
+
+- 主键 `document_id`，删除 document 时级联删除；
+- `parse_revision`、`schema_version`、`algorithm_version` 用于区分数据和算法版本；
+- `canonical_hash` 与 `canonical_markdown` 保存规范化后的正式切分输入；
+- `provenance_json` 保存 source node、页码、bbox、语义角色和 normalize 前后字符范围；
+- `assets_json` 保存不含图片 base64 的 asset sidecar；
+- `figure_links_json` 保存引用状态和完整候选证据；
+- `stats_json` 保存 grounding、asset 和引用状态统计。
+
+该表与新 chunks 在 `rebuild_document_chunks()` 的同一调用方事务内替换。它是当前 revision
+账本，不是 ParsedBlock 历史归档；旧文档需要 reparse 才会生成记录。
 
 ### chunk_embeddings
 

@@ -9,7 +9,14 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.response import error_response, success_response
-from app.db.models import Chunk, ChunkEmbedding, Document, KnowledgeBase, User
+from app.db.models import (
+    Chunk,
+    ChunkEmbedding,
+    Document,
+    DocumentCanonicalArtifact,
+    KnowledgeBase,
+    User,
+)
 from app.services.audit_service import record_audit
 from app.services.chunker import split_document
 from app.services.chunker.boundary_utils import is_leading_punctuation, strip_invalid_leading_punctuation  # legacy — rarely needed after sentence-unit refactor
@@ -1054,6 +1061,8 @@ def _rebuild_canonical_weknora_parent_child(
     parsed_document: ParsedDocument,
     file_type: str,
     cfg,
+    *,
+    artifact_out: dict[str, Any] | None = None,
 ) -> tuple[list[Chunk], int]:
     """Unified parent/child path for every parser output.
 
@@ -1122,6 +1131,43 @@ def _rebuild_canonical_weknora_parent_child(
         enable_image_ocr_child=False,
     )
     plan = build_canonical_parent_child_plan(canonical, runtime_cfg)
+    if artifact_out is not None:
+        link_status_counts: dict[str, int] = {}
+        for link in plan.figure_links.links:
+            link_status_counts[link.status] = link_status_counts.get(link.status, 0) + 1
+        resolution_counts: dict[str, int] = {}
+        for node in plan.provenance_nodes:
+            resolution_counts[node.resolution] = resolution_counts.get(node.resolution, 0) + 1
+        artifact_out.update(
+            {
+                "parse_revision": new_id(),
+                "schema_version": 1,
+                "algorithm_version": "canonical-provenance-p2.5-v1",
+                "source_format": canonical.source_format,
+                "canonical_hash": hashlib.sha256(
+                    plan.markdown_content.encode("utf-8")
+                ).hexdigest(),
+                "canonical_markdown": plan.markdown_content,
+                "provenance_json": {
+                    "version": 1,
+                    "coordinate_space": "normalized_canonical_markdown",
+                    "nodes": [node.to_metadata() for node in plan.provenance_nodes],
+                },
+                "assets_json": {
+                    "version": 1,
+                    "items": [asset.to_metadata() for asset in plan.assets.values()],
+                },
+                "figure_links_json": plan.figure_links.to_metadata(),
+                "stats_json": {
+                    "canonical_chars": len(plan.markdown_content),
+                    "provenance_node_count": len(plan.provenance_nodes),
+                    "provenance_resolution_counts": resolution_counts,
+                    "asset_count": len(plan.assets),
+                    "figure_link_count": len(plan.figure_links.links),
+                    "figure_link_status_counts": link_status_counts,
+                },
+            }
+        )
 
     parent_ids = {
         parent.parent_index: new_id()
@@ -1214,6 +1260,16 @@ def _rebuild_canonical_weknora_parent_child(
         chunk.content_hash = content_hash(chunk.content)
         new_chunks.append(chunk)
 
+    parse_revision = str((artifact_out or {}).get("parse_revision") or "")
+    if parse_revision:
+        for chunk in new_chunks:
+            chunk.metadata_json = sanitize_json_for_postgres(
+                {
+                    **(chunk.metadata_json or {}),
+                    "canonical_parse_revision": parse_revision,
+                }
+            )
+
     logger.info(
         "Canonical WeKnora parent-child split: document_id=%s file_type=%s "
         "canonical_chars=%s assets=%s parents=%s children=%s parent_size=%s child_size=%s",
@@ -1238,6 +1294,8 @@ def _rebuild_canonical_weknora_parent_child(
             document, parsed_document, file_type, cfg
         )
         if fallback_inserted:
+            if artifact_out is not None:
+                artifact_out.clear()
             return fallback_chunks, fallback_inserted
 
     return new_chunks, len(new_chunks)
@@ -2341,6 +2399,39 @@ def _rebuild_document_chunks_structured_parent_child(
 
     return new_chunks, inserted
 
+def _replace_canonical_artifact(
+    db: Session,
+    document: Document,
+    payload: dict[str, Any],
+) -> None:
+    """Replace the current Canonical artifact inside the chunk transaction."""
+    artifact = db.get(DocumentCanonicalArtifact, document.id)
+    if not payload:
+        if artifact is not None:
+            db.delete(artifact)
+        return
+    if artifact is None:
+        artifact = DocumentCanonicalArtifact(
+            document_id=document.id,
+            knowledge_base_id=document.knowledge_base_id,
+            parse_revision=str(payload["parse_revision"]),
+            canonical_hash=str(payload["canonical_hash"]),
+            canonical_markdown=str(payload["canonical_markdown"]),
+        )
+    artifact.knowledge_base_id = document.knowledge_base_id
+    artifact.parse_revision = str(payload["parse_revision"])
+    artifact.schema_version = int(payload["schema_version"])
+    artifact.algorithm_version = str(payload["algorithm_version"])
+    artifact.source_format = str(payload["source_format"])
+    artifact.canonical_hash = str(payload["canonical_hash"])
+    artifact.canonical_markdown = str(payload["canonical_markdown"])
+    artifact.provenance_json = sanitize_json_for_postgres(payload["provenance_json"])
+    artifact.assets_json = sanitize_json_for_postgres(payload["assets_json"])
+    artifact.figure_links_json = sanitize_json_for_postgres(payload["figure_links_json"])
+    artifact.stats_json = sanitize_json_for_postgres(payload["stats_json"])
+    db.add(artifact)
+
+
 def rebuild_document_chunks(
     db: Session,
     document: Document,
@@ -2364,11 +2455,13 @@ def rebuild_document_chunks(
     # selects a completely different parsing/chunking algorithm.
     use_canonical_parent_child = True
 
+    canonical_artifact: dict[str, Any] = {}
     new_chunks, inserted = _rebuild_canonical_weknora_parent_child(
         document,
         parsed_document,
         file_type,
         cfg,
+        artifact_out=canonical_artifact,
     )
     if not use_canonical_parent_child:  # retained legacy implementation for compatibility only
         for block in sorted(blocks, key=lambda item: item.order_index):
@@ -2553,6 +2646,7 @@ def rebuild_document_chunks(
     # transaction, so any later failure restores the previous rows.
     db.query(ChunkEmbedding).filter(ChunkEmbedding.document_id == document.id).delete(synchronize_session=False)
     db.query(Chunk).filter(Chunk.document_id == document.id).delete(synchronize_session=False)
+    _replace_canonical_artifact(db, document, canonical_artifact)
 
     for chunk in new_chunks:
         if isinstance(chunk, Chunk):

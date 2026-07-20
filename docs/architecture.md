@@ -31,8 +31,9 @@ Gateway (:8483) ────────▶ FastAPI + MCP
 → ParsedDocument / ParsedBlock
 → 展示型富文本规范化（代码围栏除外）
 → Canonical Markdown + Asset Sidecar
+→ normalize 后 provenance grounding + FigureLinker
 → Parent/Child 或 flat compatibility chunk
-→ PostgreSQL chunks
+→ 同事务写 PostgreSQL chunks + document_canonical_artifacts
 → pgvector / 可选外部向量库 + Elasticsearch BM25
 → Hybrid Retrieval / KnowledgeContextService / MCP
 ```
@@ -40,13 +41,22 @@ Gateway (:8483) ────────▶ FastAPI + MCP
 图片语义首期以 MinerU 主路径为可靠输入：MinerU adapter 将 caption、footnote、OCR、page
 和 bbox 标准化到 `ParsedBlock`，随后 `vision_service.enhance_image_blocks()` 补充 VLM 描述，
 Canonical 层再写入 Asset Sidecar 和 image child。RAGFlow 可作为显式辅助解析器或 MinerU
-文档级 fallback，但不是 MinerU 图文绑定的运行依赖；正文引用与图片的持久化关系仍属于后续阶段。
+文档级 fallback，但不是 MinerU 图文绑定的运行依赖。P2.5 已持久化 Canonical provenance 和
+引用候选证据；正文引用与具体 text chunk 的双侧物化仍属于 P3/P4。
 
 Canonical 构建图片 asset 前会调用 `image_relation_resolver`：过滤与 OCR 重复的纯编号 caption，
 将包含多个不同图号的单图 caption 标记为 ambiguous，并在 MinerU 原生字段缺失时使用归一化
 同页 bbox、水平重叠、垂直距离和阅读顺序选择唯一 caption/footnote 候选。候选不唯一或坐标
 不可靠时保持图片 Chunk 可用但禁止确定绑定；同页候选会先进行多图片所有权判定，caption 与
 footnote 歧义分别记录，脚注冲突不会污染可靠 caption 的图号绑定资格。
+
+`figure_linker` 在 Canonical normalize 后、父子切分前识别“如图 1 所示 / see Fig. 1”等
+显式正文引用，只链接 P1 允许确定绑定的 asset。唯一图号直接绑定；重复图号按 page、section
+依次要求唯一证据，否则保留 ambiguous 候选。规则分、页/章节匹配和距离等候选证据随
+`document_canonical_artifacts` 持久化，明确不冒充概率 confidence。source node 保留 page、bbox、
+source order、semantic role 和 normalize 前后字符范围；chunk 继承必要的 `source_node_ids`。
+chunk 的 `canonical_parse_revision` 与当前 artifact 对齐；text child 精确范围和 ORM 双侧
+metadata 属于 P3/P4。
 
 非 Markdown parser 输出进入 Canonical 前会移除 `<sub>/<sup>/<span>/<font>/<em>` 等展示型
 HTML 标签并保留标签内文本；脚本、样式和 SVG 内容不进入检索正文。围栏代码及

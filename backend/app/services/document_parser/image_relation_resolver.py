@@ -7,11 +7,20 @@ import re
 import unicodedata
 
 
-_FIGURE_REF_RE = re.compile(
-    r"(?:图|fig(?:ure)?\.?)\s*"
-    r"([0-9]+(?:\s*[-.]\s*[0-9]+)?(?:\s*\([a-z]\))?)",
+_FIGURE_LABEL_PATTERN = r"(?:图|fig(?:s|ure|ures)?\.?)"
+_CHINESE_FIGURE_NUMBER_PATTERN = r"[一二三四五六七八九十百]+"
+_FIGURE_TOKEN_PATTERN = (
+    rf"(?:[Ss]\s*[-.]?\s*)?(?:[0-9]+|{_CHINESE_FIGURE_NUMBER_PATTERN})"
+    r"(?:\s*[-.]\s*[0-9]+)?"
+    r"(?:\s*[（(]\s*[A-Za-z0-9]\s*[）)]|[A-Za-z])?"
+)
+_FIGURE_GROUP_RE = re.compile(
+    rf"{_FIGURE_LABEL_PATTERN}\s*(?P<body>{_FIGURE_TOKEN_PATTERN}"
+    rf"(?:\s*(?:、|,|，|和|及|与|&|and)\s*(?:{_FIGURE_LABEL_PATTERN}\s*)?"
+    rf"{_FIGURE_TOKEN_PATTERN})*)",
     re.IGNORECASE,
 )
+_FIGURE_TOKEN_RE = re.compile(_FIGURE_TOKEN_PATTERN, re.IGNORECASE)
 _IDENTIFIER_RE = re.compile(
     r"^[A-Za-z0-9]+(?:[\s,._:/-][A-Za-z0-9]+)*(?:\s*[x×])?$",
     re.IGNORECASE,
@@ -42,23 +51,56 @@ def relation_text_key(value: str) -> str:
     return _normalize_text(value).casefold()
 
 
-def _normalize_figure_id(token: str) -> str:
-    value = re.sub(r"\s+", "", token).lower()
+def _chinese_number_to_int(value: str) -> int | None:
+    digits = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    if value in digits:
+        return digits[value]
+    if "百" in value:
+        left, right = value.split("百", 1)
+        hundreds = digits.get(left, 1) * 100
+        if not right:
+            return hundreds
+        tail = _chinese_number_to_int(right)
+        return hundreds + tail if tail is not None else None
+    if "十" in value:
+        left, right = value.split("十", 1)
+        tens = digits.get(left, 1) * 10
+        return tens + (digits.get(right, 0) if right else 0)
+    return None
+
+
+def normalize_figure_token(token: str) -> str:
+    value = re.sub(r"\s+", "", unicodedata.normalize("NFKC", token)).lower()
     subfigure = ""
-    match = re.search(r"\(([a-z])\)$", value)
+    match = re.search(r"\(([a-z0-9])\)$", value)
     if match:
         subfigure = f":{match.group(1)}"
         value = value[: match.start()]
+    else:
+        trailing = re.search(r"(?<=\d)([a-z])$", value)
+        if trailing:
+            subfigure = f":{trailing.group(1)}"
+            value = value[: trailing.start()]
+    supplementary = value.startswith("s")
+    if supplementary:
+        value = value[1:].lstrip("-.")
+    chinese_match = re.match(rf"^({_CHINESE_FIGURE_NUMBER_PATTERN})", value)
+    if chinese_match:
+        number = _chinese_number_to_int(chinese_match.group(1))
+        if number is not None:
+            value = str(number) + value[chinese_match.end() :]
     value = value.replace(".", "-")
-    return f"figure:{value}{subfigure}"
+    prefix = "s" if supplementary else ""
+    return f"figure:{prefix}{value}{subfigure}"
 
 
 def extract_figure_ids(caption: str) -> list[str]:
     figure_ids: list[str] = []
-    for match in _FIGURE_REF_RE.finditer(_normalize_text(caption)):
-        figure_id = _normalize_figure_id(match.group(1))
-        if figure_id not in figure_ids:
-            figure_ids.append(figure_id)
+    for group in _FIGURE_GROUP_RE.finditer(_normalize_text(caption)):
+        for token in _FIGURE_TOKEN_RE.finditer(group.group("body")):
+            figure_id = normalize_figure_token(token.group(0))
+            if figure_id not in figure_ids:
+                figure_ids.append(figure_id)
     return figure_ids
 
 
@@ -383,6 +425,7 @@ __all__ = [
     "SpatialRelationCandidate",
     "extract_figure_ids",
     "normalize_bbox",
+    "normalize_figure_token",
     "relation_text_key",
     "resolve_image_relation",
     "score_spatial_candidate",
