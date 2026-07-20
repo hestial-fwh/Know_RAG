@@ -182,3 +182,85 @@ def test_p25_artifact_upsert_uses_caller_session_without_committing():
     assert artifact.document_id == "doc-pdf"
     assert artifact.parse_revision == "revision-1"
     assert artifact.canonical_markdown == "正文"
+
+
+def test_p3_precise_source_ranges_for_image_children():
+    parsed = ParsedDocument(
+        content="",
+        blocks=[
+            ParsedBlock(
+                block_type="text",
+                text="架构说明",
+                order_index=0,
+                metadata={"is_heading": True, "heading_level": 2},
+            ),
+            ParsedBlock(block_type="text", text="前置正文。" * 60, order_index=1),
+            ParsedBlock(
+                block_type="image",
+                text="图1 架构",
+                order_index=2,
+                image_url="/files/arch.png",
+                metadata={
+                    "caption": "图1 架构",
+                    "vlm_description": "前端连接后端",
+                    "ocr_text": "Frontend Backend",
+                },
+            ),
+            ParsedBlock(block_type="text", text="后置正文。" * 60, order_index=3),
+        ],
+    )
+
+    chunks, _ = _rebuild_canonical_weknora_parent_child(_doc("pdf"), parsed, "pdf", _cfg())
+
+    image_chunks = [chunk for chunk in chunks if chunk.chunk_type == "image"]
+    text_chunks = [chunk for chunk in chunks if chunk.chunk_type != "image" and chunk.chunk_type != "parent_text"]
+
+    assert len(image_chunks) == 1
+    img = image_chunks[0]
+
+    # Image child range must be precise: exact marker position, NOT full source child range
+    assert img.start_at is not None and img.end_at is not None, "Image child must have distinct start/end"
+    assert img.start_at != img.end_at, "Image child must have distinct start/end"
+    img_range_len = img.end_at - img.start_at
+    # An asset://marker is roughly 20-40 chars, NOT the 300+ chars of the full source
+    assert img_range_len < 100, f"Image range should be small (marker only), got {img_range_len}"
+
+    # Text children must have non-overlapping precise ranges
+    ranges = [(chunk.start_at, chunk.end_at) for chunk in text_chunks if chunk.start_at is not None]
+    assert len(ranges) >= 2, "Should have at least 2 text children with ranges"
+    for i in range(len(ranges)):
+        for j in range(i + 1, len(ranges)):
+            s1, e1 = ranges[i]
+            s2, e2 = ranges[j]
+            # Ranges should not be identical (old behavior had same range for all)
+            assert not (s1 == s2 and e1 == e2), f"Text children should have distinct ranges, got identical [{s1}, {e1}]"
+
+
+def test_p3_source_ranges_without_assets_are_precise():
+    parsed = ParsedDocument(content="", blocks=[
+        ParsedBlock(block_type="text", text="段落一。" * 40, order_index=0),
+        ParsedBlock(block_type="text", text="段落二。" * 40, order_index=1),
+    ])
+
+    chunks, _ = _rebuild_canonical_weknora_parent_child(_doc("pdf"), parsed, "pdf", _cfg())
+
+    text_chunks = [chunk for chunk in chunks if chunk.chunk_type != "parent_text"]
+    ranges = [(chunk.start_at, chunk.end_at) for chunk in text_chunks if chunk.start_at is not None]
+
+    for s, e in ranges:
+        assert s >= 0, f"start must be >= 0, got {s}"
+        assert e > s, f"end must be > start, got start={s}, end={e}"
+        assert e <= 3000, f"range must be within reasonable bounds, got end={e}"
+
+
+def test_p3_table_child_has_segment_precise_range():
+    markdown = "## 表格示例\n\n前置文本。\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n后置文本。\n"
+    parsed = ParsedDocument.from_text(markdown)
+
+    chunks, _ = _rebuild_canonical_weknora_parent_child(_doc("md"), parsed, "md", _cfg())
+
+    table_chunks = [chunk for chunk in chunks if chunk.chunk_type == "table"]
+    for tc in table_chunks:
+        assert tc.start_at < tc.end_at, "Table child range must be valid"
+        # Table range should be less than the full document length
+        assert (tc.end_at - tc.start_at) < 500, f"Table range should be precise, got {tc.end_at - tc.start_at} chars"

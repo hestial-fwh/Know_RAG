@@ -1,6 +1,6 @@
 # MinerU 主链路图文绑定方案
 
-> 状态：Current（P0-P2.5 已完成并通过链路验收；P3-P5 规划中）
+> 状态：Current（P0-P3 已完成并通过链路验收；P4-P5 规划中）
 > 维护日期：2026-07-17
 > 首期范围：MinerU 主解析链路  
 > 非首期范围：RAGFlow/DeepDoc fallback 的高质量图文绑定
@@ -288,8 +288,8 @@ chunk 仅保存必要引用：image child 使用准确的 asset source node；te
 
 ## 10. P3：精确 source ranges
 
-当前 materialize 后的多个 child 共享 source child 宽范围，不能直接用于关系映射。P3 必须为
-图片前正文、图片 marker、图片后正文分别生成 normalized Markdown 字符范围。
+P3 已实现。精确 source ranges 规范如下：
+每个 child 在 normalized Canonical Markdown 中拥有独立字符偏移。
 
 约束：
 

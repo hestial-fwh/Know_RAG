@@ -570,11 +570,11 @@ def compose_image_child_content(
     return _truncate(content, max_total)
 
 
-def _split_pipe_table_segments(text: str) -> list[tuple[str, str]]:
+def _split_pipe_table_segments(text: str) -> list[tuple[str, str, int, int]]:
     lines = _preserve(text).splitlines(keepends=True)
     if not lines:
         return []
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, int, int]] = []
     text_start = 0
     index = 0
     fence = ""
@@ -592,34 +592,53 @@ def _split_pipe_table_segments(text: str) -> list[tuple[str, str]]:
             continue
         if index + 1 < len(lines) and "|" in line and _is_table_delimiter_line(lines[index + 1]):
             if index > text_start:
-                out.append(("text", "".join(lines[text_start:index])))
+                out.append(("text", "".join(lines[text_start:index]), text_start, index))
             end = index + 2
             while end < len(lines) and lines[end].strip() and "|" in lines[end]:
                 end += 1
-            out.append(("table", "".join(lines[index:end])))
+            out.append(("table", "".join(lines[index:end]), index, end))
             index = end
             text_start = end
             continue
         index += 1
     if text_start < len(lines):
-        out.append(("text", "".join(lines[text_start:])))
-    return [(kind, value) for kind, value in out if value.strip()]
+        out.append(("text", "".join(lines[text_start:]), text_start, len(lines)))
+    result: list[tuple[str, str, int, int]] = []
+    for kind, value, line_start, line_end in out:
+        if not value.strip():
+            continue
+        char_start = sum(len(lines[i]) for i in range(line_start))
+        char_end = char_start + len(value)
+        result.append((kind, value, char_start, char_end))
+    return result
 
 
-def _split_table_segments(text: str) -> list[tuple[str, str]]:
+def _split_table_segments(text: str) -> list[tuple[str, str, int, int]]:
     value = _preserve(text)
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, int, int]] = []
     cursor = 0
     for match in _HTML_TABLE_FIND_RE.finditer(value):
         before = value[cursor:match.start()]
         if before.strip():
-            out.extend(_split_pipe_table_segments(before) or [("text", before)])
-        out.append(("table", match.group(0)))
+            before_segments = _split_pipe_table_segments(before)
+            if before_segments:
+                for kind, seg_text, seg_start, seg_end in before_segments:
+                    out.append((kind, seg_text, cursor + seg_start, cursor + seg_end))
+            else:
+                out.append(("text", before, cursor, match.start()))
+        out.append(("table", match.group(0), match.start(), match.end()))
         cursor = match.end()
     tail = value[cursor:]
     if tail.strip():
-        out.extend(_split_pipe_table_segments(tail) or [("text", tail)])
-    return out or ([('text', value)] if value.strip() else [])
+        tail_segments = _split_pipe_table_segments(tail)
+        if tail_segments:
+            for kind, seg_text, seg_start, seg_end in tail_segments:
+                out.append((kind, seg_text, cursor + seg_start, cursor + seg_end))
+        else:
+            out.append(("text", tail, cursor, len(value)))
+    if not out and value.strip():
+        out.append(('text', value, 0, len(value)))
+    return out
 
 
 def _emit_table_child(
@@ -694,6 +713,7 @@ def _materialize_text_segment_with_assets(
     text: str,
     *,
     child_size: int,
+    segment_offset: int = 0,
 ) -> list[CanonicalChildDraft]:
     text = _preserve(text)
     refs = find_image_asset_refs(text)
@@ -711,8 +731,8 @@ def _materialize_text_segment_with_assets(
             text=text,
             parent_index=source_child.parent_index,
             context_header=source_child.context_header,
-            start=source_child.start,
-            end=source_child.end,
+            start=segment_offset,
+            end=segment_offset + len(text),
             source_child_seq=source_child.seq,
             metadata=base_meta,
         )
@@ -721,24 +741,29 @@ def _materialize_text_segment_with_assets(
     children: list[CanonicalChildDraft] = []
     cursor = 0
     pending_structure = ""
+    pending_structure_start: int = 0
 
     for ref_index, (asset_id, alt, start, end) in enumerate(refs):
         before = text[cursor:start]
         if before.strip():
             if is_structural_only(before):
+                if not pending_structure:
+                    pending_structure_start = cursor
                 pending_structure = _join_context(pending_structure, before)
             else:
+                emit_start = segment_offset + (pending_structure_start if pending_structure else cursor)
                 _emit_plain_child(
                     children,
                     text=_join_context(pending_structure, before),
                     parent_index=source_child.parent_index,
                     context_header=source_child.context_header,
-                    start=source_child.start,
-                    end=source_child.end,
+                    start=emit_start,
+                    end=segment_offset + start,
                     source_child_seq=source_child.seq,
                     metadata=base_meta,
                 )
                 pending_structure = ""
+                pending_structure_start = 0
 
         asset = canonical.assets.get(asset_id)
         if asset is not None:
@@ -789,8 +814,8 @@ def _materialize_text_segment_with_assets(
                     chunk_type="image",
                     parent_index=source_child.parent_index,
                     context_header=image_context,
-                    start=source_child.start,
-                    end=source_child.end,
+                    start=segment_offset + start,
+                    end=segment_offset + end,
                     source_child_seq=source_child.seq,
                     metadata=metadata,
                     image_info=_asset_image_info(asset),
@@ -805,23 +830,30 @@ def _materialize_text_segment_with_assets(
                 )
             )
         cursor = end
+        if asset is None:
+            pending_structure = ""
+            pending_structure_start = 0
 
     after = text[cursor:]
     if after.strip():
         if is_structural_only(after):
+            if not pending_structure:
+                pending_structure_start = cursor
             pending_structure = _join_context(pending_structure, after)
         else:
+            emit_start = segment_offset + (pending_structure_start if pending_structure else cursor)
             _emit_plain_child(
                 children,
                 text=_join_context(pending_structure, after),
                 parent_index=source_child.parent_index,
                 context_header=source_child.context_header,
-                start=source_child.start,
-                end=source_child.end,
+                start=emit_start,
+                end=segment_offset + len(text),
                 source_child_seq=source_child.seq,
                 metadata=base_meta,
             )
             pending_structure = ""
+            pending_structure_start = 0
 
     return children
 
@@ -840,15 +872,15 @@ def _materialize_source_child(
         "canonical_source": canonical.metadata.get("canonical_source"),
         "canonical_source_format": canonical.source_format,
     }
-    for kind, segment in _split_table_segments(source_child.content):
+    for kind, segment, seg_start, seg_end in _split_table_segments(source_child.content):
         if kind == "table":
             _emit_table_child(
                 children,
                 text=segment,
                 parent_index=source_child.parent_index,
                 context_header=source_child.context_header,
-                start=source_child.start,
-                end=source_child.end,
+                start=source_child.start + seg_start,
+                end=source_child.start + seg_end,
                 source_child_seq=source_child.seq,
                 metadata=base_meta,
             )
@@ -859,6 +891,7 @@ def _materialize_source_child(
                     canonical,
                     segment,
                     child_size=child_size,
+                    segment_offset=source_child.start + seg_start,
                 )
             )
     return children
