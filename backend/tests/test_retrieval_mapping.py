@@ -13,6 +13,7 @@ class RetrievalMappingTests(unittest.TestCase):
             knowledge_base_id="kb_1",
             title="文档标题",
             file_name="demo.md",
+            file_hash="sha256-demo",
             knowledge_source="file",
             knowledge_channel="local",
             parse_status="parsed",
@@ -36,6 +37,7 @@ class RetrievalMappingTests(unittest.TestCase):
     def test_result_contains_weknora_compatible_fields(self):
         result = _row_to_result(self.make_row(), "vector", True, "vector_score")
         self.assertEqual(result["knowledge_id"], "doc_1")
+        self.assertEqual(result["file_hash"], "sha256-demo")
         self.assertEqual(result["knowledge_title"], "文档标题")
         self.assertIn("matched_content", result)
         self.assertIn("metadata_json", result)

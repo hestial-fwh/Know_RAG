@@ -13,6 +13,7 @@ class HybridResultMappingTests(unittest.TestCase):
             knowledge_base_id="kb_1",
             title="文档标题",
             file_name="demo.pdf",
+            file_hash="sha256-demo",
             knowledge_source="file",
             knowledge_channel="local",
             parse_status="parsed",
@@ -35,6 +36,7 @@ class HybridResultMappingTests(unittest.TestCase):
     def test_mapping_contains_weknora_fields(self):
         result = _row_to_result(self.row(), "vector", True, "vector_score")
         self.assertEqual(result["knowledge_id"], "doc_1")
+        self.assertEqual(result["file_hash"], "sha256-demo")
         self.assertEqual(result["knowledge_title"], "文档标题")
         self.assertEqual(result["matched_content"], "命中文本")
         self.assertIn("rrf_score", result)

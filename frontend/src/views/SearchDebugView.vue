@@ -1,8 +1,9 @@
-<script setup lang="ts">
-import { onMounted, ref } from 'vue'
+﻿<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { listKnowledgeBases, type KnowledgeBase } from '../api/knowledgeBases'
 import { buildLlmContext, hybridSearch, type HybridSearchResult, type LLMContextResponse, type ParentChildSummary, type ParentGroup } from '../api/retrieval'
+import { collectUniqueDocuments, showDocumentFileName } from '../utils/retrievalDocuments'
 
 const router = useRouter()
 const knowledgeBases = ref<KnowledgeBase[]>([])
@@ -37,6 +38,8 @@ const parentGroups = ref<ParentGroup[]>([])
 const error = ref('')
 const message = ref('')
 const loading = ref(false)
+
+const uniqueDocuments = computed(() => collectUniqueDocuments(results.value))
 
 type ImageLikeItem = Partial<HybridSearchResult & ParentChildSummary> & {
   image_url?: string
@@ -322,6 +325,18 @@ onMounted(async () => {
       </div>
     </section>
 
+    <div v-if="uniqueDocuments.length" class="card hit-documents-card">
+      <div class="page-header">
+        <h2>命中文档 ({{ uniqueDocuments.length }})</h2>
+      </div>
+      <ul class="doc-link-list">
+        <li v-for="doc in uniqueDocuments" :key="doc.id">
+          <router-link :to="`/documents/${doc.id}`">{{ doc.title }}</router-link>
+          <span v-if="showDocumentFileName(doc)" class="text-muted"> · {{ doc.fileName }}</span>
+        </li>
+      </ul>
+    </div>
+
     <div v-if="!results.length" class="empty-state">
       <div class="empty-icon">◎</div>
       <div>暂无检索结果</div>
@@ -370,8 +385,7 @@ onMounted(async () => {
             <h2>#{{ index + 1 }} {{ item.knowledge_title || item.title || '未命名文档' }}</h2>
             <p class="text-muted">{{ item.knowledge_filename || item.file_name }} · 切片 {{ item.chunk_index }}</p>
           </div>
-          <button type="button" class="secondary" @click="router.push(`/chunks/${item.chunk_id}`)">查看切片</button>
-          <button type="button" @click="router.push(`/documents/${item.knowledge_id || item.document_id}/detail`)">查看文档</button>
+          <button type="button" @click="router.push(`/chunks/${item.chunk_id}`)">查看切片</button>
         </div>
         <dl class="details">
           <dt>文档标题</dt><dd>{{ item.knowledge_title || item.title || '-' }}</dd>

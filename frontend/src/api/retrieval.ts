@@ -42,6 +42,7 @@ export interface HybridSearchResult {
   knowledge_title?: string
   title: string
   file_name: string
+  file_hash?: string
   knowledge_filename?: string
   knowledge_source?: string
   knowledge_channel?: string

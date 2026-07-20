@@ -229,6 +229,7 @@ chunk 返回新增或补齐：
 - `metadata_json`
 - `chunk_metadata`
 - `image_info`
+- `file_hash`：源文件内容的 SHA-256；客户端可用它合并内容相同但 `document_id` 不同的历史重复上传记录。
 
 `include_content=false` 时不会返回完整 `content`，但会返回 `preview` 和最多 1000 字符的 `matched_content`。
 ## 切分配置 API
