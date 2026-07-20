@@ -370,7 +370,8 @@ onMounted(async () => {
             <h2>#{{ index + 1 }} {{ item.knowledge_title || item.title || '未命名文档' }}</h2>
             <p class="text-muted">{{ item.knowledge_filename || item.file_name }} · 切片 {{ item.chunk_index }}</p>
           </div>
-          <button type="button" @click="router.push(`/chunks/${item.chunk_id}`)">查看切片</button>
+          <button type="button" class="secondary" @click="router.push(`/chunks/${item.chunk_id}`)">查看切片</button>
+          <button type="button" @click="router.push(`/documents/${item.knowledge_id || item.document_id}/detail`)">查看文档</button>
         </div>
         <dl class="details">
           <dt>文档标题</dt><dd>{{ item.knowledge_title || item.title || '-' }}</dd>

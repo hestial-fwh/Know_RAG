@@ -126,6 +126,8 @@ services:
       - backend
     networks:
       - know-rag-net
+    volumes:
+      - ./frontend/src:/app/src
   mcp:
     build:
       context: ./backend
