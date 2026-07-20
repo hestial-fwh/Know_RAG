@@ -1,6 +1,6 @@
 # MinerU 主链路图文绑定方案
 
-> 状态：Current（P0-P3 已完成并通过链路验收；P4-P5 规划中）
+> 状态：Current（P0-P4 已完成并通过链路验收；P5 规划中）
 > 维护日期：2026-07-17
 > 首期范围：MinerU 主解析链路  
 > 非首期范围：RAGFlow/DeepDoc fallback 的高质量图文绑定

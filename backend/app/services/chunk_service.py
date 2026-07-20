@@ -1260,6 +1260,12 @@ def _rebuild_canonical_weknora_parent_child(
         chunk.content_hash = content_hash(chunk.content)
         new_chunks.append(chunk)
 
+    new_chunks = _apply_figure_bindings(new_chunks, plan)
+    for chunk in new_chunks:
+        meta = dict(chunk.metadata_json or {})
+        meta["source_position_is_exact"] = True
+        chunk.metadata_json = meta
+
     parse_revision = str((artifact_out or {}).get("parse_revision") or "")
     if parse_revision:
         for chunk in new_chunks:
@@ -2398,6 +2404,124 @@ def _rebuild_document_chunks_structured_parent_child(
         flush_text_buffer()
 
     return new_chunks, inserted
+
+
+
+def _apply_figure_bindings(
+    chunks: list["Chunk"],
+    plan: "CanonicalChunkPlan",
+) -> list["Chunk"]:
+    """P4: Materialize figure-reference bindings as bilateral chunk metadata.
+
+    For every bound figure link, writes ``figure_references`` on the text
+    chunk that contains the reference and ``image_binding`` on the
+    corresponding image chunk.  Both are persisted in ``metadata_json``
+    inside the same DB transaction.
+    """
+    if not plan.figure_links.links:
+        return chunks
+
+    # asset_id -> image chunk id
+    asset_to_image: dict[str, str] = {}
+    for chunk in chunks:
+        if chunk.chunk_type != "image":
+            continue
+        meta = chunk.metadata_json or {}
+        asset_id = meta.get("asset_id")
+        if asset_id:
+            asset_to_image[asset_id] = chunk.id
+
+    if not asset_to_image:
+        return chunks
+
+    # text chunks indexed by id for fast lookup
+    text_by_id: dict[str, "Chunk"] = {
+        chunk.id: chunk
+        for chunk in chunks
+        if chunk.chunk_type in ("text", "table") and chunk.chunk_type != "parent_text"
+    }
+
+    # image chunks indexed by id
+    image_by_id: dict[str, "Chunk"] = {
+        chunk.id: chunk
+        for chunk in chunks
+        if chunk.chunk_type == "image"
+    }
+
+    for link in plan.figure_links.links:
+        if link.status != "bound":
+            continue
+        if not link.asset_ids:
+            continue
+
+        ref_start = link.reference.start
+        ref_end = link.reference.end
+
+        # Find text chunk(s) whose precise range contains the reference
+        ref_text_chunk_ids: list[str] = []
+        for chunk in chunks:
+            if chunk.chunk_type == "parent_text":
+                continue
+            if chunk.start_at is None or chunk.end_at is None:
+                continue
+            # Reference position falls inside this chunk's range
+            if chunk.start_at <= ref_start < chunk.end_at:
+                ref_text_chunk_ids.append(chunk.id)
+
+        # Write figure_references on each text chunk
+        for text_chunk_id in ref_text_chunk_ids:
+            text_chunk = text_by_id.get(text_chunk_id)
+            if text_chunk is None:
+                continue
+            meta = dict(text_chunk.metadata_json or {})
+            existing_refs: list[dict] = list(meta.get("figure_references", []))
+
+            for asset_id in link.asset_ids:
+                img_chunk_id = asset_to_image.get(asset_id)
+                if img_chunk_id is None:
+                    continue
+                # Deduplicate by figure_id + image_chunk_id
+                if not any(
+                    r.get("figure_id") == link.reference.figure_id
+                    and img_chunk_id in (r.get("image_chunk_ids") or [])
+                    for r in existing_refs
+                ):
+                    existing_refs.append({
+                        "version": 1,
+                        "figure_id": link.reference.figure_id,
+                        "reference_type": link.reference.reference_type,
+                        "image_chunk_ids": [img_chunk_id],
+                        "binding_method": link.binding_method,
+                        "binding_score": link.binding_score,
+                        "score_kind": link.score_kind,
+                        "start": ref_start,
+                        "end": ref_end,
+                    })
+
+                # Write image_binding on the image chunk
+                img_chunk = image_by_id.get(img_chunk_id)
+                if img_chunk is not None:
+                    img_meta = dict(img_chunk.metadata_json or {})
+                    existing_binding = img_meta.get("image_binding")
+                    ref_ids = list(existing_binding.get("reference_chunk_ids", [])) if existing_binding else []
+                    if text_chunk_id not in ref_ids:
+                        ref_ids.append(text_chunk_id)
+                    img_meta["image_binding"] = {
+                        "version": 1,
+                        "figure_id": link.reference.figure_id,
+                        "binding_method": link.binding_method,
+                        "binding_score": link.binding_score,
+                        "score_kind": link.score_kind,
+                        "reference_chunk_ids": ref_ids,
+                    }
+                    img_chunk.metadata_json = img_meta
+
+            if existing_refs:
+                meta["figure_references"] = existing_refs
+                text_chunk.metadata_json = meta
+
+    return chunks
+
 
 def _replace_canonical_artifact(
     db: Session,

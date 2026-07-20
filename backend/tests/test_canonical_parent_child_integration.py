@@ -264,3 +264,58 @@ def test_p3_table_child_has_segment_precise_range():
         assert tc.start_at < tc.end_at, "Table child range must be valid"
         # Table range should be less than the full document length
         assert (tc.end_at - tc.start_at) < 500, f"Table range should be precise, got {tc.end_at - tc.start_at} chars"
+
+def test_p4_figure_bindings_materialize_on_chunk_metadata():
+    """P4: Bound figure links produce figure_references + image_binding on chunks."""
+    parsed = ParsedDocument(
+        content="",
+        blocks=[
+            ParsedBlock(
+                block_type="text",
+                text="如图1所示，系统完成初始化。",
+                order_index=0,
+                page_no=2,
+                bbox=(10, 20, 300, 60),
+                metadata={"parser": "mineru"},
+            ),
+            ParsedBlock(
+                block_type="image",
+                text="图1 系统结构",
+                order_index=1,
+                page_no=2,
+                bbox=(10, 80, 300, 260),
+                metadata={
+                    "parser": "mineru",
+                    "caption": "图1 系统结构",
+                },
+            ),
+        ],
+    )
+
+    chunks, _ = _rebuild_canonical_weknora_parent_child(_doc("pdf"), parsed, "pdf", _cfg())
+
+    text_chunks = [c for c in chunks if c.chunk_type == "text" and c.chunk_type != "parent_text"]
+    image_chunks = [c for c in chunks if c.chunk_type == "image"]
+
+    assert len(text_chunks) >= 1, "Should have at least one text chunk"
+    assert len(image_chunks) == 1, "Should have exactly one image chunk"
+
+    img = image_chunks[0]
+    img_binding = (img.metadata_json or {}).get("image_binding")
+    assert img_binding is not None, f"Image chunk should have image_binding, got metadata={img.metadata_json}"
+    assert img_binding["figure_id"] == "figure:1"
+    assert img_binding["version"] == 1
+    assert "reference_chunk_ids" in img_binding
+    assert len(img_binding["reference_chunk_ids"]) >= 1
+
+    # At least one text chunk has figure_references pointing to the image
+    found = False
+    for tc in text_chunks:
+        refs = (tc.metadata_json or {}).get("figure_references", [])
+        for ref in refs:
+            if ref["figure_id"] == "figure:1":
+                found = True
+                assert img.id in ref["image_chunk_ids"], (
+                    f"image_chunk_ids should contain {img.id}, got {ref['image_chunk_ids']}"
+                )
+    assert found, "No text chunk has figure_references pointing to figure:1"
