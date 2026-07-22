@@ -8,6 +8,7 @@ import KnowledgeBaseDetailView from '../views/KnowledgeBaseDetailView.vue'
 import DocumentUploadView from '../views/DocumentUploadView.vue'
 import DocumentListView from '../views/DocumentListView.vue'
 import DocumentDetailView from '../views/DocumentDetailView.vue'
+import DocumentContentView from '../views/DocumentContentView.vue'
 import ChunkListView from '../views/ChunkListView.vue'
 import ChunkDetailView from '../views/ChunkDetailView.vue'
 import RetrievalConfigView from '../views/RetrievalConfigView.vue'
@@ -40,6 +41,7 @@ const router = createRouter({
         { path: 'documents/upload', component: DocumentUploadView, meta: { title: '文档上传' } },
         { path: 'documents', component: DocumentListView, meta: { title: '文档管理' } },
         { path: 'documents/:docId/chunks', component: ChunkListView, meta: { title: '文档切片' } },
+        { path: 'documents/:id/content', component: DocumentContentView, meta: { title: '文档查看' } },
         { path: 'documents/:id', component: DocumentDetailView, meta: { title: '文档详情' } },
         { path: 'chunks', component: ChunkListView, meta: { title: '切片浏览' } },
         { path: 'chunks/:id', component: ChunkDetailView, meta: { title: '切片详情' } },

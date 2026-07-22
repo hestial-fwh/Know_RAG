@@ -58,6 +58,7 @@ onMounted(async () => {
           <p class="text-muted">{{ typeLabel(chunk.chunk_type) }} · {{ statusText[chunk.status] || chunk.status }} · {{ chunk.id }}</p>
         </div>
         <div class="header-actions">
+          <button v-if="chunk.document_id || chunk.knowledge_id" type="button" @click="router.push(`/documents/${(chunk.document_id || chunk.knowledge_id)}/content`)">查看文档</button>
           <button class="secondary" @click="router.back()">返回</button>
         </div>
       </div>

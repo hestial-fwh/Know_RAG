@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { normalizeFileUrl } from '../utils/media'
 import {
   embedDocument,
   getDocument,
@@ -160,6 +161,8 @@ onMounted(async () => {
           <button type="button" class="secondary" :disabled="statusLoading" @click="loadEmbeddingStatus">
             {{ statusLoading ? '正在获取状态...' : '查看向量化状态' }}
           </button>
+          <button type="button" @click="router.push(`/documents/${doc.id}/content`)">查看原文档</button>
+          <a v-if="doc.storage_path" class="secondary" :href="normalizeFileUrl(doc.storage_path)" :download="doc.file_name">下载文件</a>
           <button type="button" class="secondary" @click="router.push(`/documents/${doc.id}/chunks`)">查看切片</button>
           <button v-if="latestTask" type="button" class="secondary" :disabled="taskLoading" @click="openWorkbench">解析工作台</button>
           <button type="button" class="secondary" @click="router.push(`/parse-eval/documents/${doc.id}`)">解析评测</button>

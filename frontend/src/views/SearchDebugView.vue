@@ -331,7 +331,7 @@ onMounted(async () => {
       </div>
       <ul class="doc-link-list">
         <li v-for="doc in uniqueDocuments" :key="doc.id">
-          <router-link :to="`/documents/${doc.id}`">{{ doc.title }}</router-link>
+          <router-link :to="`/documents/${doc.id}/content`">{{ doc.title }}</router-link>
           <span v-if="showDocumentFileName(doc)" class="text-muted"> · {{ doc.fileName }}</span>
         </li>
       </ul>
@@ -350,6 +350,7 @@ onMounted(async () => {
             <h2>父块 #{{ index + 1 }} · 命中 {{ group.matched_child_count }} 个子块</h2>
             <p class="text-muted">父块分数 {{ formatScore(group.score) }} · 最高子块分数 {{ formatScore(group.max_child_score) }}</p>
           </div>
+          <button v-if="group.matched_children?.[0]?.document_id" type="button" @click="router.push(`/documents/${group.matched_children[0].document_id}/content`)">查看文档</button>
           <button v-if="group.parent_chunk_id" type="button" @click="router.push(`/chunks/${group.parent_chunk_id}`)">查看父块</button>
         </div>
         <dl class="details">
@@ -385,6 +386,7 @@ onMounted(async () => {
             <h2>#{{ index + 1 }} {{ item.knowledge_title || item.title || '未命名文档' }}</h2>
             <p class="text-muted">{{ item.knowledge_filename || item.file_name }} · 切片 {{ item.chunk_index }}</p>
           </div>
+          <button v-if="item.document_id || item.knowledge_id" type="button" @click="router.push(`/documents/${(item.document_id || item.knowledge_id)}/content`)">查看文档</button>
           <button type="button" @click="router.push(`/chunks/${item.chunk_id}`)">查看切片</button>
         </div>
         <dl class="details">

@@ -385,6 +385,16 @@ def _to_public_url(url: str | None) -> str:
     return value
 
 
+def _frontend_document_url(document_id: str | None) -> str:
+    """Build the frontend document content page URL for MCP responses."""
+    if not document_id:
+        return ""
+    base = str(settings.frontend_base_url or "").strip().rstrip("/")
+    if not base:
+        return ""
+    return f"{base}/documents/{document_id}/content"
+
+
 def _image_url(item: dict | None, *, include_image_urls: bool) -> str:
     """Resolve an image/table asset URL and convert it to a public URL.
 
@@ -1200,6 +1210,7 @@ def _cloud_flat_chunk(
         "chunk_id": _cloud_chunk_id(item),
         "parent_chunk_id": _cloud_parent_id(item) or None,
         "document_id": _cloud_document_id(item),
+        "document_url": _frontend_document_url(_cloud_document_id(item)),
         "document_title": _cloud_first_str(item, ("document_title", "doc_title", "title", "knowledge_title")),
         "file_name": _cloud_first_str(item, ("file_name", "filename", "source_file", "knowledge_filename")),
         "page_no": _cloud_page_no(item),

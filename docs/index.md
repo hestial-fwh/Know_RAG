@@ -1,7 +1,7 @@
 # Know_RAG 文档索引
 
 > 状态：Current
-> 维护日期：2026-07-17
+> 维护日期：2026-07-21
 > 适用范围：当前 `know_rag` 主分支
 
 ## 权威阅读顺序
@@ -28,6 +28,8 @@
 - `minio_storage.md`：MinIO 对象存储边界。
 - `mineru_docker.md`：MinerU 容器部署说明。
 - `image_chunk_binding_plan.md`：MinerU 主链路图文绑定边界、已完成 P0-P2.5 与后续阶段设计。
+- `pipeline_audit.md`：文档解析与切片流水线健壮性及可用性审计报告，包含 SPOF 分析、风险矩阵和优先修复建议。
+- `document_content_view_plan.md`：文档内容查看页面（DocumentContentView）规划，从 MinIO 直接展示原始文档（PDF/图片/文本内联渲染），支持下载。
 - `backend/app/integrations/mcp/README.md`：MCP 工具与传输层契约。
 - `backend/app/plugins/parse_eval/README.md`：解析质量评测插件。
 

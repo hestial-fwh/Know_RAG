@@ -234,6 +234,7 @@ onMounted(load)
         <p class="text-muted">按页查看文档解析后的文本、表格、图片切片，检查索引内容、向量化状态和父子块关系。</p>
       </div>
       <div class="header-actions">
+        <button v-if="documentId" type="button" @click="router.push(`/documents/${documentId}/content`)">查看文档</button>
         <button class="secondary" @click="router.back()">返回</button>
         <button @click="refreshCurrentView">刷新</button>
       </div>
