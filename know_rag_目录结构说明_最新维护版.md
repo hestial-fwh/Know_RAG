@@ -1,7 +1,7 @@
 # Know_RAG 项目目录结构与主链路维护手册（最新代码基线）
 
 > **代码基线**：当前工作区
-> **维护日期**：2026-07-17
+> **维护日期**：2026-07-23
 > **用途**：用于后续项目维护、功能定位、主链路排查、代码重构和新人接手。  
 > **分析原则**：以本次上传代码的**真实调用关系**为准，不以历史设计文档或曾经存在的重构方案代替当前运行时事实。
 
@@ -290,6 +290,11 @@ backend/app/services/document_parser/
 ├─ figure_linker.py                       # normalize 后正文图号引用 → asset 候选证据（P2/P2.5）[主链路]
 └─ canonical_document.py                  # Canonical Markdown + asset/source-node provenance [核心算法]
 ```
+
+通用关系层位于 `backend/app/services/document_relation/`：`models.py` 定义 versioned edge/group/graph，
+`relation_graph_merger.py` 合并 caption、footnote 与 explicit relation，`materializer.py` 生成 compact
+Chunk summaries。ORM 读写独立位于 `document_relation_persistence_service.py`，纯逻辑包禁止依赖
+SQLAlchemy。当前不包含图片组、公共上下文或方向隐式规则。
 
 ### 统一解析中间层
 

@@ -1,7 +1,7 @@
 # Security
 
 > 状态：Current
-> 维护日期：2026-07-15
+> 维护日期：2026-07-23
 
 ## 本地知识资产
 
@@ -21,6 +21,13 @@
 - 默认 hybrid search 在 PostgreSQL/pgvector 与 Elasticsearch 中执行。
 - 普通 API 不返回完整 embedding 向量，只返回维度、范数和最多 16 维预览。
 - audit_logs 不记录 embedding 向量、不记录完整 chunk 内容、不记录大段检索结果。
+- 图文关系检索扩展同时以目标 ID、`knowledge_base_id` 和 `document_id` 约束数据库查询，并在映射
+  返回前再次校验两个 scope；污染 metadata 不得跨知识库或跨文档读取 Chunk。
+- `DOCUMENT_RELATION_GRAPH_ENABLED`、`DOCUMENT_RELATION_MATERIALIZATION_ENABLED` 与
+  `DOCUMENT_RELATION_RETRIEVAL_EXPANSION_ENABLED` 默认关闭，可独立回滚；扩展异常 fail-open，
+  不扩大权限边界，也不使基础检索失败。
+- 完整 relation candidate/evidence 只保存在文档级本地 artifact；Chunk metadata 不复制完整候选图，
+  只保存关系 ID 和检索所需摘要。
 - PostgreSQL 和 Redis 默认仅绑定本机。
 - 不提供 Web Search 或通用 Agent。
 

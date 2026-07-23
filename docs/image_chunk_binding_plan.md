@@ -1,7 +1,7 @@
 # MinerU 主链路图文绑定方案
 
-> 状态：Current（P0-P4 已完成并通过链路验收；P5 规划中）
-> 维护日期：2026-07-17
+> 状态：Current（显式图文关系 P0-P5 与通用关系图 Phase 2 已完成；运行开关默认关闭）
+> 维护日期：2026-07-23
 > 首期范围：MinerU 主解析链路  
 > 非首期范围：RAGFlow/DeepDoc fallback 的高质量图文绑定
 
@@ -13,7 +13,7 @@
 候选问题已在 P1 处理。P2 已在 normalize 后的 Canonical Markdown 上生成正文 figure reference
 到 asset 的确定、歧义或未匹配结果。P2.5 已持久化规范化 Canonical Markdown、source node
 provenance、asset sidecar 和完整候选证据；chunk 继承 `source_node_ids`。引用到 text child 的
-精确 range 和 ORM 双侧关系仍由 P3/P4 完成。
+精确 range、P4 occurrence 双侧摘要与 P5 scoped expansion 均已完成；运行时双开关默认关闭。
 
 - MinerU 是首期可靠输入，提供 caption、footnote、OCR、VLM、page 和 bbox。
 - RAGFlow 是可显式选择的辅助解析器，同时也是 MinerU 整篇解析失败时的文档级 fallback；
@@ -314,7 +314,8 @@ Phase D：同一事务替换旧 Chunk
 ```json
 {
   "figure_references": [{
-    "version": 1,
+    "version": 2,
+    "occurrence_id": "figure:1@120:121:node-000004",
     "figure_id": "figure:1",
     "reference_type": "explicit",
     "image_chunk_ids": ["..."]
@@ -326,16 +327,28 @@ Phase D：同一事务替换旧 Chunk
 
 ```json
 {
-  "image_binding": {
-    "version": 1,
+  "image_bindings": [{
+    "version": 2,
+    "occurrence_id": "figure:1@120:121:node-000004",
     "figure_id": "figure:1",
     "binding_method": "figure_id_exact",
     "binding_score": 0.82,
     "score_kind": "heuristic_rule_score",
+    "reference_chunk_ids": ["..."],
+    "start": 120,
+    "end": 121
+  }],
+  "image_binding": {
+    "version": 1,
+    "figure_id": "figure:1",
     "reference_chunk_ids": ["..."]
   }
 }
 ```
+
+`image_bindings[]` 是当前有序多 occurrence 字段；`image_binding` 只是供旧读取端使用的首条稳定
+投影。正文 occurrence 只选择完整覆盖其范围的最小正文 child，禁止写入 parent、图片、表格、
+OCR 或公式 child。
 
 首期不复用 `relation_chunks` / `indirect_relation_chunks`。
 
@@ -344,7 +357,8 @@ Phase D：同一事务替换旧 Chunk
 - 命中正文引用时补对应图片 Chunk。
 - 命中图片时补对应正文 child。
 - 限制在同知识库、同文档。
-- 默认最多补 3 张图、5 个正文 child。
+- 每个原始 hit、每种关系类型分别最多补 3 张图、5 个正文 child。
+- 同时读取 `image_bindings[]` 与旧 `image_binding`，去重后恢复声明顺序。
 - 关系读取或扩展失败时返回原始检索结果。
 - `binding_score` 经标注集校准前不得改名为 confidence。
 
@@ -354,12 +368,21 @@ Phase D：同一事务替换旧 Chunk
 但旧文档不会自动补齐，首次获得 P2.5 artifact 仍需 reparse。P2.5 保存的是当前 parse revision，
 不是 ParsedBlock 历史版本库；基于 artifact 的通用 rechunk API 尚未开放。
 
-以下能力在代码落地前均标记为 Planned，不能当作当前运维命令：
+以下能力仍标记为 Planned，不能当作当前运维命令：
 
 - 图文绑定批处理脚本；
-- ImageRelation/FigureLinker/检索扩展开关；
 - 基于 canonical artifact 的独立 rechunk API；
 - 前端人工覆盖。
+
+当前已实现三个独立环境开关，均默认 `false`：
+
+- `DOCUMENT_RELATION_GRAPH_ENABLED`
+- `DOCUMENT_RELATION_MATERIALIZATION_ENABLED`
+- `DOCUMENT_RELATION_RETRIEVAL_EXPANSION_ENABLED`
+
+graph 开关控制 versioned graph shadow 生成；materialization 开关只控制新 Chunk 写关系摘要；
+retrieval expansion 开关使 hybrid search 保持原始结果、排序与数量。旧文档
+无需立即 reparse，扩展读取端继续兼容 v1 `image_binding`。
 
 回滚原则：每个后续阶段先提供开关，再扩大生产范围；关系功能关闭时必须退化为当前普通
 text/table/image chunk 检索，不影响文档基础可用性。

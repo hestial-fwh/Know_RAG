@@ -199,6 +199,7 @@ class DocumentCanonicalArtifact(Base):
     provenance_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     assets_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     figure_links_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    relation_graph_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     stats_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

@@ -173,6 +173,48 @@ def test_extracts_grouped_supplementary_chinese_and_subfigure_syntax():
     ]
 
 
+def test_extracts_labeled_chinese_and_plural_english_figure_ranges():
+    markdown = (
+        "如图1‑图2所示，自动清洁设备包含多个系统。\n\n"
+        "As shown in Figures 3–4, both layouts are supported."
+    )
+
+    references = extract_explicit_figure_references(markdown)
+
+    assert [reference.figure_id for reference in references] == [
+        "figure:1",
+        "figure:2",
+        "figure:3",
+        "figure:4",
+    ]
+    assert all(reference.reference_type == "explicit_range" for reference in references)
+
+
+def test_figure_range_binds_each_endpoint_to_its_ordered_asset():
+    markdown = (
+        "如图1‑图2所示，系统包含输入与输出。\n\n"
+        "![图1 输入](asset://image-1)\n\n"
+        "![图2 输出](asset://image-2)"
+    )
+
+    result = link_figure_references(
+        markdown,
+        {
+            "image-1": _asset("image-1", "figure:1", source_order=1),
+            "image-2": _asset("image-2", "figure:2", source_order=2),
+        },
+    )
+
+    assert [link.reference.figure_id for link in result.links] == [
+        "figure:1",
+        "figure:2",
+    ]
+    assert [link.asset_ids for link in result.links] == [
+        ("image-1",),
+        ("image-2",),
+    ]
+
+
 def test_page_provenance_resolves_repeated_figure_id_and_is_auditable():
     markdown = "如图1所示，第二页结果更高。\n\n![图1甲](asset://a)\n\n![图1乙](asset://b)"
     reference_end = markdown.index("，")

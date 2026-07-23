@@ -265,8 +265,12 @@ def test_p3_table_child_has_segment_precise_range():
         # Table range should be less than the full document length
         assert (tc.end_at - tc.start_at) < 500, f"Table range should be precise, got {tc.end_at - tc.start_at} chars"
 
-def test_p4_figure_bindings_materialize_on_chunk_metadata():
+def test_p4_figure_bindings_materialize_on_chunk_metadata(monkeypatch):
     """P4: Bound figure links produce figure_references + image_binding on chunks."""
+    monkeypatch.setattr(
+        "app.services.chunk_service.settings.document_relation_materialization_enabled",
+        True,
+    )
     parsed = ParsedDocument(
         content="",
         blocks=[
@@ -319,3 +323,34 @@ def test_p4_figure_bindings_materialize_on_chunk_metadata():
                     f"image_chunk_ids should contain {img.id}, got {ref['image_chunk_ids']}"
                 )
     assert found, "No text chunk has figure_references pointing to figure:1"
+
+
+def test_phase1_materialization_flag_off_keeps_production_chunk_metadata_clean(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.chunk_service.settings.document_relation_materialization_enabled",
+        False,
+    )
+    parsed = ParsedDocument(
+        content="",
+        blocks=[
+            ParsedBlock(
+                block_type="text",
+                text="如图1所示，系统完成初始化。",
+                order_index=0,
+                page_no=1,
+                metadata={"parser": "mineru"},
+            ),
+            ParsedBlock(
+                block_type="image",
+                text="图1 系统结构",
+                order_index=1,
+                page_no=1,
+                metadata={"parser": "mineru", "caption": "图1 系统结构"},
+            ),
+        ],
+    )
+
+    chunks, _ = _rebuild_canonical_weknora_parent_child(_doc("pdf"), parsed, "pdf", _cfg())
+
+    assert all("figure_references" not in (chunk.metadata_json or {}) for chunk in chunks)
+    assert all("image_bindings" not in (chunk.metadata_json or {}) for chunk in chunks)

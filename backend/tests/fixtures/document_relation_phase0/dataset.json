@@ -1,0 +1,195 @@
+{
+  "schema_version": 1,
+  "dataset_id": "document-relation-phase0-2026-07-22",
+  "description": "18 个固定关系案例。synthetic cases 是规则契约，不替代 real_documents 的真实 MinerU 基线。",
+  "coordinate_space": "mineru_content_list_bbox",
+  "real_documents": [],
+  "cases": [
+    {
+      "case_id": "REL-CASE-001",
+      "title": "显式图号引用",
+      "layers": {
+        "raw_parser": {"content_list": [{"type": "text", "text": "如图1所示，系统启动", "page_idx": 0, "bbox": [20, 20, 400, 60]}, {"type": "image", "image_caption": ["图1 系统结构"], "page_idx": 0, "bbox": [20, 100, 400, 300]}]},
+        "parsed_blocks": [{"id": "t1", "type": "text", "text": "如图1所示，系统启动", "page_no": 1, "bbox": [20, 20, 400, 60], "section_path": "系统", "source_order": 0}, {"id": "i1", "type": "image", "caption": "图1 系统结构", "page_no": 1, "bbox": [20, 100, 400, 300], "section_path": "系统", "source_order": 1}],
+        "canonical_artifact": {"markdown": "如图1所示，系统启动\n\n![图1 系统结构](asset://i1)", "assets": ["i1"], "provenance": ["t1", "i1"]},
+        "chunk_metadata": [{"id": "text-1", "expected_figure_references": ["rel-001"]}, {"id": "image-1", "expected_incoming_relations": ["rel-001"]}],
+        "retrieval_output": {"text_hit": ["text-1", "image-1"], "image_hit": ["image-1", "text-1"]}
+      },
+      "gold": [{"relation_id": "rel-001", "relation_type": "explicit_reference", "status": "bound", "auto_bind_allowed": true, "binding_method": "figure_id_page_exact", "binding_score": 1.0, "score_kind": "heuristic_rule_score", "source_node_ids": ["t1"], "target_asset_ids": ["i1"], "evidence": [{"cue": "如图1所示", "start": 1, "end": 3, "page_no": 1, "section_path": "系统", "coordinate_space": "normalized_canonical_markdown"}]}]
+    },
+    {
+      "case_id": "REL-CASE-002",
+      "title": "一图两次独立引用",
+      "layers": {
+        "raw_parser": {"content_list": [{"type": "text", "text": "如图1所示", "page_idx": 0}, {"type": "text", "text": "再次参见图1", "page_idx": 1}, {"type": "image", "image_caption": ["图1"], "page_idx": 0}]},
+        "parsed_blocks": [{"id": "t1", "type": "text", "text": "如图1所示", "page_no": 1, "source_order": 0}, {"id": "t2", "type": "text", "text": "再次参见图1", "page_no": 2, "source_order": 1}, {"id": "i1", "type": "image", "caption": "图1", "page_no": 1, "source_order": 2}],
+        "canonical_artifact": {"markdown": "如图1所示\n\n再次参见图1\n\n![图1](asset://i1)", "assets": ["i1"], "provenance": ["t1", "t2", "i1"]},
+        "chunk_metadata": [{"id": "text-1", "expected_figure_references": ["rel-002-a"]}, {"id": "text-2", "expected_figure_references": ["rel-002-b"]}, {"id": "image-1", "expected_incoming_relations": ["rel-002-a", "rel-002-b"]}],
+        "retrieval_output": {"image_hit": ["image-1", "text-1", "text-2"]}
+      },
+      "gold": [{"relation_id": "rel-002-a", "relation_type": "explicit_reference", "status": "bound", "auto_bind_allowed": true, "binding_method": "figure_id_exact", "binding_score": 1.0, "score_kind": "heuristic_rule_score", "source_node_ids": ["t1"], "target_asset_ids": ["i1"], "evidence": [{"occurrence": 1, "start": 1, "end": 3}]}, {"relation_id": "rel-002-b", "relation_type": "explicit_reference", "status": "bound", "auto_bind_allowed": true, "binding_method": "figure_id_exact", "binding_score": 1.0, "score_kind": "heuristic_rule_score", "source_node_ids": ["t2"], "target_asset_ids": ["i1"], "evidence": [{"occurrence": 2, "start": 12, "end": 14}]}]
+    },
+    {
+      "case_id": "REL-CASE-003",
+      "title": "重叠 child 选择完整最小范围",
+      "layers": {
+        "raw_parser": {"content_list": [{"type": "text", "text": "前文如图1所示后文", "page_idx": 0}, {"type": "image", "image_caption": ["图1"], "page_idx": 0}]},
+        "parsed_blocks": [{"id": "t1", "type": "text", "text": "前文如图1所示后文", "page_no": 1, "source_order": 0}, {"id": "i1", "type": "image", "caption": "图1", "page_no": 1, "source_order": 1}],
+        "canonical_artifact": {"markdown": "前文如图1所示后文\n\n![图1](asset://i1)", "assets": ["i1"], "provenance": ["t1", "i1"]},
+        "chunk_metadata": [{"id": "overlap-a", "range": [0, 6], "expected_figure_references": []}, {"id": "overlap-b", "range": [3, 12], "expected_figure_references": ["rel-003"]}],
+        "retrieval_output": {"direct_hit_ids": ["overlap-b"], "expanded_hit_ids": ["image-1"]}
+      },
+      "gold": [{"relation_id": "rel-003", "relation_type": "explicit_reference", "status": "bound", "auto_bind_allowed": true, "binding_method": "smallest_full_range_child", "binding_score": 1.0, "score_kind": "heuristic_rule_score", "source_node_ids": ["t1"], "target_asset_ids": ["i1"], "evidence": [{"reference_range": [4, 7], "selected_child_range": [3, 12], "rejected_child_range": [0, 6]}]}]
+    },
+    {
+      "case_id": "REL-CASE-004",
+      "title": "同页双图公共说明",
+      "layers": {
+        "raw_parser": {"content_list": [{"type": "text", "text": "以下作品展示同一主题", "page_idx": 0, "bbox": [0, 0, 900, 70]}, {"type": "image", "page_idx": 0, "bbox": [20, 100, 430, 700]}, {"type": "image", "page_idx": 0, "bbox": [470, 100, 880, 700]}]},
+        "parsed_blocks": [{"id": "t1", "type": "text", "role": "shared_context", "page_no": 1, "bbox": [0, 0, 900, 70], "source_order": 0}, {"id": "i1", "type": "image", "page_no": 1, "bbox": [20, 100, 430, 700], "source_order": 1}, {"id": "i2", "type": "image", "page_no": 1, "bbox": [470, 100, 880, 700], "source_order": 2}],
+        "canonical_artifact": {"markdown": "以下作品展示同一主题\n\n![](asset://i1)\n\n![](asset://i2)", "assets": ["i1", "i2"], "page_extent_source": "authoritative"},
+        "chunk_metadata": [{"id": "shared-1", "expected_group_ids": ["group-004"]}, {"id": "image-1", "expected_group_ids": ["group-004"]}, {"id": "image-2", "expected_group_ids": ["group-004"]}],
+        "retrieval_output": {"direct_hit_ids": ["shared-1"], "expanded_hit_ids": ["image-1", "image-2"]}
+      },
+      "gold": [{"relation_id": "rel-004", "relation_type": "shared_context_of", "status": "bound", "auto_bind_allowed": true, "binding_method": "same_page_horizontal_group", "binding_score": 0.9, "score_kind": "heuristic_rule_score", "source_node_ids": ["t1"], "target_group_ids": ["group-004"], "evidence": [{"page_extent_source": "authoritative", "member_asset_ids": ["i1", "i2"], "page_no": 1}]}]
+    },
+    {
+      "case_id": "REL-CASE-005",
+      "title": "两图各自独立标题",
+      "layers": {
+        "raw_parser": {"content_list": [{"type": "image", "image_caption": ["图1 输入"], "page_idx": 0}, {"type": "image", "image_caption": ["图2 输出"], "page_idx": 0}]},
+        "parsed_blocks": [{"id": "i1", "type": "image", "caption": "图1 输入", "page_no": 1, "source_order": 0}, {"id": "i2", "type": "image", "caption": "图2 输出", "page_no": 1, "source_order": 1}],
+        "canonical_artifact": {"markdown": "![图1 输入](asset://i1)\n\n![图2 输出](asset://i2)", "assets": ["i1", "i2"]},
+        "chunk_metadata": [{"id": "image-1", "caption": "图1 输入"}, {"id": "image-2", "caption": "图2 输出"}],
+        "retrieval_output": {"direct_hit_ids": ["image-1"], "expanded_hit_ids": []}
+      },
+      "gold": [{"relation_id": "rel-005", "relation_type": "shared_context_of", "status": "rejected", "auto_bind_allowed": false, "binding_method": "independent_caption_guard", "binding_score": 0.0, "score_kind": "heuristic_rule_score", "source_node_ids": [], "target_asset_ids": ["i1", "i2"], "evidence": [{"reason": "independent_captions_present", "captions": ["图1 输入", "图2 输出"]}]}]
+    },
+    {
+      "case_id": "REL-CASE-006",
+      "title": "上图下图",
+      "layers": {
+        "raw_parser": {"content_list": [{"type": "image", "page_idx": 0, "bbox": [100, 50, 800, 350]}, {"type": "image", "page_idx": 0, "bbox": [100, 500, 800, 800]}, {"type": "text", "text": "上图展示原方案，下图展示优化方案", "page_idx": 0, "bbox": [100, 400, 800, 450]}]},
+        "parsed_blocks": [{"id": "i1", "type": "image", "page_no": 1, "bbox": [100, 50, 800, 350]}, {"id": "i2", "type": "image", "page_no": 1, "bbox": [100, 500, 800, 800]}, {"id": "t1", "type": "text", "page_no": 1, "bbox": [100, 400, 800, 450]}],
+        "canonical_artifact": {"markdown": "![](asset://i1)\n\n上图展示原方案，下图展示优化方案\n\n![](asset://i2)", "assets": ["i1", "i2"]},
+        "chunk_metadata": [{"id": "text-1", "expected_relation_ids": ["rel-006-up", "rel-006-down"]}],
+        "retrieval_output": {"direct_hit_ids": ["text-1"], "expanded_hit_ids": ["image-1", "image-2"]}
+      },
+      "gold": [{"relation_id": "rel-006-up", "relation_type": "relative_reference", "status": "bound", "auto_bind_allowed": true, "binding_method": "directional_bbox_rule", "binding_score": 1.0, "score_kind": "heuristic_rule_score", "source_node_ids": ["t1"], "target_asset_ids": ["i1"], "evidence": [{"cue": "上图", "direction": "up", "page_no": 1}]}, {"relation_id": "rel-006-down", "relation_type": "relative_reference", "status": "bound", "auto_bind_allowed": true, "binding_method": "directional_bbox_rule", "binding_score": 1.0, "score_kind": "heuristic_rule_score", "source_node_ids": ["t1"], "target_asset_ids": ["i2"], "evidence": [{"cue": "下图", "direction": "down", "page_no": 1}]}]
+    },
+    {
+      "case_id": "REL-CASE-007",
+      "title": "左图右图",
+      "layers": {
+        "raw_parser": {"content_list": [{"type": "image", "page_idx": 0, "bbox": [20, 100, 430, 600]}, {"type": "image", "page_idx": 0, "bbox": [470, 100, 880, 600]}, {"type": "text", "text": "左图为输入，右图为输出", "page_idx": 0, "bbox": [100, 650, 800, 700]}]},
+        "parsed_blocks": [{"id": "i1", "type": "image", "page_no": 1, "bbox": [20, 100, 430, 600]}, {"id": "i2", "type": "image", "page_no": 1, "bbox": [470, 100, 880, 600]}, {"id": "t1", "type": "text", "page_no": 1, "bbox": [100, 650, 800, 700]}],
+        "canonical_artifact": {"markdown": "![](asset://i1) ![](asset://i2)\n\n左图为输入，右图为输出", "assets": ["i1", "i2"]},
+        "chunk_metadata": [{"id": "text-1", "expected_relation_ids": ["rel-007-left", "rel-007-right"]}],
+        "retrieval_output": {"direct_hit_ids": ["text-1"], "expanded_hit_ids": ["image-1", "image-2"]}
+      },
+      "gold": [{"relation_id": "rel-007-left", "relation_type": "relative_reference", "status": "bound", "auto_bind_allowed": true, "binding_method": "directional_bbox_rule", "binding_score": 1.0, "score_kind": "heuristic_rule_score", "source_node_ids": ["t1"], "target_asset_ids": ["i1"], "evidence": [{"cue": "左图", "direction": "left", "x_order": 0}]}, {"relation_id": "rel-007-right", "relation_type": "relative_reference", "status": "bound", "auto_bind_allowed": true, "binding_method": "directional_bbox_rule", "binding_score": 1.0, "score_kind": "heuristic_rule_score", "source_node_ids": ["t1"], "target_asset_ids": ["i2"], "evidence": [{"cue": "右图", "direction": "right", "x_order": 1}]}]
+    },
+    {
+      "case_id": "REL-CASE-008",
+      "title": "以下两图",
+      "layers": {
+        "raw_parser": {"content_list": [{"type": "text", "text": "以下两图为处理前后结果", "page_idx": 0}, {"type": "image", "page_idx": 0}, {"type": "image", "page_idx": 0}]},
+        "parsed_blocks": [{"id": "t1", "type": "text", "page_no": 1, "source_order": 0}, {"id": "i1", "type": "image", "page_no": 1, "source_order": 1}, {"id": "i2", "type": "image", "page_no": 1, "source_order": 2}],
+        "canonical_artifact": {"markdown": "以下两图为处理前后结果\n\n![](asset://i1)\n\n![](asset://i2)", "assets": ["i1", "i2"]},
+        "chunk_metadata": [{"id": "text-1", "expected_group_ids": ["group-008"]}],
+        "retrieval_output": {"direct_hit_ids": ["text-1"], "expanded_hit_ids": ["image-1", "image-2"]}
+      },
+      "gold": [{"relation_id": "rel-008", "relation_type": "shared_context_of", "status": "bound", "auto_bind_allowed": true, "binding_method": "explicit_count_following_assets", "binding_score": 1.0, "score_kind": "heuristic_rule_score", "source_node_ids": ["t1"], "target_group_ids": ["group-008"], "evidence": [{"cue": "以下两图", "count": 2, "ordered_assets": ["i1", "i2"]}]}]
+    },
+    {
+      "case_id": "REL-CASE-009",
+      "title": "通用代词三候选",
+      "layers": {
+        "raw_parser": {"content_list": [{"type": "image", "page_idx": 0}, {"type": "image", "page_idx": 0}, {"type": "image", "page_idx": 0}, {"type": "text", "text": "该图展示结果", "page_idx": 0}]},
+        "parsed_blocks": [{"id": "i1", "type": "image", "page_no": 1}, {"id": "i2", "type": "image", "page_no": 1}, {"id": "i3", "type": "image", "page_no": 1}, {"id": "t1", "type": "text", "page_no": 1}],
+        "canonical_artifact": {"markdown": "![](asset://i1) ![](asset://i2) ![](asset://i3)\n\n该图展示结果", "assets": ["i1", "i2", "i3"]},
+        "chunk_metadata": [{"id": "text-1", "expected_relation_ids": []}],
+        "retrieval_output": {"direct_hit_ids": ["text-1"], "expanded_hit_ids": []}
+      },
+      "gold": [{"relation_id": "rel-009", "relation_type": "relative_reference", "status": "ambiguous", "auto_bind_allowed": false, "binding_method": "generic_pronoun_candidates", "binding_score": 0.0, "score_kind": "heuristic_rule_score", "source_node_ids": ["t1"], "candidate_targets": ["i1", "i2", "i3"], "evidence": [{"cue": "该图", "ambiguity_reason": "no_unique_antecedent"}]}]
+    },
+    {
+      "case_id": "REL-CASE-010",
+      "title": "跨 section 拒绝",
+      "layers": {
+        "raw_parser": {"content_list": [{"type": "text", "text": "下图展示结果", "page_idx": 0}, {"type": "image", "page_idx": 0}]},
+        "parsed_blocks": [{"id": "t1", "type": "text", "page_no": 1, "section_path": "A"}, {"id": "i1", "type": "image", "page_no": 1, "section_path": "B"}],
+        "canonical_artifact": {"markdown": "## A\n\n下图展示结果\n\n## B\n\n![](asset://i1)", "assets": ["i1"]},
+        "chunk_metadata": [{"id": "text-1", "expected_relation_ids": []}],
+        "retrieval_output": {"direct_hit_ids": ["text-1"], "expanded_hit_ids": []}
+      },
+      "gold": [{"relation_id": "rel-010", "relation_type": "relative_reference", "status": "rejected", "auto_bind_allowed": false, "binding_method": "section_boundary_guard", "binding_score": 0.0, "score_kind": "heuristic_rule_score", "source_node_ids": ["t1"], "candidate_targets": ["i1"], "evidence": [{"source_section": "A", "target_section": "B", "ambiguity_reason": "section_mismatch"}]}]
+    },
+    {
+      "case_id": "REL-CASE-011",
+      "title": "无证据跨页候选",
+      "layers": {
+        "raw_parser": {"content_list": [{"type": "text", "text": "作品展示", "page_idx": 0}, {"type": "image", "page_idx": 1}]},
+        "parsed_blocks": [{"id": "t1", "type": "text", "page_no": 1, "source_order": 0}, {"id": "i1", "type": "image", "page_no": 2, "source_order": 1}],
+        "canonical_artifact": {"markdown": "作品展示\n\n![](asset://i1)", "assets": ["i1"]},
+        "chunk_metadata": [{"id": "text-1", "expected_relation_ids": []}],
+        "retrieval_output": {"direct_hit_ids": ["text-1"], "expanded_hit_ids": []}
+      },
+      "gold": [{"relation_id": "rel-011", "relation_type": "shared_context_of", "status": "ambiguous", "auto_bind_allowed": false, "binding_method": "cross_page_candidate", "binding_score": 0.0, "score_kind": "heuristic_rule_score", "source_node_ids": ["t1"], "candidate_targets": ["i1"], "evidence": [{"page_delta": 1, "ambiguity_reason": "missing_cross_page_evidence"}]}]
+    },
+    {
+      "case_id": "REL-CASE-012",
+      "title": "缺失 bbox",
+      "layers": {
+        "raw_parser": {"content_list": [{"type": "text", "text": "左图为输入", "page_idx": 0, "bbox": [10, 10, 200, 40]}, {"type": "image", "page_idx": 0}]},
+        "parsed_blocks": [{"id": "t1", "type": "text", "page_no": 1, "bbox": [10, 10, 200, 40]}, {"id": "i1", "type": "image", "page_no": 1, "bbox": null}],
+        "canonical_artifact": {"markdown": "左图为输入\n\n![](asset://i1)", "assets": ["i1"], "page_extent_source": "derived"},
+        "chunk_metadata": [{"id": "text-1", "expected_relation_ids": []}],
+        "retrieval_output": {"direct_hit_ids": ["text-1"], "expanded_hit_ids": []}
+      },
+      "gold": [{"relation_id": "rel-012", "relation_type": "relative_reference", "status": "ambiguous", "auto_bind_allowed": false, "binding_method": "missing_geometry_guard", "binding_score": 0.0, "score_kind": "heuristic_rule_score", "source_node_ids": ["t1"], "candidate_targets": ["i1"], "evidence": [{"ambiguity_reason": "missing_target_geometry", "known_page_no": 1}]}]
+    },
+    {
+      "case_id": "REL-CASE-013",
+      "title": "重复图号",
+      "layers": {
+        "raw_parser": {"content_list": [{"type": "text", "text": "如图1所示", "page_idx": 0}, {"type": "image", "image_caption": ["图1 甲"], "page_idx": 0}, {"type": "image", "image_caption": ["图1 乙"], "page_idx": 0}]},
+        "parsed_blocks": [{"id": "t1", "type": "text", "page_no": 1}, {"id": "i1", "type": "image", "caption": "图1 甲", "page_no": 1}, {"id": "i2", "type": "image", "caption": "图1 乙", "page_no": 1}],
+        "canonical_artifact": {"markdown": "如图1所示\n\n![图1 甲](asset://i1)\n\n![图1 乙](asset://i2)", "assets": ["i1", "i2"]},
+        "chunk_metadata": [{"id": "text-1", "expected_relation_ids": []}],
+        "retrieval_output": {"direct_hit_ids": ["text-1"], "expanded_hit_ids": []}
+      },
+      "gold": [{"relation_id": "rel-013", "relation_type": "explicit_reference", "status": "ambiguous", "auto_bind_allowed": false, "binding_method": "repeated_figure_id_candidates", "binding_score": 0.0, "score_kind": "heuristic_rule_score", "source_node_ids": ["t1"], "candidate_targets": ["i1", "i2"], "evidence": [{"figure_id": "figure:1", "ambiguity_reason": "repeated_figure_id_not_uniquely_resolved"}]}]
+    },
+    {
+      "case_id": "REL-CASE-014",
+      "title": "四类真实文档数据门禁",
+      "layers": {"raw_parser": {"required_paths": []}, "parsed_blocks": [], "canonical_artifact": {}, "chunk_metadata": [], "retrieval_output": {}},
+      "gold": [{"relation_id": "rel-014-gate", "relation_type": "dataset_gate", "status": "unmatched", "auto_bind_allowed": false, "binding_method": "manual_gold_required", "binding_score": null, "score_kind": "not_scored", "evidence": [{"required_document_types": ["album", "calligraphy", "paper", "product_manual"], "minimum_pages_each": 5, "reason": "real_documents_not_supplied"}]}]
+    },
+    {
+      "case_id": "REL-CASE-015",
+      "title": "关系开关关闭兼容性",
+      "layers": {"raw_parser": {"reuse_cases": ["REL-CASE-001", "REL-CASE-004", "REL-CASE-006"]}, "parsed_blocks": [{"reuse": true}], "canonical_artifact": {"relations": []}, "chunk_metadata": [{"relation_fields": []}], "retrieval_output": {"expanded_hit_ids": [], "direct_hits_unchanged": true}},
+      "gold": [{"relation_id": "rel-015", "relation_type": "flag_off_compatibility", "status": "unmatched", "auto_bind_allowed": false, "binding_method": "feature_disabled", "binding_score": null, "score_kind": "not_scored", "evidence": [{"required_flags": ["graph", "materialization", "expansion", "group", "implicit"], "direct_hits_unchanged": true}]}]
+    },
+    {
+      "case_id": "REL-CASE-016",
+      "title": "正文命中扩展图片",
+      "layers": {"raw_parser": {"reuse_case": "REL-CASE-001"}, "parsed_blocks": [{"reuse": true}], "canonical_artifact": {"relation_ids": ["rel-001"]}, "chunk_metadata": [{"id": "text-a", "document_id": "doc-a", "knowledge_base_id": "kb-a", "figure_references": [{"image_chunk_ids": ["image-a"]}]}, {"id": "image-a", "document_id": "doc-a", "knowledge_base_id": "kb-a"}], "retrieval_output": {"direct_hit_ids": ["text-a"], "expanded_hit_ids": ["image-a"], "direct_scores_unchanged": true}},
+      "gold": [{"relation_id": "rel-016", "relation_type": "retrieval_expansion", "status": "bound", "auto_bind_allowed": true, "binding_method": "scoped_text_to_image_expansion", "binding_score": null, "score_kind": "not_scored", "source_node_ids": ["text-a"], "target_asset_ids": ["image-a"], "evidence": [{"source_document_id": "doc-a", "target_document_id": "doc-a", "source_knowledge_base_id": "kb-a", "target_knowledge_base_id": "kb-a", "budget": 3}]}]
+    },
+    {
+      "case_id": "REL-CASE-017",
+      "title": "图片命中扩展多正文和公共说明",
+      "layers": {"raw_parser": {"reuse_cases": ["REL-CASE-002", "REL-CASE-004"]}, "parsed_blocks": [{"reuse": true}], "canonical_artifact": {"relation_ids": ["rel-002-a", "rel-002-b", "rel-004"]}, "chunk_metadata": [{"id": "image-a", "incoming_reference_chunk_ids": ["text-a", "text-b"], "shared_context_chunk_ids": ["shared-a"]}], "retrieval_output": {"direct_hit_ids": ["image-a"], "expanded_hit_ids": ["text-a", "text-b", "shared-a"]}},
+      "gold": [{"relation_id": "rel-017", "relation_type": "retrieval_expansion", "status": "bound", "auto_bind_allowed": true, "binding_method": "ordered_image_to_context_expansion", "binding_score": null, "score_kind": "not_scored", "source_node_ids": ["image-a"], "target_asset_ids": ["text-a", "text-b", "shared-a"], "evidence": [{"relation_order": ["explicit_reference", "explicit_reference", "shared_context_of"], "per_hit_text_budget": 5}]}]
+    },
+    {
+      "case_id": "REL-CASE-018",
+      "title": "污染 metadata 跨边界拒绝",
+      "layers": {"raw_parser": {"reuse_case": "REL-CASE-001"}, "parsed_blocks": [{"reuse": true}], "canonical_artifact": {"relation_ids": []}, "chunk_metadata": [{"id": "text-a", "document_id": "doc-a", "knowledge_base_id": "kb-a", "figure_references": [{"image_chunk_ids": ["image-b"]}]}, {"id": "image-b", "document_id": "doc-b", "knowledge_base_id": "kb-b"}], "retrieval_output": {"direct_hit_ids": ["text-a"], "expanded_hit_ids": [], "rejected_target_ids": ["image-b"]}},
+      "gold": [{"relation_id": "rel-018", "relation_type": "retrieval_expansion", "status": "rejected", "auto_bind_allowed": false, "binding_method": "scope_guard", "binding_score": null, "score_kind": "not_scored", "source_node_ids": ["text-a"], "target_asset_ids": ["image-b"], "evidence": [{"source_document_id": "doc-a", "target_document_id": "doc-b", "source_knowledge_base_id": "kb-a", "target_knowledge_base_id": "kb-b", "reason": "scope_mismatch"}]}]
+    }
+  ]
+}

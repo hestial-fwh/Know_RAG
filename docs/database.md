@@ -1,7 +1,7 @@
 # Database
 
 > 状态：Current（后续 Phase 小节为历史增量记录）
-> 维护日期：2026-07-17
+> 维护日期：2026-07-23
 
 执行迁移：
 
@@ -26,7 +26,8 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 ### document_canonical_artifacts
 
-迁移 `0011_canonical_provenance_p25.py` 为每个文档保存一份当前 Canonical revision：
+迁移 `0011_canonical_provenance_p25.py` 为每个文档保存一份当前 Canonical revision；迁移
+`0012_document_relation_graph.py` additive 新增通用关系图字段：
 
 - 主键 `document_id`，删除 document 时级联删除；
 - `parse_revision`、`schema_version`、`algorithm_version` 用于区分数据和算法版本；
@@ -34,10 +35,14 @@ CREATE EXTENSION IF NOT EXISTS vector;
 - `provenance_json` 保存 source node、页码、bbox、语义角色和 normalize 前后字符范围；
 - `assets_json` 保存不含图片 base64 的 asset sidecar；
 - `figure_links_json` 保存引用状态和完整候选证据；
+- `relation_graph_json` 保存 versioned edge/group graph；当前统一 caption_of、footnote_of 和
+  explicit_reference，group 在 Phase 2 允许为空；
 - `stats_json` 保存 grounding、asset 和引用状态统计。
 
 该表与新 chunks 在 `rebuild_document_chunks()` 的同一调用方事务内替换。它是当前 revision
-账本，不是 ParsedBlock 历史归档；旧文档需要 reparse 才会生成记录。
+账本，不是 ParsedBlock 历史归档。读取端只在 `relation_graph_json` 没有 versioned graph
+结构标记时回退到 `figure_links_json`；带 schema 的合法空图仍是权威结果。只有生成完整新 graph
+才需要 reparse。迁移 downgrade 只删除新列，不触碰旧显式关系兼容投影。
 
 ### chunk_embeddings
 

@@ -13,7 +13,6 @@ from app.db.models import (
     Chunk,
     ChunkEmbedding,
     Document,
-    DocumentCanonicalArtifact,
     KnowledgeBase,
     User,
 )
@@ -37,6 +36,12 @@ from app.services.chunker.parent_child_splitter import split_parent_child_result
 from app.services.chunker.canonical_parent_child import build_canonical_parent_child_plan
 from app.services.document_parser.canonical_document import build_canonical_document
 from app.services.document_parser.types import ParsedBlock, ParsedDocument
+from app.services.document_relation.materializer import (
+    materialize_figure_bindings,
+    materialize_relation_summaries,
+)
+from app.services.document_relation.relation_graph_merger import build_relation_graph
+from app.services.document_relation_persistence_service import replace_canonical_artifact
 from app.services.chunker_config_service import runtime_config_from_db
 from app.services.content_cleaning import (
     MIN_CHILD_TEXT_CHARS,
@@ -1131,6 +1136,13 @@ def _rebuild_canonical_weknora_parent_child(
         enable_image_ocr_child=False,
     )
     plan = build_canonical_parent_child_plan(canonical, runtime_cfg)
+    relation_graph = None
+    if settings.document_relation_graph_enabled:
+        relation_graph = build_relation_graph(
+            assets=plan.assets,
+            provenance_nodes=plan.provenance_nodes,
+            figure_links=plan.figure_links,
+        )
     if artifact_out is not None:
         link_status_counts: dict[str, int] = {}
         for link in plan.figure_links.links:
@@ -1141,8 +1153,12 @@ def _rebuild_canonical_weknora_parent_child(
         artifact_out.update(
             {
                 "parse_revision": new_id(),
-                "schema_version": 1,
-                "algorithm_version": "canonical-provenance-p2.5-v1",
+                "schema_version": 2 if relation_graph is not None else 1,
+                "algorithm_version": (
+                    "canonical-relation-graph-p2-v1"
+                    if relation_graph is not None
+                    else "canonical-provenance-p2.5-v1"
+                ),
                 "source_format": canonical.source_format,
                 "canonical_hash": hashlib.sha256(
                     plan.markdown_content.encode("utf-8")
@@ -1158,6 +1174,7 @@ def _rebuild_canonical_weknora_parent_child(
                     "items": [asset.to_metadata() for asset in plan.assets.values()],
                 },
                 "figure_links_json": plan.figure_links.to_metadata(),
+                "relation_graph_json": relation_graph.to_dict() if relation_graph is not None else {},
                 "stats_json": {
                     "canonical_chars": len(plan.markdown_content),
                     "provenance_node_count": len(plan.provenance_nodes),
@@ -1165,6 +1182,8 @@ def _rebuild_canonical_weknora_parent_child(
                     "asset_count": len(plan.assets),
                     "figure_link_count": len(plan.figure_links.links),
                     "figure_link_status_counts": link_status_counts,
+                    "relation_edge_count": len(relation_graph.edges) if relation_graph is not None else 0,
+                    "relation_group_count": len(relation_graph.groups) if relation_graph is not None else 0,
                 },
             }
         )
@@ -1260,7 +1279,14 @@ def _rebuild_canonical_weknora_parent_child(
         chunk.content_hash = content_hash(chunk.content)
         new_chunks.append(chunk)
 
-    new_chunks = _apply_figure_bindings(new_chunks, plan)
+    new_chunks = _apply_figure_bindings(
+        new_chunks,
+        plan,
+        enabled=settings.document_relation_materialization_enabled,
+        relation_graph=relation_graph,
+    )
+    if relation_graph is not None and settings.document_relation_materialization_enabled:
+        new_chunks = materialize_relation_summaries(new_chunks, relation_graph)
     for chunk in new_chunks:
         meta = dict(chunk.metadata_json or {})
         meta["source_position_is_exact"] = True
@@ -2409,118 +2435,15 @@ def _rebuild_document_chunks_structured_parent_child(
 
 def _apply_figure_bindings(
     chunks: list["Chunk"],
-    plan: "CanonicalChunkPlan",
+    plan: Any,
+    *,
+    enabled: bool = True,
+    relation_graph: Any | None = None,
 ) -> list["Chunk"]:
-    """P4: Materialize figure-reference bindings as bilateral chunk metadata.
-
-    For every bound figure link, writes ``figure_references`` on the text
-    chunk that contains the reference and ``image_binding`` on the
-    corresponding image chunk.  Both are persisted in ``metadata_json``
-    inside the same DB transaction.
-    """
-    if not plan.figure_links.links:
+    """Compatibility wrapper for the Phase 1 occurrence materializer."""
+    if not enabled:
         return chunks
-
-    # asset_id -> image chunk id
-    asset_to_image: dict[str, str] = {}
-    for chunk in chunks:
-        if chunk.chunk_type != "image":
-            continue
-        meta = chunk.metadata_json or {}
-        asset_id = meta.get("asset_id")
-        if asset_id:
-            asset_to_image[asset_id] = chunk.id
-
-    if not asset_to_image:
-        return chunks
-
-    # text chunks indexed by id for fast lookup
-    text_by_id: dict[str, "Chunk"] = {
-        chunk.id: chunk
-        for chunk in chunks
-        if chunk.chunk_type in ("text", "table") and chunk.chunk_type != "parent_text"
-    }
-
-    # image chunks indexed by id
-    image_by_id: dict[str, "Chunk"] = {
-        chunk.id: chunk
-        for chunk in chunks
-        if chunk.chunk_type == "image"
-    }
-
-    for link in plan.figure_links.links:
-        if link.status != "bound":
-            continue
-        if not link.asset_ids:
-            continue
-
-        ref_start = link.reference.start
-        ref_end = link.reference.end
-
-        # Find text chunk(s) whose precise range contains the reference
-        ref_text_chunk_ids: list[str] = []
-        for chunk in chunks:
-            if chunk.chunk_type == "parent_text":
-                continue
-            if chunk.start_at is None or chunk.end_at is None:
-                continue
-            # Reference position falls inside this chunk's range
-            if chunk.start_at <= ref_start < chunk.end_at:
-                ref_text_chunk_ids.append(chunk.id)
-
-        # Write figure_references on each text chunk
-        for text_chunk_id in ref_text_chunk_ids:
-            text_chunk = text_by_id.get(text_chunk_id)
-            if text_chunk is None:
-                continue
-            meta = dict(text_chunk.metadata_json or {})
-            existing_refs: list[dict] = list(meta.get("figure_references", []))
-
-            for asset_id in link.asset_ids:
-                img_chunk_id = asset_to_image.get(asset_id)
-                if img_chunk_id is None:
-                    continue
-                # Deduplicate by figure_id + image_chunk_id
-                if not any(
-                    r.get("figure_id") == link.reference.figure_id
-                    and img_chunk_id in (r.get("image_chunk_ids") or [])
-                    for r in existing_refs
-                ):
-                    existing_refs.append({
-                        "version": 1,
-                        "figure_id": link.reference.figure_id,
-                        "reference_type": link.reference.reference_type,
-                        "image_chunk_ids": [img_chunk_id],
-                        "binding_method": link.binding_method,
-                        "binding_score": link.binding_score,
-                        "score_kind": link.score_kind,
-                        "start": ref_start,
-                        "end": ref_end,
-                    })
-
-                # Write image_binding on the image chunk
-                img_chunk = image_by_id.get(img_chunk_id)
-                if img_chunk is not None:
-                    img_meta = dict(img_chunk.metadata_json or {})
-                    existing_binding = img_meta.get("image_binding")
-                    ref_ids = list(existing_binding.get("reference_chunk_ids", [])) if existing_binding else []
-                    if text_chunk_id not in ref_ids:
-                        ref_ids.append(text_chunk_id)
-                    img_meta["image_binding"] = {
-                        "version": 1,
-                        "figure_id": link.reference.figure_id,
-                        "binding_method": link.binding_method,
-                        "binding_score": link.binding_score,
-                        "score_kind": link.score_kind,
-                        "reference_chunk_ids": ref_ids,
-                    }
-                    img_chunk.metadata_json = img_meta
-
-            if existing_refs:
-                meta["figure_references"] = existing_refs
-                text_chunk.metadata_json = meta
-
-    return chunks
+    return materialize_figure_bindings(chunks, plan, relation_graph=relation_graph)
 
 
 def _replace_canonical_artifact(
@@ -2528,32 +2451,8 @@ def _replace_canonical_artifact(
     document: Document,
     payload: dict[str, Any],
 ) -> None:
-    """Replace the current Canonical artifact inside the chunk transaction."""
-    artifact = db.get(DocumentCanonicalArtifact, document.id)
-    if not payload:
-        if artifact is not None:
-            db.delete(artifact)
-        return
-    if artifact is None:
-        artifact = DocumentCanonicalArtifact(
-            document_id=document.id,
-            knowledge_base_id=document.knowledge_base_id,
-            parse_revision=str(payload["parse_revision"]),
-            canonical_hash=str(payload["canonical_hash"]),
-            canonical_markdown=str(payload["canonical_markdown"]),
-        )
-    artifact.knowledge_base_id = document.knowledge_base_id
-    artifact.parse_revision = str(payload["parse_revision"])
-    artifact.schema_version = int(payload["schema_version"])
-    artifact.algorithm_version = str(payload["algorithm_version"])
-    artifact.source_format = str(payload["source_format"])
-    artifact.canonical_hash = str(payload["canonical_hash"])
-    artifact.canonical_markdown = str(payload["canonical_markdown"])
-    artifact.provenance_json = sanitize_json_for_postgres(payload["provenance_json"])
-    artifact.assets_json = sanitize_json_for_postgres(payload["assets_json"])
-    artifact.figure_links_json = sanitize_json_for_postgres(payload["figure_links_json"])
-    artifact.stats_json = sanitize_json_for_postgres(payload["stats_json"])
-    db.add(artifact)
+    """Compatibility wrapper for the Phase 2 persistence adapter."""
+    replace_canonical_artifact(db, document, payload)
 
 
 def rebuild_document_chunks(

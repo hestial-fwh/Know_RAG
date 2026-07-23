@@ -30,6 +30,21 @@ _FIGURE_GROUP_RE = re.compile(
     re.IGNORECASE,
 )
 _FIGURE_TOKEN_RE = re.compile(_FIGURE_TOKEN_PATTERN, re.IGNORECASE)
+_RANGE_ENDPOINT_PATTERN = (
+    r"(?:[Ss]\s*[-.]?\s*)?(?:[0-9]+|[一二三四五六七八九十百]+)"
+    r"(?:\s*[（(]\s*[A-Za-z0-9]\s*[）)]|[A-Za-z])?"
+)
+_LABELED_FIGURE_RANGE_RE = re.compile(
+    rf"{_FIGURE_LABEL_PATTERN}\s*(?P<first>{_RANGE_ENDPOINT_PATTERN})"
+    rf"\s*(?:-|–|—|‑|~|～|至|到)\s*"
+    rf"{_FIGURE_LABEL_PATTERN}\s*(?P<last>{_RANGE_ENDPOINT_PATTERN})",
+    re.IGNORECASE,
+)
+_PLURAL_FIGURE_RANGE_RE = re.compile(
+    rf"(?:figs|figures)\.?\s*(?P<first>{_RANGE_ENDPOINT_PATTERN})"
+    rf"\s*(?:-|–|—|‑|~|～|to)\s*(?P<last>{_RANGE_ENDPOINT_PATTERN})",
+    re.IGNORECASE,
+)
 _HEADING_RE = re.compile(r"^\s*(#{1,6})\s+(.+?)\s*#*\s*$")
 _FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})")
 _INLINE_CODE_RE = re.compile(r"(?<!`)`[^`\n]+`(?!`)")
@@ -230,6 +245,17 @@ def _node_for_span(
     )
 
 
+def _has_explicit_cue(text: str, start: int, end: int) -> bool:
+    before = text[max(0, start - 32) : start].rsplit("\n", 1)[-1]
+    after = text[end : min(len(text), end + 16)].split("\n", 1)[0]
+    return bool(
+        _ZH_PREFIX_CUE_RE.search(before)
+        or _ZH_SUFFIX_CUE_RE.search(after)
+        or _EN_PREFIX_CUE_RE.search(before)
+        or _EN_SUFFIX_CUE_RE.search(after)
+    )
+
+
 def extract_explicit_figure_references(
     markdown: str,
     *,
@@ -241,19 +267,52 @@ def extract_explicit_figure_references(
     headings = _heading_positions(text)
     references: list[FigureReference] = []
     nodes = list(provenance_nodes or [])
+    range_spans: list[tuple[int, int]] = []
+    range_matches = sorted(
+        [
+            *list(_LABELED_FIGURE_RANGE_RE.finditer(text)),
+            *list(_PLURAL_FIGURE_RANGE_RE.finditer(text)),
+        ],
+        key=lambda match: (match.start(), match.end()),
+    )
+    for match in range_matches:
+        if _inside_spans(match.start(), match.end(), protected):
+            continue
+        if _inside_spans(match.start(), match.end(), range_spans):
+            continue
+        if not _has_explicit_cue(text, match.start(), match.end()):
+            continue
+        node = _node_for_span(match.start(), match.end(), nodes)
+        if node and node.semantic_role in _NON_PROSE_ROLES:
+            continue
+        range_spans.append((match.start(), match.end()))
+        for endpoint in ("first", "last"):
+            start = match.start(endpoint)
+            end = match.end(endpoint)
+            references.append(
+                FigureReference(
+                    figure_id=normalize_figure_token(match.group(endpoint)),
+                    raw_text=match.group(endpoint),
+                    start=start,
+                    end=end,
+                    section=(
+                        node.section_path
+                        if node and node.section_path
+                        else _section_at(start, headings)
+                    ),
+                    reference_type="explicit_range",
+                    source_node_id=node.node_id if node else "",
+                    page_no=node.page_no if node else None,
+                    bbox=node.bbox if node else None,
+                    source_order=node.source_order if node else None,
+                )
+            )
     for group in _FIGURE_GROUP_RE.finditer(text):
         if _inside_spans(group.start(), group.end(), protected):
             continue
-        before = text[max(0, group.start() - 32) : group.start()]
-        after = text[group.end() : min(len(text), group.end() + 16)]
-        before = before.rsplit("\n", 1)[-1]
-        after = after.split("\n", 1)[0]
-        if not (
-            _ZH_PREFIX_CUE_RE.search(before)
-            or _ZH_SUFFIX_CUE_RE.search(after)
-            or _EN_PREFIX_CUE_RE.search(before)
-            or _EN_SUFFIX_CUE_RE.search(after)
-        ):
+        if _inside_spans(group.start(), group.end(), range_spans):
+            continue
+        if not _has_explicit_cue(text, group.start(), group.end()):
             continue
         node = _node_for_span(group.start(), group.end(), nodes)
         if node and node.semantic_role in _NON_PROSE_ROLES:
@@ -275,7 +334,7 @@ def extract_explicit_figure_references(
                     source_order=node.source_order if node else None,
                 )
             )
-    return references
+    return sorted(references, key=lambda reference: (reference.start, reference.end))
 
 
 def _asset_marker_positions(markdown: str) -> dict[str, int]:

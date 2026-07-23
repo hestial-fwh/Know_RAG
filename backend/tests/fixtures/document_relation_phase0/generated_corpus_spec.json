@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "generator_seed": 20260722,
+  "pages_per_type": 40,
+  "document_types": ["album", "calligraphy", "paper", "product_manual"],
+  "scenarios": [
+    "explicit_reference",
+    "figure_range_reference",
+    "repeated_reference",
+    "overlap_child",
+    "shared_context",
+    "independent_captions",
+    "vertical_direction",
+    "horizontal_direction",
+    "following_count",
+    "generic_pronoun",
+    "cross_section",
+    "cross_page",
+    "missing_bbox",
+    "repeated_figure_id",
+    "flag_off",
+    "retrieval_text_to_image",
+    "retrieval_image_to_text",
+    "contaminated_scope",
+    "no_relation"
+  ]
+}

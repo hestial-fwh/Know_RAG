@@ -13,6 +13,7 @@ from app.core.response import error_response, success_response
 from app.db.models import KnowledgeBase, RetrievalConfig, User
 from app.services.audit_service import record_audit
 from app.services.embedding_service import embed_text, embedding_to_vector_literal, get_embedding_runtime
+from app.services.document_relation_expansion_service import expand_figure_bindings
 from app.services.keyword_index_service import ElasticsearchQueryComplexityError
 from app.services.vector_store_adapters import get_active_vector_config, is_external_provider, search_external_vector
 from app.utils.ids import new_id
@@ -1304,89 +1305,18 @@ def build_parent_groups(db, results: list[dict], options: SearchOptions) -> list
 def _expand_figure_bindings(
     db: Session,
     results: list[dict],
+    *,
+    enabled: bool = True,
+    degradation_messages: list[str] | None = None,
 ) -> list[dict]:
-    """P5: Expand retrieval results with figure-linked chunks.
-
-    For every result whose metadata contains ``figure_references`` (text
-    chunks) or ``image_binding`` (image chunks), fetches the linked chunks
-    from the same document and appends them to the result list.
-
-    Limits: max 3 images and 5 text children per expansion.  Linked chunks
-    are scoped to the same document as the source result.  Expansion items
-    carry a ``retrieval_expansion`` flag so consumers can distinguish them
-    from direct hits.
-    """
-    MAX_IMAGES = 3
-    MAX_TEXT = 5
-
-    collected_image_ids: list[str] = []
-    collected_text_ids: list[str] = []
-    seen_ids: set[str] = {r.get("id", "") for r in results if r.get("id")}
-
-    for result in results:
-        meta = result.get("metadata_json") or {}
-        if not isinstance(meta, dict):
-            continue
-
-        # Text chunks with figure_references -> add linked image chunks
-        figure_refs = meta.get("figure_references")
-        if isinstance(figure_refs, list):
-            for ref in figure_refs:
-                if not isinstance(ref, dict):
-                    continue
-                img_ids = ref.get("image_chunk_ids") or []
-                for img_id in img_ids:
-                    if isinstance(img_id, str) and img_id not in seen_ids:
-                        if len(collected_image_ids) < MAX_IMAGES:
-                            collected_image_ids.append(img_id)
-                            seen_ids.add(img_id)
-
-        # Image chunks with image_binding -> add linked text chunks
-        img_binding = meta.get("image_binding")
-        if isinstance(img_binding, dict):
-            ref_ids = img_binding.get("reference_chunk_ids") or []
-            for ref_id in ref_ids:
-                if isinstance(ref_id, str) and ref_id not in seen_ids:
-                    if len(collected_text_ids) < MAX_TEXT:
-                        collected_text_ids.append(ref_id)
-                        seen_ids.add(ref_id)
-
-    all_linked_ids = collected_image_ids + collected_text_ids
-    if not all_linked_ids:
+    """Compatibility wrapper for Phase 1 scoped expansion."""
+    if not enabled:
         return results
-
-    # Fetch linked chunks from DB
-    from app.db.models import Chunk as ChunkModel
-    linked_chunks = db.query(ChunkModel).filter(
-        ChunkModel.id.in_(all_linked_ids),
-        ChunkModel.is_enabled == True,
-    ).all()
-
-    if not linked_chunks:
-        return results
-
-    for chunk in linked_chunks:
-        results.append({
-            "id": chunk.id,
-            "content": chunk.content,
-            "chunk_type": chunk.chunk_type,
-            "document_id": chunk.document_id or "",
-            "knowledge_base_id": chunk.knowledge_base_id or "",
-            "metadata_json": chunk.metadata_json or {},
-            "image_info": chunk.image_info or {},
-            "parent_chunk_id": chunk.parent_chunk_id or "",
-            "context_header": chunk.context_header or "",
-            "score": 0.0,
-            "vector_score": None,
-            "keyword_score": None,
-            "fusion_score": None,
-            "retrieval_expansion": True,
-            "expansion_source": "figure_binding",
-            "start_at": chunk.start_at,
-            "end_at": chunk.end_at,
-        })
-
-    return results
+    return expand_figure_bindings(
+        db,
+        results,
+        degradation_messages=degradation_messages,
+    )
 
 
 async def hybrid_search(db, actor: User | None, kb_id: str, payload: dict):
@@ -1437,7 +1367,12 @@ async def hybrid_search(db, actor: User | None, kb_id: str, payload: dict):
             return error_response(str(exc) or "关键词检索失败")
 
     results = merge_results(vector_results, keyword_results, options)
-    results = _expand_figure_bindings(db, results)
+    results = _expand_figure_bindings(
+        db,
+        results,
+        enabled=settings.document_relation_retrieval_expansion_enabled,
+        degradation_messages=degradation_messages,
+    )
     parent_groups: list[dict] = []
     if options.include_context:
         attach_context(db, results, options)

@@ -1,7 +1,7 @@
 # API
 
 > 状态：Current（完整实时契约以 FastAPI `/docs` 为准）
-> 维护日期：2026-07-15
+> 维护日期：2026-07-23
 
 统一响应：
 
@@ -17,6 +17,13 @@
 
 Chunk 返回中的 `embedding_index_info` 可以包含模型、维度、向量长度、范数和最多 16 维
 `vector_preview`，不会包含完整 embedding 向量。
+
+Phase 2 开启 graph 与 materialization 后，Chunk `metadata_json` 可包含
+`relation_summary_version`、`relation_ids`、`relation_summaries`、
+`outgoing_asset_chunk_ids`、`incoming_reference_chunk_ids` 和 `group_ids`。每条 summary 只包含
+relation type/status/method/score；完整 evidence 与 candidates 只保存在内部 Canonical artifact，
+不会被 Phase 2 relation summary 再复制到每个 Chunk；既有图片局部 `image_relation` metadata
+保持兼容返回。
 
 ## Phase 4 新增真实接口
 
@@ -283,5 +290,16 @@ chunk 返回新增或补齐：
 - `context.parent`
 - `context.previous`
 - `context.next`
+
+当 `DOCUMENT_RELATION_RETRIEVAL_EXPANSION_ENABLED=true` 时，显式图文关系可以在 direct hits
+之后追加同知识库、同文档的关联 Chunk。追加项包含：
+
+- 标准结果字段（包括 `chunk_id`、`chunk_index`、文档信息和 `match_type="relation_expansion"`）
+- `retrieval_expansion=true`
+- `expansion_source="figure_binding"`
+- `expansion_source_id`：触发扩展的原始 hit ID
+
+每个原始 hit 独立限制最多 3 张图片和 5 个正文 child，并保持 metadata 声明顺序。扩展失败时
+`results` 保持为未扩展结果，响应 `message` 标记已降级；该开关默认关闭。
 
 `include_content=false` 时不返回完整 `content`，仍返回 `preview`、`matched_content` 和上下文预览。

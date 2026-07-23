@@ -48,6 +48,18 @@ class Settings(BaseSettings):
     parent_chunk_size: int = Field(4096, alias="PARENT_CHUNK_SIZE")
     child_chunk_size: int = Field(384, alias="CHILD_CHUNK_SIZE")
     child_chunk_overlap: int = Field(64, alias="CHILD_CHUNK_OVERLAP")
+    document_relation_graph_enabled: bool = Field(
+        False,
+        alias="DOCUMENT_RELATION_GRAPH_ENABLED",
+    )
+    document_relation_materialization_enabled: bool = Field(
+        False,
+        alias="DOCUMENT_RELATION_MATERIALIZATION_ENABLED",
+    )
+    document_relation_retrieval_expansion_enabled: bool = Field(
+        False,
+        alias="DOCUMENT_RELATION_RETRIEVAL_EXPANSION_ENABLED",
+    )
     local_storage_dir: str = Field("/data/files", alias="LOCAL_STORAGE_DIR")
     local_cache_dir: str = Field("/data/cache", alias="LOCAL_CACHE_DIR")
 

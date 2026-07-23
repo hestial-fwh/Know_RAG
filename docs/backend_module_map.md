@@ -1,7 +1,7 @@
 # Backend Module Map — Know_RAG
 
 > 状态：Current
-> 维护日期：2026-07-15
+> 维护日期：2026-07-23
 > 行数为近似值；生产入口以调用关系和测试为准。
 
 ## Document Parse Flow
@@ -84,6 +84,7 @@ hybrid_search (retrieval_service.py)
   ├─> normalize_options (config merge)
   ├─> vector_search + keyword_search
   ├─> merge_results_rrf / merge_results_weighted (fusion)
+  ├─> document_relation_expansion_service.py (flagged scoped relation expansion)
   ├─> attach_context (parent window + neighbor preview)
   └─> build_parent_groups (parent grouping)
 ```
@@ -92,6 +93,11 @@ hybrid_search (retrieval_service.py)
 | Module | File | Lines | Responsibilities |
 |--------|------|-------|-----------------|
 | Retrieval service | `retrieval_service.py` | 1255 | Search, fusion, parent resolution, formatting |
+| Relation materializer | `document_relation/materializer.py` | — | Pure occurrence carrier selection and bilateral metadata |
+| Relation graph models | `document_relation/models.py` | — | Versioned edge/group/graph schema, validation and stable IDs |
+| Relation graph merger | `document_relation/relation_graph_merger.py` | — | caption/footnote/explicit merge, stable order and legacy adapter |
+| Relation persistence | `document_relation_persistence_service.py` | — | Artifact graph ORM write and dual-read fallback |
+| Relation expansion | `document_relation_expansion_service.py` | — | Ordered per-hit budgets, KB/doc scope and fail-open DB read |
 
 ## LLM Context Flow
 
