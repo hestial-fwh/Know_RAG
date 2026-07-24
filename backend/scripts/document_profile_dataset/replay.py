@@ -17,6 +17,13 @@ from app.services.document_parser.page_visual_enricher import enrich_pdf_page_vi
 from app.services.document_parser.types import ParsedDocument
 
 
+_GOLD_ONLY_ROLES = {
+    "poster_core_text",
+    "scanned_body_ocr",
+    "visual_ocr_candidate",
+}
+
+
 def _json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -104,10 +111,15 @@ def replay_document(
     raw_items = _find_content_list(payload)
     replay_items = deepcopy(raw_items)
     for item in replay_items:
-        if not isinstance(item, dict) or item.get("type") != "image":
+        if not isinstance(item, dict):
             continue
-        for key in ("img_path", "image_path", "path", "url"):
-            item.pop(key, None)
+        if item.get("role") in _GOLD_ONLY_ROLES:
+            # These are gold targets for later OCR-role work, not facts that
+            # current MinerU production output can be assumed to provide.
+            item.pop("role", None)
+        if item.get("type") == "image":
+            for key in ("img_path", "image_path", "path", "url"):
+                item.pop(key, None)
     blocks = _content_list_to_blocks(
         replay_items,
         {},

@@ -32,9 +32,11 @@ from app.services.chunker.heading_utils import (
     strip_continuation_suffix,
 )
 from app.services.chunker.models import ChunkerConfig
+from app.services.chunker.chunk_policy_resolver import resolve_chunk_policies
 from app.services.chunker.parent_child_splitter import split_parent_child_result
 from app.services.chunker.canonical_parent_child import build_canonical_parent_child_plan
 from app.services.document_parser.canonical_document import build_canonical_document
+from app.services.document_parser.document_profiler import profile_canonical_document
 from app.services.document_parser.types import ParsedBlock, ParsedDocument
 from app.services.document_relation.materializer import (
     materialize_figure_bindings,
@@ -1181,6 +1183,20 @@ def _rebuild_canonical_weknora_parent_child(
                     exc_info=True,
                 )
     if artifact_out is not None:
+        document_profile = profile_canonical_document(
+            canonical,
+            provenance_nodes=plan.provenance_nodes,
+        )
+        resolved_policies = resolve_chunk_policies(
+            document_profile,
+            runtime_cfg,
+            materialize_parent=materialize_parents,
+        )
+        resolved_policy_counts: dict[str, int] = {}
+        for policy in resolved_policies:
+            resolved_policy_counts[policy.policy_id] = (
+                resolved_policy_counts.get(policy.policy_id, 0) + 1
+            )
         link_status_counts: dict[str, int] = {}
         for link in plan.figure_links.links:
             link_status_counts[link.status] = link_status_counts.get(link.status, 0) + 1
@@ -1225,6 +1241,15 @@ def _rebuild_canonical_weknora_parent_child(
                     "figure_link_status_counts": link_status_counts,
                     "relation_edge_count": len(relation_graph.edges) if relation_graph is not None else 0,
                     "relation_group_count": len(relation_graph.groups) if relation_graph is not None else 0,
+                    "document_profile_version": document_profile.profile_version,
+                    "document_primary_kind": document_profile.primary_kind,
+                    "document_profile": document_profile.to_metadata(),
+                    "resolved_chunk_policies": [
+                        policy.to_metadata() for policy in resolved_policies
+                    ],
+                    "resolved_chunk_policy_counts": dict(
+                        sorted(resolved_policy_counts.items())
+                    ),
                 },
             }
         )

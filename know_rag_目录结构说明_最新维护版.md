@@ -282,9 +282,10 @@ backend/app/services/document_parser/
 ├─ deepdoc_local_ocr.py                   # DeepDoc 本地 OCR 支撑
 ├─ pdf_ragflow_advanced.py                # PDF 高级解析
 ├─ pdf_ragflow_lite.py                    # PDF 轻量解析
-├─ page_visual_profile.py                 # PDF 页面事实与主视觉覆盖判定 [主链路，可选]
+├─ page_visual_profile.py                 # PDF 页面事实与主视觉覆盖判定 [主链路，只读]
 ├─ pdf_page_renderer.py                   # 选页渲染与媒体保存 [主链路，可选]
 ├─ page_visual_enricher.py                # 缺失页面主视觉补偿、去重与降级统计 [主链路，可选]
+├─ document_profiler.py                   # Canonical 文档/逐页画像与证据汇总 [主链路，shadow]
 ├─ docx_multimodal.py                     # DOCX 多模态解析
 ├─ generic_parsers.py                     # 通用格式解析器
 ├─ media_storage.py                       # 解析媒体文件保存
@@ -328,6 +329,7 @@ backend/app/services/chunker/
 ├─ text_unit.py                           # 文本单元模型
 │
 ├─ canonical_parent_child.py              # Canonical → 父子切分计划 [当前核心算法]
+├─ chunk_policy_resolver.py               # 逐页 resolved policy [DCP-2 shadow，不改变切分]
 ├─ parent_child_splitter.py               # Know_RAG ↔ WeKnora Python 算法适配
 ├─ weknora_splitter.py                    # Old 两阶段 Parent/Child 实际算法实现
 │

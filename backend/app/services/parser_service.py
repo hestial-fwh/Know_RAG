@@ -10,7 +10,10 @@ from app.services.document_parser.mineru_adapter import (
     is_mineru_supported_format,
     parse_document_with_mineru,
 )
-from app.services.document_parser.page_visual_enricher import enrich_pdf_page_visuals
+from app.services.document_parser.page_visual_enricher import (
+    attach_pdf_page_visual_profile,
+    enrich_pdf_page_visuals,
+)
 from app.services.document_parser.ragflow_format_adapter import (
     SUPPORTED_SUFFIXES,
     parse_binary_fallback,
@@ -85,18 +88,25 @@ def _maybe_preserve_pdf_page_visuals(
     suffix: str,
     parsed: ParsedDocument,
 ) -> ParsedDocument:
-    if suffix != "pdf" or not _page_visual_preservation_enabled(document):
+    if suffix != "pdf":
         return parsed
+    dominant_image_threshold = getattr(
+        settings,
+        "document_page_visual_min_coverage",
+        0.70,
+    )
+    if not _page_visual_preservation_enabled(document):
+        return attach_pdf_page_visual_profile(
+            path,
+            parsed,
+            dominant_image_threshold=dominant_image_threshold,
+        )
     return enrich_pdf_page_visuals(
         path,
         parsed,
         knowledge_base_id=document.knowledge_base_id,
         document_id=document.id,
-        dominant_image_threshold=getattr(
-            settings,
-            "document_page_visual_min_coverage",
-            0.70,
-        ),
+        dominant_image_threshold=dominant_image_threshold,
         render_dpi=getattr(settings, "document_page_visual_render_dpi", 144),
     )
 

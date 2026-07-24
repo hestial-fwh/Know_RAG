@@ -1,7 +1,7 @@
 # Backend Module Map — Know_RAG
 
 > 状态：Current
-> 维护日期：2026-07-23
+> 维护日期：2026-07-24
 > 行数为近似值；生产入口以调用关系和测试为准。
 
 ## Document Parse Flow
@@ -11,7 +11,7 @@ upload_document (document_service.py)
   └─> parse_document (document_service.py)  [889 lines, 10-stage pipeline]
         ├─> resolve_parser_engine (parser_service.py)
         ├─> parse_local_document (parser_service.py → ragflow_adapter / mineru_adapter)
-        ├─> optional page visual profile → selected page render → ParsedBlock enrichment
+        ├─> PDF read-only page profile → optional selected page render / enrichment
         ├─> enhance_ocr_blocks (vision_service.py)
         ├─> enhance_image_blocks (vision_service.py)
         ├─> reflow_parsed_document (document_parser/block_reflow.py)
@@ -26,9 +26,10 @@ upload_document (document_service.py)
 | Parser router | `parser_service.py` | 210 | Engine selection (RAGFlow / MinerU), fallback |
 | RAGFlow adapter | `document_parser/ragflow_format_adapter.py` | 743 | Multi-format parsing via RAGFlow vendor |
 | MinerU adapter | `document_parser/mineru_adapter.py` | 1218 | External MinerU API adapter |
-| Page visual profiler | `document_parser/page_visual_profile.py` | — | PDF facts、dominant-image 与 parser coverage 的纯只读判定 |
+| Page visual profiler | `document_parser/page_visual_profile.py` | — | 始终采集 PDF facts、dominant-image 与 parser coverage 的纯只读判定 |
 | Selected page renderer | `document_parser/pdf_page_renderer.py` | — | 仅渲染选中的 PDF 页面并保存到现有媒体存储 |
 | Page visual enricher | `document_parser/page_visual_enricher.py` | — | 缺失页面主视觉注入、已有整页图标记、去重统计和 fail-open |
+| Document profiler | `document_parser/document_profiler.py` | — | Canonical provenance/asset/page facts → 确定性文档与逐页画像（shadow） |
 | Block reflow | `document_parser/block_reflow.py` | — | Layout-aware block reordering、视觉页 section scope 与普通正文跨页标题继承 |
 
 ## Chunk Rebuild Flow
@@ -59,6 +60,7 @@ rebuild_document_chunks (chunk_service.py)
 | Metadata builder | `chunking/metadata_builder.py` | 244 | Unified metadata/flags (NEW, pure) |
 | Chunk drafts | `chunking/chunk_draft.py` | 96 | Pure dataclasses (NEW) |
 | Low-level splitting | `chunker/` (13 files) | ~4500 total | Recursive split, markdown split, heading split, text_unit, boundary utils |
+| Shadow policy resolver | `chunker/chunk_policy_resolver.py` | — | PageProfile → versioned ResolvedChunkPolicy；DCP-2 只写 artifact |
 
 ## Embedding Flow
 

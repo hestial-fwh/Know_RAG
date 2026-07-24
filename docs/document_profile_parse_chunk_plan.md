@@ -1,6 +1,6 @@
 # 文档画像驱动的解析与差异化切分方案
 
-> 状态：DCP-1 PASS，DCP-2 可开始  
+> 状态：DCP-2 PASS，DCP-3 可开始
 > 编写日期：2026-07-23  
 > 适用范围：当前 `know_rag` 主分支  
 > 本文性质：现状审查与后续实现方案，不代表已上线能力
@@ -502,11 +502,31 @@ Canonical asset、生产 parser 入口、开关和 fail-open 均有专项测试�
 
 ### DCP-2：画像与策略解析
 
-- 实现 `DocumentProfile / PageProfile / ResolvedChunkPolicy`。
-- 先只记录 resolved policy，不改变切分。
-- 在 canonical artifact 和评估报告展示决策差异。
+**当前状态（2026-07-24）：PASS。** 已完成：
+
+- `document_profiler.py` 基于 Canonical provenance、page visual facts、asset role、表格/代码/
+  标题等结构证据，确定性生成 `DocumentProfile` 与逐页 `PageProfile`；
+- 页面判定覆盖 `native_text / scanned_prose / visual_dominant / table_dense / slide /
+  unknown`，文档摘要覆盖 `structured_text / scanned_prose / visual_collection / table_dense /
+  presentation / code_or_technical / mixed / unknown`；
+- `chunk_policy_resolver.py` 逐页生成 versioned `ResolvedChunkPolicy`，包含边界策略、尺寸、
+  页面边界、表格模式、图片 OCR 模式和可解释 reasons；
+- 当前策略全部标记 `shadow_only=true`，只写 canonical artifact 的 `stats_json`，不修改
+  Parent/Child 计划，不向 chunk 写入 `chunk_policy_id`，因此仍保持 DCP-2 与 DCP-3 的行为边界；
+- PDF 解析成功后无论主视觉补图开关是否开启，都会保存普通页和视觉候选页的全部只读 facts；
+  补图开关只控制渲染和 asset 注入，下游生成画像时无需重新打开 PDF；
+- 扫描正文、视觉 OCR 和海报策略由原生文本、主图覆盖率、parser 文本连续性及文本区域占比推导，
+  DCP replay 会剥离 gold-only 角色后再验收，禁止把目标标签作为分类输入；
+- `table_dense` 同时要求表格面积或表格文本占比达到阈值；标题密度按实际 heading 节点计数；
+- replay 覆盖率报告新增画像、证据完整性和 shadow policy gold 对比。
+
+DCP 固定工程语料结果：8/8 文档主画像、11/11 页面画像、11/11 resolved policy 与 gold 一致，
+11/11 页面存在决策证据；混合文档逐页解析为 `native_text / scanned_prose /
+visual_dominant`，相同输入重复 replay 的画像和策略完全一致。合成语料只证明工程闭环，不代表
+真实文档分类准确率。
 
 退出条件：画像 determinism、证据完整性和混合文档逐页分类通过。
+**已满足。**
 
 ### DCP-3：差异化切分
 

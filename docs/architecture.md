@@ -1,7 +1,7 @@
 # Architecture
 
 > 状态：Current
-> 维护日期：2026-07-23
+> 维护日期：2026-07-24
 
 `know_rag` 是本地优先的 RAG 知识库构建、解析、切分、索引和检索系统。
 
@@ -29,11 +29,12 @@ Gateway (:8483) ────────▶ FastAPI + MCP
 上传 → MinIO → ParseTask
 → MinerU / RAGFlow / Legacy fallback
 → ParsedDocument / ParsedBlock
-→ 可选 PDF 页面主视觉画像、选页渲染与缺失 asset 补偿
+→ PDF 只读页面事实画像；可选选页渲染与缺失 asset 补偿
 → 展示型富文本规范化（代码围栏除外）
 → Canonical Markdown + Asset Sidecar
 → normalize 后 provenance grounding + FigureLinker
 → CanonicalRelationGraph merger（caption/footnote/explicit/group/shared）
+→ DCP-2 文档/页面画像与 resolved chunk policy shadow 记录
 → Parent/Child 或 flat compatibility chunk
 → 同事务写 PostgreSQL chunks + document_canonical_artifacts
 → pgvector / 可选外部向量库 + Elasticsearch BM25
@@ -47,8 +48,10 @@ Canonical 层再写入 Asset Sidecar 和 image child。RAGFlow 可作为显式�
 引用合并为 versioned `CanonicalRelationGraph`；完整 graph 与 Canonical provenance 同 revision
 持久化，Chunk 只保留检索所需的 compact summaries。
 
-PDF 页面主视觉保护由 `DOCUMENT_PAGE_VISUAL_PRESERVATION_ENABLED` 控制并默认关闭，同时尊重
-文档上传选项 `enable_media_crop`。开启后，系统只对存在高覆盖嵌入图像、且 parser 没有近整页
+PDF 页面尺寸、原生文本字符数、嵌入图片数量/覆盖率和 parser 图片覆盖率始终以只读方式采集，
+供 DCP-2 画像使用；该步骤不渲染页面、不注入 asset，失败时保持原解析结果。
+页面主视觉保护由 `DOCUMENT_PAGE_VISUAL_PRESERVATION_ENABLED` 控制并默认关闭，同时尊重文档
+上传选项 `enable_media_crop`。开启后，系统才会对存在高覆盖嵌入图像、且 parser 没有近整页
 image block 的页面进行选页渲染；已有页面图按 page/bbox 覆盖率去重，普通论文小图页不补整页图。
 补入的 block 标记为 `page_primary_visual`，保留权威 PDF page extent，并设置
 `exclude_from_asset_group=true`，避免与普通 figure 组成错误图片组。画像或渲染失败时 fail-open
@@ -111,6 +114,13 @@ HTML 标签并保留标签内文本；脚本、样式和 SVG 内容不进入检�
 产生的一句话短尾做定向合并，不启用通用短块合并。
 
 数据库 `chunker_config` 决定父子切分是否启用，不能只通过 `.env` 判断部署实例的实际切分分支。
+
+DCP-2 在 Canonical provenance 已定位后生成确定性的 `DocumentProfile / PageProfile`，再按页面
+解析 versioned `ResolvedChunkPolicy`。证据来自 PDF 页面事实、page primary visual、source node
+类型与 semantic role，不依赖文件名或知识库名称。结果写入 canonical artifact 的 `stats_json`，
+包括文档主画像、逐页画像、策略详情和计数。当前所有策略均为 `shadow_only=true`：不会改变
+现有 splitter 输入、Chunk 数量、边界、索引准入，也不会向 Chunk 写入 `chunk_policy_id`。
+真正按页面/section 应用策略属于 DCP-3。
 
 ## 代码边界
 

@@ -15,6 +15,7 @@ from app.services.document_parser.mineru_adapter import (
 )
 from app.services.document_parser.page_visual_enricher import (
     _ordered_blocks,
+    attach_pdf_page_visual_profile,
     enrich_pdf_page_visuals,
 )
 from app.services.document_parser.page_visual_profile import profile_pdf_pages
@@ -216,6 +217,32 @@ def test_dcp1_normal_academic_page_is_not_rendered(tmp_path):
     assert enriched.metadata["page_visual_profile"]["decision_counts"] == {"normal": 1}
 
 
+def test_dcp2_read_only_profile_collects_all_pdf_pages_without_rendering(tmp_path):
+    manifest = generate_dataset(tmp_path, seed=111)
+    mixed = next(
+        item for item in manifest["documents"] if item["document_type"] == "mixed"
+    )
+    parsed = _parsed_from_raw(
+        tmp_path / mixed["raw_response_path"],
+        mixed["document_id"],
+    )
+
+    profiled = attach_pdf_page_visual_profile(
+        tmp_path / mixed["pdf_path"],
+        parsed,
+    )
+
+    assert profiled.metadata["page_visual_profile_collected"] is True
+    assert profiled.metadata["page_visual_preservation_enabled"] is False
+    assert profiled.metadata["page_visual_profile"]["page_count"] == 3
+    assert len(profiled.metadata["page_visual_profile"]["decisions"]) == 3
+    assert len(profiled.blocks) == len(parsed.blocks)
+    assert not any(
+        (block.metadata or {}).get("visual_role") == "page_primary_visual"
+        for block in profiled.blocks
+    )
+
+
 def test_dcp1_marks_existing_full_page_parser_image_as_primary_visual(tmp_path):
     manifest = generate_dataset(tmp_path, seed=108)
     visual = manifest["documents"][0]
@@ -406,6 +433,7 @@ def test_parser_entrypoint_honors_global_and_document_media_switches(
         metadata={},
     )
     enriched = ParsedDocument(content="enriched", metadata={"enriched": True})
+    profiled = ParsedDocument(content="profiled", metadata={"profiled": True})
     config = SimpleNamespace(
         backend="pipeline",
         parse_method="auto",
@@ -431,16 +459,21 @@ def test_parser_entrypoint_honors_global_and_document_media_switches(
         "app.services.parser_service.enrich_pdf_page_visuals",
         return_value=enriched,
     )
+    profile = patch(
+        "app.services.parser_service.attach_pdf_page_visual_profile",
+        return_value=profiled,
+    )
     monkeypatch.setattr(
         "app.services.parser_service.settings.document_page_visual_preservation_enabled",
         True,
     )
 
-    with preserve as preserve_mock:
+    with preserve as preserve_mock, profile as profile_mock:
         result = parse_local_document(document)
 
-    assert (result is enriched) is media_enabled
+    assert result is (enriched if media_enabled else profiled)
     assert preserve_mock.called is media_enabled
+    assert profile_mock.called is not media_enabled
 
 
 def test_parser_entrypoint_global_flag_defaults_to_fail_closed(monkeypatch, tmp_path):
@@ -458,6 +491,7 @@ def test_parser_entrypoint_global_flag_defaults_to_fail_closed(monkeypatch, tmp_
         },
     )
     parsed = ParsedDocument(content="body", metadata={})
+    profiled = ParsedDocument(content="profiled", metadata={"profiled": True})
     config = SimpleNamespace(
         backend="pipeline",
         parse_method="auto",
@@ -484,8 +518,15 @@ def test_parser_entrypoint_global_flag_defaults_to_fail_closed(monkeypatch, tmp_
         False,
     )
 
-    with patch("app.services.parser_service.enrich_pdf_page_visuals") as preserve_mock:
+    with (
+        patch("app.services.parser_service.enrich_pdf_page_visuals") as preserve_mock,
+        patch(
+            "app.services.parser_service.attach_pdf_page_visual_profile",
+            return_value=profiled,
+        ) as profile_mock,
+    ):
         result = parse_local_document(document)
 
-    assert result is parsed
+    assert result is profiled
     preserve_mock.assert_not_called()
+    profile_mock.assert_called_once()

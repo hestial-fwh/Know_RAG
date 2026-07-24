@@ -61,6 +61,13 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
     expected_non_normal_index_policies = 0
     observed_non_normal_index_policies = 0
     observed_adaptive_chunk_policies = 0
+    profiled_pages = 0
+    matched_page_profiles = 0
+    resolved_policy_pages = 0
+    matched_resolved_policies = 0
+    complete_profile_evidence_pages = 0
+    matched_document_profiles = 0
+    shadow_only_policy_pages = 0
     traced_pages = 0
 
     for document in manifest.get("documents") or []:
@@ -92,6 +99,28 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
             if item.get("page_no") is not None
         }
         enrichment = layers["page_visual_enrichment"]
+        artifact_stats = (
+            layers["canonical_artifact"].get("stats_json") or {}
+        )
+        document_profile = artifact_stats.get("document_profile") or {}
+        profiles_by_page = {
+            int(item["page_no"]): item
+            for item in document_profile.get("pages") or []
+            if item.get("page_no") is not None
+        }
+        policies_by_page = {
+            int(item["page_no"]): item
+            for item in artifact_stats.get("resolved_chunk_policies") or []
+            if item.get("page_no") is not None
+        }
+        if document_profile.get("primary_kind") == gold.get("primary_kind"):
+            matched_document_profiles += 1
+        else:
+            failures.append(
+                f"{document['document_id']}: document profile mismatch "
+                f"{document_profile.get('primary_kind')!r} != "
+                f"{gold.get('primary_kind')!r}"
+            )
         injected_visual_assets += int(
             (enrichment.get("metadata") or {}).get("page_visual_asset_count") or 0
         )
@@ -119,6 +148,49 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
                     f"{document['document_id']}: page {page_no} missing fact/gold"
                 )
                 continue
+            page_profile = profiles_by_page.get(page_no)
+            if page_profile is not None:
+                profiled_pages += 1
+                complete_profile_evidence_pages += int(
+                    bool(page_profile.get("evidence"))
+                )
+                if page_profile.get("page_kind") == gold_page.get("page_kind"):
+                    matched_page_profiles += 1
+                else:
+                    failures.append(
+                        f"{document['document_id']}: page {page_no} profile "
+                        f"mismatch {page_profile.get('page_kind')!r} != "
+                        f"{gold_page.get('page_kind')!r}"
+                    )
+            else:
+                failures.append(
+                    f"{document['document_id']}: page {page_no} profile missing"
+                )
+            resolved_policy = policies_by_page.get(page_no)
+            if resolved_policy is not None:
+                resolved_policy_pages += 1
+                shadow_only_policy_pages += int(
+                    resolved_policy.get("shadow_only") is True
+                )
+                if resolved_policy.get("policy_id") == gold_page.get(
+                    "chunk_policy_id"
+                ):
+                    matched_resolved_policies += 1
+                else:
+                    failures.append(
+                        f"{document['document_id']}: page {page_no} resolved "
+                        f"policy mismatch {resolved_policy.get('policy_id')!r} != "
+                        f"{gold_page.get('chunk_policy_id')!r}"
+                    )
+                if resolved_policy.get("shadow_only") is not True:
+                    failures.append(
+                        f"{document['document_id']}: page {page_no} policy "
+                        "is not shadow-only"
+                    )
+            else:
+                failures.append(
+                    f"{document['document_id']}: page {page_no} resolved policy missing"
+                )
             expected_images = sum(
                 block["block_type"] == "image" for block in page.get("blocks") or []
             )
@@ -233,6 +305,19 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
         and enriched_duplicate_visual_pages == 0
         and injected_visual_assets == expected_gap_pages
     )
+    expected_page_count = int(manifest.get("page_count") or 0)
+    expected_document_count = int(manifest.get("document_count") or 0)
+    document_profile_gate = (
+        profiled_pages == expected_page_count
+        and matched_page_profiles == expected_page_count
+        and complete_profile_evidence_pages == expected_page_count
+        and matched_document_profiles == expected_document_count
+    )
+    resolved_policy_gate = (
+        resolved_policy_pages == expected_page_count
+        and matched_resolved_policies == expected_page_count
+        and shadow_only_policy_pages == expected_page_count
+    )
     report = {
         "schema_version": 1,
         "dataset_id": manifest.get("dataset_id"),
@@ -279,6 +364,19 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
             "chunks_with_policy_id": observed_adaptive_chunk_policies,
             "implemented": observed_adaptive_chunk_policies > 0,
         },
+        "document_profile_dcp2": {
+            "profiled_pages": profiled_pages,
+            "matched_page_profiles": matched_page_profiles,
+            "complete_evidence_pages": complete_profile_evidence_pages,
+            "matched_document_profiles": matched_document_profiles,
+            "gate_passed": document_profile_gate,
+        },
+        "resolved_chunk_policy_dcp2": {
+            "resolved_pages": resolved_policy_pages,
+            "matched_policies": matched_resolved_policies,
+            "shadow_only": shadow_only_policy_pages == expected_page_count,
+            "gate_passed": resolved_policy_gate,
+        },
         "configuration_closure": {"enable_media_crop": media_crop},
         "failures": failures,
         "accuracy_claim_allowed": False,
@@ -290,6 +388,8 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
             five_layer_gate,
             known_gap_gate,
             page_visual_closure_gate,
+            document_profile_gate,
+            resolved_policy_gate,
             not failures,
             media_crop["option_recorded"],
             media_crop["runtime_consumer_detected"],

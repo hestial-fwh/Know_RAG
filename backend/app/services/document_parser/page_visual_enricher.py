@@ -76,11 +76,10 @@ def _profile_summary(profiles: list[PageVisualProfile]) -> dict[str, Any]:
         "profile_version": "page-visual-profile-v1",
         "page_count": len(profiles),
         "decision_counts": counts,
-        "decisions": [
-            profile.to_metadata()
-            for profile in profiles
-            if profile.decision != "normal"
-        ],
+        # DCP-2 needs authoritative facts for normal pages as well as visual
+        # candidates. Keeping all compact decisions makes profile replay
+        # deterministic without reopening the source PDF downstream.
+        "decisions": [profile.to_metadata() for profile in profiles],
     }
 
 
@@ -124,6 +123,50 @@ def _mark_existing_page_visuals(
                 "exclude_from_asset_group": True,
             }
         )
+
+
+def attach_pdf_page_visual_profile(
+    path: Path,
+    parsed_document: ParsedDocument,
+    *,
+    dominant_image_threshold: float = 0.70,
+) -> ParsedDocument:
+    """Attach read-only PDF page facts without rendering or injecting assets."""
+    try:
+        profiles = profile_pdf_pages(
+            path,
+            parsed_document,
+            dominant_image_threshold=dominant_image_threshold,
+        )
+        return ParsedDocument(
+            content=parsed_document.content,
+            blocks=list(parsed_document.blocks or []),
+            metadata=sanitize_json_for_postgres(
+                {
+                    **(parsed_document.metadata or {}),
+                    "page_visual_profile_collected": True,
+                    "page_visual_preservation_enabled": False,
+                    "page_visual_profile": _profile_summary(profiles),
+                }
+            ),
+            source_content=parsed_document.source_content,
+        )
+    except Exception as exc:
+        logger.warning(
+            "PDF page visual profiling failed open: path=%s error=%s",
+            path,
+            exc,
+            exc_info=True,
+        )
+        parsed_document.metadata = sanitize_json_for_postgres(
+            {
+                **(parsed_document.metadata or {}),
+                "page_visual_profile_collected": False,
+                "page_visual_profile_degraded": True,
+                "page_visual_profile_error": str(exc)[:500],
+            }
+        )
+        return parsed_document
 
 
 def enrich_pdf_page_visuals(
@@ -223,4 +266,4 @@ def enrich_pdf_page_visuals(
         return parsed_document
 
 
-__all__ = ["enrich_pdf_page_visuals"]
+__all__ = ["attach_pdf_page_visual_profile", "enrich_pdf_page_visuals"]
