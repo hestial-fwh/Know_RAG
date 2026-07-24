@@ -12,7 +12,11 @@ from app.core.config import settings
 from app.core.response import error_response, success_response
 from app.db.models import Chunk, ChunkEmbedding, Document, KnowledgeBase, ModelConfig, User
 from app.services.audit_service import record_audit
-from app.services.content_cleaning import clean_text_for_embedding
+from app.services.content_cleaning import (
+    clean_text_for_embedding,
+    is_visual_ocr_quarantined,
+    SKIP_REASON_VISUAL_OCR_QUARANTINE,
+)
 from app.services.embedding.embedding_content_builder import build_embedding_content
 from app.services.vector_store_adapters import upsert_external_vector
 from app.utils.ids import new_id
@@ -71,6 +75,43 @@ def validate_dimension(vector: list[float], runtime: EmbeddingRuntime) -> None:
     expected = runtime.dimension
     if expected and len(vector) != expected:
         raise ValueError(f"Embedding 维度不一致：数据库配置为 {expected}，实际返回 {len(vector)}。请检查模型配置。")
+
+
+def _apply_visual_ocr_quarantine(chunk: Chunk) -> bool:
+    """Stamp quarantine flags and return True if chunk should be skipped.
+
+    Reads ``chunk_policy_image_ocr_mode`` from metadata.  When active, writes
+    ``skip_embedding_recommended`` / ``skip_reason`` into both ``metadata_json``
+    and ``flags`` so downstream consumers (keyword index, content builder, audit
+    queries) see a consistent signal.
+
+    Avoids overwriting already-stamped quarantine keys so re-embedding (retry,
+    model change) does not trigger spurious SQLAlchemy UPDATEs for JSON columns.
+    """
+    meta = chunk.metadata_json or {}
+    if not is_visual_ocr_quarantined(meta):
+        return False
+
+    flags = chunk.flags or {}
+    # If both metadata and flags already carry the quarantine signal,
+    # return early without mutating — avoids dirty-tracking on re-embed.
+    if (
+        meta.get("skip_embedding_recommended") is True
+        and meta.get("skip_reason") == SKIP_REASON_VISUAL_OCR_QUARANTINE
+        and flags.get("skip_embedding_recommended") is True
+        and flags.get("skip_reason") == SKIP_REASON_VISUAL_OCR_QUARANTINE
+    ):
+        return True
+
+    meta = dict(meta)
+    meta["skip_embedding_recommended"] = True
+    meta["skip_reason"] = SKIP_REASON_VISUAL_OCR_QUARANTINE
+    flags = dict(flags)
+    flags["skip_embedding_recommended"] = True
+    flags["skip_reason"] = SKIP_REASON_VISUAL_OCR_QUARANTINE
+    chunk.metadata_json = meta
+    chunk.flags = flags
+    return True
 
 
 async def _ollama_models(base_url: str) -> list[str]:
@@ -361,6 +402,9 @@ async def embed_chunks(db: Session, actor: User | None, chunk_ids: list[str]):
         skipped = 0
         for chunk in chunks:
             document = documents.get(chunk.document_id)
+            if _apply_visual_ocr_quarantine(chunk):
+                skipped += 1
+                continue
             index_content = build_embedding_content(chunk, document)
             if not index_content:
                 skipped += 1
@@ -419,6 +463,18 @@ async def embed_document(
     try:
         runtime = await ensure_embedding_ready(db)
         for chunk in chunks:
+            if _apply_visual_ocr_quarantine(chunk):
+                skipped += 1
+                if progress_callback:
+                    progress_callback({
+                        "document_id": document.id,
+                        "chunk_id": chunk.id,
+                        "embedded_chunks": embedded,
+                        "total_chunks": total,
+                        "skipped_chunks": skipped,
+                        "failed_chunks": failed,
+                    })
+                continue
             index_content = build_embedding_content(chunk, document)
             if not index_content:
                 skipped += 1
@@ -532,6 +588,9 @@ async def embed_knowledge_base(db: Session, actor: User | None, kb_id: str):
         documents = {doc.id: doc for doc in db.query(Document).filter(Document.id.in_(document_ids)).all()}
         for chunk in chunks:
             document = documents.get(chunk.document_id)
+            if _apply_visual_ocr_quarantine(chunk):
+                skipped += 1
+                continue
             index_content = build_embedding_content(chunk, document)
             if not index_content:
                 skipped += 1

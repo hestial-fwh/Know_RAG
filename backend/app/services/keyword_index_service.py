@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.models import Chunk, Document
 from app.utils.text import sanitize_text_for_postgres
-from app.services.content_cleaning import clean_text_for_embedding, should_skip_text_chunk
+from app.services.content_cleaning import clean_text_for_embedding, is_visual_ocr_quarantined, should_skip_text_chunk
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,8 @@ def _is_indexable_chunk(chunk: Chunk | None) -> bool:
         return False
     chunk_type = (chunk.chunk_type or "text").lower()
     if chunk_type not in INDEXABLE_CHUNK_TYPES:
+        return False
+    if is_visual_ocr_quarantined(chunk.metadata_json or {}):
         return False
     if should_skip_text_chunk(
         chunk.content or "",

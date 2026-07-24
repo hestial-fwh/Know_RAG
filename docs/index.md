@@ -38,6 +38,8 @@
 - `backend/app/integrations/mcp/README.md`：MCP 工具与传输层契约。
 - `backend/app/plugins/parse_eval/README.md`：解析质量评测插件。
 
+- `explain/document_classification_pipeline.md`：文档类型判断全链路，从 PDF 视觉分析到三条切分路径的完整决策流程。
+
 已完成的 Phase 记录、一次性修复日志和重复架构报告不在仓库中长期保留；历史变更通过 Git
 提交记录追溯。
 

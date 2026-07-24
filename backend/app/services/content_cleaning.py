@@ -18,7 +18,18 @@ import re
 from html import unescape
 from typing import Any
 
+from app.core.config import settings
+
 from app.utils.text import sanitize_text_for_postgres
+
+# ---------------------------------------------------------------------------
+# OCR quarantine constants — shared across content_cleaning, embedding_service,
+# keyword_index_service, chunk_policy_resolver, and canonical_parent_child.
+# ---------------------------------------------------------------------------
+OCR_IMAGE_MODE_SHADOW_AUXILIARY = "shadow_auxiliary"
+OCR_IMAGE_MODE_NORMAL = "normal"
+METADATA_KEY_IMAGE_OCR_MODE = "chunk_policy_image_ocr_mode"
+SKIP_REASON_VISUAL_OCR_QUARANTINE = "visual_ocr_quarantine"
 
 MIN_CHILD_TEXT_CHARS = 120
 MIN_PARENT_TEXT_CHARS = 200
@@ -494,7 +505,26 @@ _TRUSTED_SKIP_REASONS = {
     "page_noise",
     "header_footer_noise",
     "pure_url_or_path",
+    SKIP_REASON_VISUAL_OCR_QUARANTINE,
 }
+
+
+def is_visual_ocr_quarantined(
+    metadata: dict | None, *, enabled: bool | None = None
+) -> bool:
+    """Return True when a chunk's OCR text should be quarantined from embedding.
+
+    Only active when DOCUMENT_VISUAL_OCR_QUARANTINE_ENABLED is True and the
+    chunk was produced by a visual-collection policy (calligraphy, artwork,
+    paintings).  Scanned-prose and poster-page OCR text are never quarantined
+    because their ``image_ocr_mode`` remains ``"normal"``.
+    """
+    if enabled is None:
+        enabled = bool(settings.document_visual_ocr_quarantine_enabled)
+    if not enabled:
+        return False
+    metadata = metadata or {}
+    return metadata.get(METADATA_KEY_IMAGE_OCR_MODE) == OCR_IMAGE_MODE_SHADOW_AUXILIARY
 
 
 def _truthy(value: Any) -> bool:

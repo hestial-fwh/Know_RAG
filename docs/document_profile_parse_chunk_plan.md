@@ -558,12 +558,25 @@ DCP 固定工程语料结果：7/7 目标页面存在实际激活策略 Chunk，
 
 ### DCP-4：OCR shadow 与索引准入
 
-- 先标记 `visual_ocr_candidate`。
-- Canonical 透传块级索引策略。
-- 评估达标后才加入 `artwork_ocr_noise` 等可信 skip reason。
-- embedding 和 BM25 同步消费统一准入结果。
+**当前状态（2026-07-24）：进行中。** 已完成：
+
+- `ResolvedChunkPolicy.image_ocr_mode` 已在 DCP-3 通过 `_apply_chunk_policy_metadata()` 透传
+  至每个 chunk 的 `metadata_json.chunk_policy_image_ocr_mode`，无需额外 pipeline 改动；
+- `content_cleaning.py` 新增 `visual_ocr_quarantine` 可信跳过原因和
+  `is_visual_ocr_quarantined()` 纯函数判断（检查 `chunk_policy_image_ocr_mode == "shadow_auxiliary"`）；
+- `embedding_content_builder.py`：`image` 和 `table` chunk 的嵌入内容中剥离 OCR 文本；
+  `image_ocr_text` chunk 直接返回空内容；
+- `embedding_service.py`：三个嵌入方法（`embed_chunks`、`embed_document`、`embed_knowledge_base`）
+  在构建嵌入内容前检查隔离条件，设置 `skip_reason = "visual_ocr_quarantine"` 并跳过；
+- `keyword_index_service.py`：`image_ocr_text` 已排除在 `INDEXABLE_CHUNK_TYPES` 外，
+  ES 侧无需额外改动；
+- `CanonicalSourceNode` 新增 `index_policy` 字段（默认 `""`），透传块级索引策略；
+- 独立开关 `DOCUMENT_VISUAL_OCR_QUARANTINE_ENABLED`（默认 `false`），关闭时行为与当前完全一致；
+- 仅 `visual-collection-v1` 页面的 chunk 被隔离；`scanned-prose-v1` 和 `poster-page-v1`
+  的 OCR 文本保持正常索引——精确率优先。
 
 退出条件：隔离集合优先保证高精确率，扫描合同正文和海报核心文字不得被误隔离。
+**合成工程语料待验收；真实 OCR 隔离精确率仍需独立校准。**
 
 ### DCP-5：前端可观测和逐步启用
 

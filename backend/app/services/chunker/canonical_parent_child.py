@@ -18,9 +18,11 @@ from dataclasses import dataclass, field, replace
 import re
 from typing import Any
 
+from app.core.config import settings
 from app.services.chunker.heading_utils import is_page_noise_text
 from app.services.chunker.chunk_policy_resolver import ResolvedChunkPolicy
 from app.services.chunker.models import ChunkerConfig, ParsedChunk
+from app.services.content_cleaning import METADATA_KEY_IMAGE_OCR_MODE
 from app.services.chunker.parent_child_splitter import (
     ParentChildSplitResult,
     split_parent_child_result,
@@ -2001,7 +2003,7 @@ def _apply_chunk_policy_metadata(
                     policy.preserve_page_boundary
                 ),
                 "chunk_policy_table_mode": policy.table_mode,
-                "chunk_policy_image_ocr_mode": policy.image_ocr_mode,
+                METADATA_KEY_IMAGE_OCR_MODE: policy.image_ocr_mode,
                 "chunk_policy_applied": applied,
                 "chunk_policy_mode": "active" if applied else "shadow_fallback",
             }
@@ -2168,6 +2170,400 @@ def _build_visual_page_parents(
 
 
 # ---------------------------------------------------------------------------
+# Visual section-scoped parents (DCP-3 enhancement)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_page_no(
+    child: CanonicalChildDraft,
+    page_ranges: list[tuple[int, int, int]],
+) -> int | None:
+    """Determine the visual page number for a child.
+
+    Prefers explicit ``visual_page_no`` metadata; falls back to positional
+    overlap against *page_ranges*.
+    """
+    raw_page_no = child.metadata.get("visual_page_no")
+    try:
+        page_no = int(raw_page_no) if raw_page_no is not None else None
+    except (TypeError, ValueError):
+        page_no = None
+    if page_no is not None:
+        return page_no
+    candidates = [
+        (max(0, min(child.end, end) - max(child.start, start)), candidate_page)
+        for candidate_page, start, end in page_ranges
+    ]
+    overlap, candidate_page = max(candidates, default=(0, 0))
+    return candidate_page if overlap > 0 else None
+
+
+def _section_has_semantic_text(
+    section_children: list[CanonicalChildDraft],
+    threshold: int = 80,
+) -> bool:
+    """Return True when *section_children* contains meaningful body text."""
+    for child in section_children:
+        if child.chunk_type != "text":
+            continue
+        if _semantic_text_length(child.content) >= threshold:
+            return True
+    return False
+
+
+def _is_singleton_primary_visual_section(
+    section_children: list[CanonicalChildDraft],
+) -> bool:
+    """True when a section holds exactly one page-primary-visual image."""
+    return (
+        len(section_children) == 1
+        and section_children[0].chunk_type == "image"
+        and _is_page_primary_visual_asset(section_children[0])
+    )
+
+
+def _nearest_preceding_kept(
+    section_key: int | None,
+    sorted_keys: list[int | None],
+    kept_sections: set[int | None],
+) -> int | None:
+    """Return the nearest preceding key in *sorted_keys* that is in *kept_sections*."""
+    try:
+        idx = sorted_keys.index(section_key)
+    except ValueError:
+        return None
+    for j in range(idx - 1, -1, -1):
+        if sorted_keys[j] in kept_sections:
+            return sorted_keys[j]
+    return None
+
+
+def _build_visual_section_parents(
+    children: list[CanonicalChildDraft],
+    markdown: str,
+    page_ranges: list[tuple[int, int, int]],
+    *,
+    semantic_text_threshold: int = 80,
+) -> tuple[list[CanonicalParentDraft], dict[int, int], set[int]]:
+    """Build section-scoped parents with cross-page image binding.
+
+    Three-pass algorithm:
+
+    1. **Classify + within-page bind** — group children by (page,
+       splitter parent_index); classify each section (kept / dissolved);
+       bind dissolved orphans to the nearest preceding kept section on
+       the *same* page (Phase 2-3 of the original design).
+
+    2. **Cross-page bind** — pages with *zero* kept sections (pure-image
+       pages whose children lack semantic text) have their children
+       bound to the nearest preceding page that does have semantic text.
+       If no preceding text page exists the children bind downward to
+       the nearest following text page.  Consecutive pure-image pages
+       all bind to the same nearest text page, so a single author
+       introduction followed by N pages of artwork correctly produces
+       one parent block.
+
+    3. **Materialize** — each kept section becomes a
+       :class:`CanonicalParentDraft` (Phase 4 of the original design).
+
+    Only when *no* text page exists anywhere in the document does the
+    algorithm fall back to a self-contained page-level parent per page.
+
+    Returns the same ``(parents, counts, kept)`` shape as
+    :func:`_build_visual_page_parents`.
+    """
+    # ------------------------------------------------------------------
+    # Phase 1 — group children by (page, splitter parent_index)
+    # ------------------------------------------------------------------
+    page_sections: dict[int, dict[int | None, list[CanonicalChildDraft]]] = {}
+    for child in children:
+        page_no = _resolve_page_no(child, page_ranges)
+        if page_no is None:
+            continue
+        section_key = child.parent_index  # splitter-assigned parent_index
+        page_sections.setdefault(page_no, {}).setdefault(section_key, []).append(
+            child
+        )
+
+    # ==================================================================
+    # Pass 1 — classify + within-page binding (no materialization yet)
+    # ==================================================================
+    page_data: dict[int, dict[str, Any]] = {}
+
+    for page_no, _page_start, _page_end in page_ranges:
+        sections = page_sections.get(page_no, {})
+        if not sections:
+            continue
+
+        # Phase 2 — classify each section
+        sorted_keys: list[int | None] = sorted(
+            sections.keys(),
+            key=lambda k: min(c.start for c in sections[k]),
+        )
+        kept_sections: set[int | None] = set()
+        dissolved_sections: set[int | None] = set()
+
+        for section_key in sorted_keys:
+            group = sections[section_key]
+            if _section_has_semantic_text(group, semantic_text_threshold):
+                kept_sections.add(section_key)
+            elif _is_singleton_primary_visual_section(group):
+                kept_sections.add(section_key)
+            else:
+                dissolved_sections.add(section_key)
+
+        # If the page has *no* semantic-text sections, singleton
+        # primary-visual sections should not be kept either — they
+        # will be cross-page-bound in Pass 2.  A primary visual only
+        # keeps its own parent when it co-exists with a text section
+        # on the same page (e.g. a figure between two paragraphs).
+        if not any(
+            _section_has_semantic_text(sections[k], semantic_text_threshold)
+            for k in sorted_keys
+        ):
+            for section_key in list(kept_sections):
+                if _is_singleton_primary_visual_section(sections[section_key]):
+                    kept_sections.discard(section_key)
+                    dissolved_sections.add(section_key)
+
+        # Phase 3 — within-page orphan binding (same page only).
+        # Only runs when the page has at least one kept section to
+        # bind *to*; otherwise all sections are deferred to Pass 2
+        # (cross-page binding).
+        if kept_sections:
+            for section_key in sorted_keys:
+                if section_key not in dissolved_sections:
+                    continue
+                nearest = _nearest_preceding_kept(
+                    section_key, sorted_keys, kept_sections
+                )
+                if nearest is None:
+                    for candidate in sorted_keys:
+                        if candidate in kept_sections:
+                            nearest = candidate
+                            break
+                if nearest is not None:
+                    for child in sections[section_key]:
+                        child.parent_index = nearest
+                        child.metadata["parent_materialized"] = True
+                        child.metadata["parent_materialization_rule"] = (
+                            "visual_section_upward_binding"
+                        )
+                        child.metadata["original_source_parent_index"] = section_key
+                        child.flags["parent_materialized"] = True
+                        child.flags["visual_section_upward_binding"] = True
+                    sections[nearest].extend(sections[section_key])
+                del sections[section_key]
+
+            sorted_keys = [k for k in sorted_keys if k in sections]
+
+        page_data[page_no] = {
+            "sections": sections,
+            "sorted_keys": sorted_keys,
+            "kept_sections": kept_sections,
+        }
+
+    # ==================================================================
+    # Pass 2 — cross-page orphan binding
+    #
+    # Pages with zero kept sections (pure-image pages) have their
+    # children bound to the nearest preceding page that *does* have
+    # semantic text.  If there is no preceding text page the children
+    # bind downward to the nearest following text page.  Only when no
+    # text page exists anywhere does the algorithm fall back to a
+    # self-contained page-level parent.
+    #
+    # This handles the common calligraphy / art-book pattern where
+    # author introductions and their artwork images land on different
+    # pages, including runs of N consecutive image pages.
+    # ==================================================================
+    text_pages = sorted(
+        pno for pno, data in page_data.items() if data["kept_sections"]
+    )
+
+    for page_no in sorted(page_data.keys()):
+        data = page_data[page_no]
+        if data["kept_sections"]:
+            continue  # page has semantic text — nothing to bridge
+
+        sections = data["sections"]
+        sorted_keys = data["sorted_keys"]
+
+        # Nearest preceding text page
+        target_page: int | None = None
+        for tp in text_pages:
+            if tp < page_no:
+                target_page = tp
+            else:
+                break
+
+        # No preceding → try nearest following text page (downward)
+        bind_direction: str = "upward"
+        if target_page is None:
+            for tp in text_pages:
+                if tp > page_no:
+                    target_page = tp
+                    bind_direction = "downward"
+                    break
+
+        if target_page is not None:
+            target_data = page_data[target_page]
+            target_kept_keys = [
+                k for k in target_data["sorted_keys"]
+                if k in target_data["kept_sections"]
+            ]
+            if target_kept_keys:
+                # Upward  → bind to LAST  kept section on target page
+                # Downward → bind to FIRST kept section on target page
+                target_key = (
+                    target_kept_keys[-1] if bind_direction == "upward"
+                    else target_kept_keys[0]
+                )
+                for section_key in sections:
+                    for child in sections[section_key]:
+                        child.parent_index = target_key
+                        child.metadata["parent_materialized"] = True
+                        child.metadata["parent_materialization_rule"] = (
+                            "visual_section_cross_page_binding"
+                        )
+                        child.metadata[
+                            "original_source_parent_index"
+                        ] = section_key
+                        child.metadata["source_visual_page_no"] = page_no
+                        child.flags["parent_materialized"] = True
+                        child.flags["visual_section_cross_page_binding"] = True
+                    target_data["sections"][target_key].extend(
+                        sections[section_key]
+                    )
+            # Page fully absorbed — remove from materialization pass
+            del page_data[page_no]
+        else:
+            # No text page anywhere → fall back to page-level parent
+            if sorted_keys:
+                data["kept_sections"].add(sorted_keys[0])
+
+    # ==================================================================
+    # Pass 3 — materialize kept sections as parents
+    # ==================================================================
+    all_parents: list[CanonicalParentDraft] = []
+    all_counts: dict[int, int] = {}
+    all_kept: set[int] = set()
+
+    for page_no in sorted(page_data.keys()):
+        data = page_data[page_no]
+        sections = data["sections"]
+        sorted_keys = data["sorted_keys"]
+        kept_sections = data["kept_sections"]
+
+        for section_key in sorted_keys:
+            if section_key not in kept_sections:
+                continue
+            group = sorted(
+                sections[section_key],
+                key=lambda child: (
+                    child.start,
+                    child.end,
+                    child.source_child_seq,
+                ),
+            )
+            parent_index = len(all_parents)
+
+            singleton_primary_visual = _is_singleton_primary_visual_section(
+                group
+            )
+
+            # Stamp every child with the final parent metadata.
+            # Preserve any rule already set by Phase 3 / Pass 2 binding.
+            for child in group:
+                child.parent_index = parent_index
+                child.metadata["parent_materialized"] = True
+                child.metadata["visual_section_scoped_parent"] = True
+                # Cross-page-bound children keep their source page;
+                # everyone else gets the current materialization page.
+                if "visual_section_cross_page_binding" not in child.flags:
+                    child.metadata["visual_page_no"] = page_no
+                if "parent_materialization_rule" not in child.metadata:
+                    child.metadata["parent_materialization_rule"] = (
+                        "visual_section_authoritative_boundary"
+                    )
+                child.flags["parent_materialized"] = True
+                if (
+                    "visual_section_upward_binding" not in child.flags
+                    and "visual_section_cross_page_binding" not in child.flags
+                ):
+                    child.flags["visual_section_scoped_parent"] = True
+                if singleton_primary_visual:
+                    child.metadata[
+                        "singleton_primary_visual_parent"
+                    ] = True
+                    child.flags[
+                        "singleton_primary_visual_parent"
+                    ] = True
+
+            # Build parent content from the section's markdown span
+            section_start = min(c.start for c in group)
+            section_end = max(c.end for c in group)
+            parent_content = _preserve(
+                markdown[section_start:section_end]
+            ).strip()
+            semantic_parent_content = re.sub(
+                r"!\[[^\]]*\]\(asset://[^)]+\)",
+                "",
+                parent_content,
+            )
+            if (
+                _semantic_text_length(semantic_parent_content)
+                < semantic_text_threshold
+            ):
+                parent_content = "\n\n".join(
+                    child.content for child in group
+                )
+
+            parent_meta: dict[str, Any] = {
+                "canonical_markdown": True,
+                "chunk_role": "parent",
+                "children_count_planned": len(group),
+                "visual_section_scoped_parent": True,
+                "visual_page_no": page_no,
+                "parent_materialization_rule": (
+                    "visual_section_authoritative_boundary"
+                ),
+                "singleton_primary_visual_parent": singleton_primary_visual,
+                "source_node_ids": list(
+                    dict.fromkeys(
+                        node_id
+                        for child in group
+                        for node_id in (
+                            child.metadata.get("source_node_ids") or []
+                        )
+                    )
+                ),
+                "runtime_postprocess_policy": "structure_first",
+            }
+            all_parents.append(
+                CanonicalParentDraft(
+                    parent_index=parent_index,
+                    content=parent_content,
+                    context_header=next(
+                        (
+                            child.context_header
+                            for child in group
+                            if child.context_header
+                        ),
+                        "",
+                    ),
+                    start=section_start,
+                    end=section_end,
+                    metadata=parent_meta,
+                )
+            )
+            all_counts[parent_index] = len(group)
+            all_kept.add(parent_index)
+
+    return all_parents, all_counts, all_kept
+
+
+# ---------------------------------------------------------------------------
 # Public plan builder
 # ---------------------------------------------------------------------------
 
@@ -2262,11 +2658,18 @@ def build_canonical_parent_child_plan(
             child.metadata["source_provenance_resolution"] = "source_child_overlap"
 
     if visual_page_ranges:
-        parents, counts, kept_parent_indexes = _build_visual_page_parents(
-            children,
-            normalized_markdown,
-            visual_page_ranges,
-        )
+        if settings.document_visual_section_parent_enabled:
+            parents, counts, kept_parent_indexes = _build_visual_section_parents(
+                children,
+                normalized_markdown,
+                visual_page_ranges,
+            )
+        else:
+            parents, counts, kept_parent_indexes = _build_visual_page_parents(
+                children,
+                normalized_markdown,
+                visual_page_ranges,
+            )
     else:
         # Final integrity rule only: parent materialization follows surviving
         # child links without changing child content or boundaries.

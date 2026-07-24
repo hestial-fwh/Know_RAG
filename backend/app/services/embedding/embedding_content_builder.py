@@ -10,7 +10,7 @@ import re
 from typing import Any
 
 from app.core.config import settings
-from app.services.content_cleaning import clean_text_for_embedding, should_skip_text_chunk
+from app.services.content_cleaning import clean_text_for_embedding, is_visual_ocr_quarantined, should_skip_text_chunk
 from app.services.chunker.heading_utils import normalize_context_header
 from app.utils.text import sanitize_text_for_postgres
 
@@ -196,21 +196,27 @@ def _semantic_body_from_chunk(chunk) -> str:
         add("代码内容", content)
         add("代码补充", _get_text(metadata, ["tail_note_text", "code_tail_note"]))
     elif chunk_type == "image":
+        quarantined = is_visual_ocr_quarantined(metadata)
         add("图片标题", _get_text(metadata, ["caption", "figure_caption", "title"]) or _get_text(image_info, ["caption", "title"]))
         add("图片描述", _get_text(metadata, ["vlm_description", "description", "image_description"]) or _get_text(image_info, ["vlm_description", "description"]))
-        add("OCR文本", _get_text(metadata, ["ocr_text"]) or _get_text(image_info, ["ocr_text"]))
-        add("图片内容", content if content and content != "图片" else "")
+        if not quarantined:
+            add("OCR文本", _get_text(metadata, ["ocr_text"]) or _get_text(image_info, ["ocr_text"]))
+            add("图片内容", content if content and content != "图片" else "")
         add("图片文件", _get_text(image_info, ["filename", "name", "relative_path", "path"]))
     elif chunk_type == "table":
         # Table chunks may have content_kind=code_structure, but they are still
         # table evidence.  Do not run them through the directory-tree parser.
+        quarantined = is_visual_ocr_quarantined(metadata)
         add("表格标题", _get_text(metadata, ["caption", "table_caption", "title"]) or _get_text(image_info, ["caption", "title"]))
-        add("表格内容", content)
-        add("表格HTML文本", _plain_text_from_html(_get_text(image_info, ["table_html"])))
-        add("OCR文本", _get_text(metadata, ["ocr_text"]) or _get_text(image_info, ["ocr_text"]))
+        if not quarantined:
+            add("表格内容", content)
+            add("表格HTML文本", _plain_text_from_html(_get_text(image_info, ["table_html"])))
+            add("OCR文本", _get_text(metadata, ["ocr_text"]) or _get_text(image_info, ["ocr_text"]))
     elif chunk_type == "equation":
         add("公式", _get_text(metadata, ["latex", "equation", "formula"]) or content)
     elif chunk_type == "image_ocr_text":
+        if is_visual_ocr_quarantined(metadata):
+            return ""
         add("图片OCR文本", content)
     elif metadata.get("content_kind") in _STRUCTURE_KINDS or flags.get("structure_like") is True:
         semantic = _semantic_body_from_structure_text(content, metadata)

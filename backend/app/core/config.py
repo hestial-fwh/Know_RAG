@@ -92,6 +92,14 @@ class Settings(BaseSettings):
         False,
         alias="DOCUMENT_ADAPTIVE_CHUNK_POLICY_ENABLED",
     )
+    document_visual_ocr_quarantine_enabled: bool = Field(
+        False,
+        alias="DOCUMENT_VISUAL_OCR_QUARANTINE_ENABLED",
+    )
+    document_visual_section_parent_enabled: bool = Field(
+        False,
+        alias="DOCUMENT_VISUAL_SECTION_PARENT_ENABLED",
+    )
     document_page_visual_min_coverage: float = Field(
         0.70,
         alias="DOCUMENT_PAGE_VISUAL_MIN_COVERAGE",

@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from app.services.chunker.models import ChunkerConfig
+from app.services.content_cleaning import OCR_IMAGE_MODE_NORMAL, OCR_IMAGE_MODE_SHADOW_AUXILIARY
 from app.services.document_parser.document_profiler import (
     DocumentProfile,
     PageProfile,
@@ -78,7 +79,7 @@ def _resolve_page(
     boundary_strategy = "heading_paragraph_sentence"
     preserve_page_boundary = False
     table_mode = "atomic"
-    image_ocr_mode = "normal"
+    image_ocr_mode = OCR_IMAGE_MODE_NORMAL
 
     if policy_id == "scanned-prose-v1":
         boundary_strategy = "clause_paragraph_page"
@@ -86,7 +87,7 @@ def _resolve_page(
     elif policy_id == "visual-collection-v1":
         boundary_strategy = "page_description"
         preserve_page_boundary = True
-        image_ocr_mode = "shadow_auxiliary"
+        image_ocr_mode = OCR_IMAGE_MODE_SHADOW_AUXILIARY
     elif policy_id == "poster-page-v1":
         boundary_strategy = "page_text_region"
         preserve_page_boundary = True
