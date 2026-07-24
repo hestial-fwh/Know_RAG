@@ -107,9 +107,10 @@ def test_dcp0_replay_and_report_close_five_layer_baseline(tmp_path):
         "closure_gate_passed": True,
     }
     assert report["index_policy_baseline"]["implemented"] is False
-    assert report["adaptive_chunk_policy_baseline"]["implemented"] is False
+    assert report["adaptive_chunk_policy_baseline"]["implemented"] is True
     assert report["document_profile_dcp2"]["gate_passed"] is True
     assert report["resolved_chunk_policy_dcp2"]["gate_passed"] is True
+    assert report["adaptive_chunk_policy_dcp3"]["gate_passed"] is True
     closure = report["configuration_closure"]["enable_media_crop"]
     assert closure["option_recorded"] is True
     assert closure["runtime_consumer_detected"] is True

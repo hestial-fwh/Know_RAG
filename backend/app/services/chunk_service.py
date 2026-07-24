@@ -32,7 +32,10 @@ from app.services.chunker.heading_utils import (
     strip_continuation_suffix,
 )
 from app.services.chunker.models import ChunkerConfig
-from app.services.chunker.chunk_policy_resolver import resolve_chunk_policies
+from app.services.chunker.chunk_policy_resolver import (
+    DCP3_ACTIVE_POLICY_IDS,
+    resolve_chunk_policies,
+)
 from app.services.chunker.parent_child_splitter import split_parent_child_result
 from app.services.chunker.canonical_parent_child import build_canonical_parent_child_plan
 from app.services.document_parser.canonical_document import build_canonical_document
@@ -1081,6 +1084,7 @@ def _rebuild_canonical_weknora_parent_child(
     cfg,
     *,
     artifact_out: dict[str, Any] | None = None,
+    adaptive_policy_enabled: bool | None = None,
 ) -> tuple[list[Chunk], int]:
     """Unified parent/child path for every parser output.
 
@@ -1148,7 +1152,26 @@ def _rebuild_canonical_weknora_parent_child(
         enable_table_row_split=False,
         enable_image_ocr_child=False,
     )
-    plan = build_canonical_parent_child_plan(canonical, runtime_cfg)
+    adaptive_policy_active = (
+        bool(settings.document_adaptive_chunk_policy_enabled)
+        if adaptive_policy_enabled is None
+        else bool(adaptive_policy_enabled)
+    )
+    active_policy_ids = (
+        DCP3_ACTIVE_POLICY_IDS if adaptive_policy_active else frozenset()
+    )
+    document_profile = profile_canonical_document(canonical)
+    resolved_policies = resolve_chunk_policies(
+        document_profile,
+        runtime_cfg,
+        materialize_parent=materialize_parents,
+        active_policy_ids=active_policy_ids,
+    )
+    plan = build_canonical_parent_child_plan(
+        canonical,
+        runtime_cfg,
+        resolved_policies=resolved_policies,
+    )
     relation_graph = None
     phase3_applied = False
     if settings.document_relation_graph_enabled:
@@ -1183,20 +1206,16 @@ def _rebuild_canonical_weknora_parent_child(
                     exc_info=True,
                 )
     if artifact_out is not None:
-        document_profile = profile_canonical_document(
-            canonical,
-            provenance_nodes=plan.provenance_nodes,
-        )
-        resolved_policies = resolve_chunk_policies(
-            document_profile,
-            runtime_cfg,
-            materialize_parent=materialize_parents,
-        )
         resolved_policy_counts: dict[str, int] = {}
+        active_resolved_policy_counts: dict[str, int] = {}
         for policy in resolved_policies:
             resolved_policy_counts[policy.policy_id] = (
                 resolved_policy_counts.get(policy.policy_id, 0) + 1
             )
+            if not policy.shadow_only:
+                active_resolved_policy_counts[policy.policy_id] = (
+                    active_resolved_policy_counts.get(policy.policy_id, 0) + 1
+                )
         link_status_counts: dict[str, int] = {}
         for link in plan.figure_links.links:
             link_status_counts[link.status] = link_status_counts.get(link.status, 0) + 1
@@ -1249,6 +1268,11 @@ def _rebuild_canonical_weknora_parent_child(
                     ],
                     "resolved_chunk_policy_counts": dict(
                         sorted(resolved_policy_counts.items())
+                    ),
+                    "chunk_policy_execution_version": "dcp3-v1",
+                    "adaptive_chunk_policy_enabled": adaptive_policy_active,
+                    "active_resolved_chunk_policy_counts": dict(
+                        sorted(active_resolved_policy_counts.items())
                     ),
                 },
             }

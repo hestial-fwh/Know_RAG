@@ -34,7 +34,7 @@ Gateway (:8483) ────────▶ FastAPI + MCP
 → Canonical Markdown + Asset Sidecar
 → normalize 后 provenance grounding + FigureLinker
 → CanonicalRelationGraph merger（caption/footnote/explicit/group/shared）
-→ DCP-2 文档/页面画像与 resolved chunk policy shadow 记录
+→ DCP 文档/页面画像与逐页 resolved chunk policy
 → Parent/Child 或 flat compatibility chunk
 → 同事务写 PostgreSQL chunks + document_canonical_artifacts
 → pgvector / 可选外部向量库 + Elasticsearch BM25
@@ -118,9 +118,17 @@ HTML 标签并保留标签内文本；脚本、样式和 SVG 内容不进入检�
 DCP-2 在 Canonical provenance 已定位后生成确定性的 `DocumentProfile / PageProfile`，再按页面
 解析 versioned `ResolvedChunkPolicy`。证据来自 PDF 页面事实、page primary visual、source node
 类型与 semantic role，不依赖文件名或知识库名称。结果写入 canonical artifact 的 `stats_json`，
-包括文档主画像、逐页画像、策略详情和计数。当前所有策略均为 `shadow_only=true`：不会改变
-现有 splitter 输入、Chunk 数量、边界、索引准入，也不会向 Chunk 写入 `chunk_policy_id`。
-真正按页面/section 应用策略属于 DCP-3。
+包括文档主画像、逐页画像、策略详情和计数。
+
+DCP-3 由默认关闭的 `DOCUMENT_ADAPTIVE_CHUNK_POLICY_ENABLED` 控制。开启后激活表格行组、
+扫描正文、视觉作品页和海报四个低耦合策略。Canonical grounding 后，激活页面按权威页范围
+独立调用现有 WeKnora；连续未激活页面仍走原全局 fallback，普通结构化文本边界不变。表格继续
+复用结构保护与重复表头行组切分。规范化会改写的长表格/代码节点通过 Canonical 原始偏移映射
+恢复页界，避免页面被并入相邻范围。所有 Parent/Child 都记录 resolved policy；
+`chunk_policy_applied=true` 仅在 chunk 携带实际执行策略和页码证据时成立，
+`shadow_fallback` 表示仅记录推荐策略。
+关闭开关时全部策略退回 shadow，切分保持原 Canonical 全局路径。DCP-3 不改变 OCR/BM25/
+embedding 准入，相关隔离仍属于 DCP-4。
 
 ## 代码边界
 

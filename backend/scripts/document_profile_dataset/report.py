@@ -6,6 +6,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from app.services.chunker.chunk_policy_resolver import DCP3_ACTIVE_POLICY_IDS
+
 from .templates import DOCUMENT_TYPES, SCENARIOS
 
 
@@ -68,6 +70,13 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
     complete_profile_evidence_pages = 0
     matched_document_profiles = 0
     shadow_only_policy_pages = 0
+    active_resolved_policy_pages = 0
+    expected_active_policy_pages = 0
+    matched_active_policy_pages = 0
+    active_policy_chunks = 0
+    chunks_without_policy = 0
+    active_cross_page_chunks = 0
+    adaptive_enabled_documents = 0
     traced_pages = 0
 
     for document in manifest.get("documents") or []:
@@ -102,6 +111,9 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
         artifact_stats = (
             layers["canonical_artifact"].get("stats_json") or {}
         )
+        adaptive_enabled_documents += int(
+            artifact_stats.get("adaptive_chunk_policy_enabled") is True
+        )
         document_profile = artifact_stats.get("document_profile") or {}
         profiles_by_page = {
             int(item["page_no"]): item
@@ -130,6 +142,12 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
                 block
             )
         gold_pages = {int(page["page_no"]): page for page in gold.get("pages") or []}
+        expected_active_pairs = {
+            (int(page["page_no"]), str(page["chunk_policy_id"]))
+            for page in gold.get("pages") or []
+            if page.get("chunk_policy_id") in DCP3_ACTIVE_POLICY_IDS
+        }
+        expected_active_policy_pages += len(expected_active_pairs)
         if len(gold_pages) != len(layout.get("pages") or []):
             failures.append(
                 f"{document['document_id']}: layout/gold page count mismatch"
@@ -172,6 +190,9 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
                 shadow_only_policy_pages += int(
                     resolved_policy.get("shadow_only") is True
                 )
+                active_resolved_policy_pages += int(
+                    resolved_policy.get("shadow_only") is False
+                )
                 if resolved_policy.get("policy_id") == gold_page.get(
                     "chunk_policy_id"
                 ):
@@ -181,11 +202,6 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
                         f"{document['document_id']}: page {page_no} resolved "
                         f"policy mismatch {resolved_policy.get('policy_id')!r} != "
                         f"{gold_page.get('chunk_policy_id')!r}"
-                    )
-                if resolved_policy.get("shadow_only") is not True:
-                    failures.append(
-                        f"{document['document_id']}: page {page_no} policy "
-                        "is not shadow-only"
                     )
             else:
                 failures.append(
@@ -282,10 +298,30 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
                 for role, count in expected_roles.items()
             )
 
+        observed_active_pairs: set[tuple[int, str]] = set()
         for chunk in layers["chunk_metadata"]:
             metadata = chunk.get("metadata_json") or {}
-            observed_adaptive_chunk_policies += int(
-                bool(metadata.get("chunk_policy_id"))
+            policy_id = str(metadata.get("chunk_policy_id") or "")
+            observed_adaptive_chunk_policies += int(bool(policy_id))
+            chunks_without_policy += int(not policy_id)
+            if metadata.get("chunk_policy_applied") is True:
+                active_policy_chunks += 1
+                try:
+                    policy_page_no = int(metadata.get("chunk_policy_page_no"))
+                except (TypeError, ValueError):
+                    policy_page_no = 0
+                if policy_page_no > 0 and policy_id:
+                    observed_active_pairs.add((policy_page_no, policy_id))
+                candidate_pages = metadata.get("chunk_policy_candidate_page_nos") or []
+                active_cross_page_chunks += int(len(set(candidate_pages)) > 1)
+        matched_active_policy_pages += len(
+            expected_active_pairs.intersection(observed_active_pairs)
+        )
+        missing_active_pairs = expected_active_pairs - observed_active_pairs
+        if missing_active_pairs:
+            failures.append(
+                f"{document['document_id']}: missing active DCP-3 policies "
+                f"{sorted(missing_active_pairs)}"
             )
 
     media_crop = _media_crop_closure()
@@ -316,7 +352,14 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
     resolved_policy_gate = (
         resolved_policy_pages == expected_page_count
         and matched_resolved_policies == expected_page_count
-        and shadow_only_policy_pages == expected_page_count
+    )
+    adaptive_policy_gate = (
+        expected_active_policy_pages > 0
+        and matched_active_policy_pages == expected_active_policy_pages
+        and active_policy_chunks > 0
+        and chunks_without_policy == 0
+        and active_cross_page_chunks == 0
+        and adaptive_enabled_documents == expected_document_count
     )
     report = {
         "schema_version": 1,
@@ -374,8 +417,19 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
         "resolved_chunk_policy_dcp2": {
             "resolved_pages": resolved_policy_pages,
             "matched_policies": matched_resolved_policies,
-            "shadow_only": shadow_only_policy_pages == expected_page_count,
+            "shadow_only_pages": shadow_only_policy_pages,
+            "active_pages": active_resolved_policy_pages,
             "gate_passed": resolved_policy_gate,
+        },
+        "adaptive_chunk_policy_dcp3": {
+            "expected_active_pages": expected_active_policy_pages,
+            "matched_active_pages": matched_active_policy_pages,
+            "chunks_with_policy_id": observed_adaptive_chunk_policies,
+            "chunks_without_policy_id": chunks_without_policy,
+            "active_policy_chunks": active_policy_chunks,
+            "active_cross_page_chunks": active_cross_page_chunks,
+            "adaptive_enabled_documents": adaptive_enabled_documents,
+            "gate_passed": adaptive_policy_gate,
         },
         "configuration_closure": {"enable_media_crop": media_crop},
         "failures": failures,
@@ -390,6 +444,7 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
             page_visual_closure_gate,
             document_profile_gate,
             resolved_policy_gate,
+            adaptive_policy_gate,
             not failures,
             media_crop["option_recorded"],
             media_crop["runtime_consumer_detected"],

@@ -167,9 +167,9 @@ def test_flat_canonical_pipeline_uses_flat_chunk_size_and_overlap():
     cfg.child_chunk_overlap = 9
     captured = {}
 
-    def capture_plan(canonical, runtime_cfg):
+    def capture_plan(canonical, runtime_cfg, **kwargs):
         captured["cfg"] = runtime_cfg
-        return real_plan_builder(canonical, runtime_cfg)
+        return real_plan_builder(canonical, runtime_cfg, **kwargs)
 
     with patch(
         "app.services.chunk_service.build_canonical_parent_child_plan",

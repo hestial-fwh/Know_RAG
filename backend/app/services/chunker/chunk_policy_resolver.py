@@ -11,6 +11,14 @@ from app.services.document_parser.document_profiler import (
 
 
 POLICY_VERSION = "resolved-chunk-policy-v1"
+DCP3_ACTIVE_POLICY_IDS = frozenset(
+    {
+        "poster-page-v1",
+        "scanned-prose-v1",
+        "table-row-group-v1",
+        "visual-collection-v1",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -56,6 +64,7 @@ def _resolve_page(
     cfg: ChunkerConfig,
     *,
     materialize_parent: bool | None,
+    active_policy_ids: frozenset[str],
 ) -> ResolvedChunkPolicy:
     policy_id = _policy_id(page)
     child_size = max(int(cfg.child_chunk_size or cfg.chunk_size or 384), 1)
@@ -83,6 +92,7 @@ def _resolve_page(
         preserve_page_boundary = True
     elif policy_id == "table-row-group-v1":
         boundary_strategy = "table_header_row_group"
+        preserve_page_boundary = True
         table_mode = "repeat_header_row_group"
     elif policy_id == "slide-page-v1":
         boundary_strategy = "slide_title_bullet_group"
@@ -102,11 +112,15 @@ def _resolve_page(
         preserve_page_boundary=preserve_page_boundary,
         table_mode=table_mode,
         image_ocr_mode=image_ocr_mode,
-        shadow_only=True,
+        shadow_only=policy_id not in active_policy_ids,
         reasons=(
             f"page_kind={page.page_kind}",
             f"semantic_roles={','.join(page.semantic_roles) or 'none'}",
-            "dcp2_shadow_only",
+            (
+                "dcp3_policy_active"
+                if policy_id in active_policy_ids
+                else "dcp3_fallback_shadow"
+            ),
         ),
     )
 
@@ -116,19 +130,22 @@ def resolve_chunk_policies(
     cfg: ChunkerConfig,
     *,
     materialize_parent: bool | None = None,
+    active_policy_ids: frozenset[str] = frozenset(),
 ) -> tuple[ResolvedChunkPolicy, ...]:
-    """Resolve per-page policies without changing the active splitter."""
+    """Resolve per-page policies and identify the policies active in this phase."""
     return tuple(
         _resolve_page(
             page,
             cfg,
             materialize_parent=materialize_parent,
+            active_policy_ids=active_policy_ids,
         )
         for page in profile.pages
     )
 
 
 __all__ = [
+    "DCP3_ACTIVE_POLICY_IDS",
     "POLICY_VERSION",
     "ResolvedChunkPolicy",
     "resolve_chunk_policies",

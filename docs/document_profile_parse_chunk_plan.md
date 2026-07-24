@@ -1,6 +1,6 @@
 # 文档画像驱动的解析与差异化切分方案
 
-> 状态：DCP-2 PASS，DCP-3 可开始
+> 状态：DCP-3 PASS，DCP-4 可开始
 > 编写日期：2026-07-23  
 > 适用范围：当前 `know_rag` 主分支  
 > 本文性质：现状审查与后续实现方案，不代表已上线能力
@@ -511,8 +511,8 @@ Canonical asset、生产 parser 入口、开关和 fail-open 均有专项测试�
   presentation / code_or_technical / mixed / unknown`；
 - `chunk_policy_resolver.py` 逐页生成 versioned `ResolvedChunkPolicy`，包含边界策略、尺寸、
   页面边界、表格模式、图片 OCR 模式和可解释 reasons；
-- 当前策略全部标记 `shadow_only=true`，只写 canonical artifact 的 `stats_json`，不修改
-  Parent/Child 计划，不向 chunk 写入 `chunk_policy_id`，因此仍保持 DCP-2 与 DCP-3 的行为边界；
+- DCP-2 交付时策略全部以 `shadow_only=true` 写入 canonical artifact；DCP-3 仅将首批低耦合
+  策略切换为 active，其余策略继续 shadow fallback；
 - PDF 解析成功后无论主视觉补图开关是否开启，都会保存普通页和视觉候选页的全部只读 facts；
   补图开关只控制渲染和 asset 注入，下游生成画像时无需重新打开 PDF；
 - 扫描正文、视觉 OCR 和海报策略由原生文本、主图覆盖率、parser 文本连续性及文本区域占比推导，
@@ -530,12 +530,31 @@ visual_dominant`，相同输入重复 replay 的画像和策略完全一致。�
 
 ### DCP-3：差异化切分
 
-- 在 `build_canonical_parent_child_plan()` 前按 provenance/source section 解析 policy。
-- 复用现有 heading/heuristic/recursive、表格、代码和 image materializer。
-- 先启用表格、扫描正文页面边界和视觉页三类低耦合策略。
-- 每个 chunk 保存实际策略，不只保存全局配置名。
+**当前状态（2026-07-24）：PASS。** 已完成：
+
+- Canonical normalize 和 provenance grounding 后生成权威页面范围；激活策略页独立运行现有
+  WeKnora Parent/Child，连续 shadow 页面仍合并为原全局 fallback segment；
+- 首批激活 `table-row-group-v1 / scanned-prose-v1 / visual-collection-v1 /
+  poster-page-v1`；结构化正文、代码和 slide 推荐策略继续 shadow，不提前改变其边界；
+- `DOCUMENT_ADAPTIVE_CHUNK_POLICY_ENABLED` 为独立默认关闭开关；关闭时所有策略只记录，
+  DCP replay 显式开启以验收 active 路径；
+- 扫描正文、视觉页和海报强制保持页面边界；混合文档可以在同一份 Canonical 中逐页切换；
+- 表格复用现有结构保护和 row-group splitter，超长表格按行组拆分，每个续块重复表头；
+- 对规范化后内容发生改写的长表格/代码节点，使用 Canonical 原始偏移映射并辅以确定性
+  normalized node 定位恢复页界；混合文档中的改写页不会再丢失或并入相邻页；
+- Parent 和 Child 均写入 `chunk_policy_id/version/reasons/page_no/boundary_strategy`、
+  `chunk_policy_applied` 和 `active/shadow_fallback` 模式；`applied=true` 必须有实际执行的
+  policy/page 证据，不能仅由 resolved policy 的 active 状态推导；artifact 写入
+  `chunk_policy_execution_version=dcp3-v1` 和激活策略计数；
+- 普通结构化文本对照测试确认启用 DCP-3 前后 content、start/end、parent 关系完全一致；
+  三页混合长表格回归覆盖了 normalize 改写后的页界恢复。
+
+DCP 固定工程语料结果：7/7 目标页面存在实际激活策略 Chunk，所有生成 Chunk 均携带策略 ID，
+激活 Chunk 跨页数量为 0；扫描双页未混合正文，长表格续块全部重复表头。合成语料仍只证明
+工程边界闭环，不代表真实文档分类或检索准确率。
 
 退出条件：普通文本基线不退化；合同条款、表格行组和视觉页说明边界显著改善。
+**合成工程语料已满足；真实文档边界质量仍需在 DCP-5 灰度前校准。**
 
 ### DCP-4：OCR shadow 与索引准入
 

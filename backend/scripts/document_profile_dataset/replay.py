@@ -154,6 +154,7 @@ def replay_document(
         "pdf",
         _config(),
         artifact_out=artifact,
+        adaptive_policy_enabled=True,
     )
     snapshot = {
         "schema_version": 1,

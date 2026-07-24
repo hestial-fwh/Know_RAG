@@ -228,14 +228,18 @@ def test_dcp2_profiles_and_resolves_mixed_document_per_page(tmp_path):
         (2, "scanned-prose-v1"),
         (3, "visual-collection-v1"),
     ]
+    assert [
+        policy["shadow_only"] for policy in stats["resolved_chunk_policies"]
+    ] == [True, False, False]
     assert all(
-        policy["shadow_only"] is True
-        for policy in stats["resolved_chunk_policies"]
-    )
-    assert all(
-        not (chunk["metadata_json"] or {}).get("chunk_policy_id")
+        (chunk["metadata_json"] or {}).get("chunk_policy_id")
         for chunk in mixed["layers"]["chunk_metadata"]
     )
+    assert {
+        (chunk["metadata_json"] or {}).get("chunk_policy_id")
+        for chunk in mixed["layers"]["chunk_metadata"]
+        if (chunk["metadata_json"] or {}).get("chunk_policy_applied") is True
+    } == {"scanned-prose-v1", "visual-collection-v1"}
 
 
 def test_dcp2_profile_and_policy_shadow_decisions_are_deterministic(tmp_path):
@@ -282,10 +286,17 @@ def test_dcp2_coverage_report_matches_all_gold_profiles_and_policies(tmp_path):
     assert report["resolved_chunk_policy_dcp2"] == {
         "resolved_pages": 11,
         "matched_policies": 11,
-        "shadow_only": True,
+        "shadow_only_pages": 4,
+        "active_pages": 7,
         "gate_passed": True,
     }
-    assert report["adaptive_chunk_policy_baseline"]["implemented"] is False
+    assert report["adaptive_chunk_policy_baseline"]["implemented"] is True
+    assert report["adaptive_chunk_policy_dcp3"]["expected_active_pages"] == 7
+    assert report["adaptive_chunk_policy_dcp3"]["matched_active_pages"] == 7
+    assert report["adaptive_chunk_policy_dcp3"]["chunks_without_policy_id"] == 0
+    assert report["adaptive_chunk_policy_dcp3"]["active_cross_page_chunks"] == 0
+    assert report["adaptive_chunk_policy_dcp3"]["adaptive_enabled_documents"] == 8
+    assert report["adaptive_chunk_policy_dcp3"]["gate_passed"] is True
     assert report["engineering_baseline_passed"] is True
     assert not json.loads(
         (tmp_path / "reports" / "coverage.json").read_text(encoding="utf-8")

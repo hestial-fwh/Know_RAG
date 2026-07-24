@@ -88,6 +88,10 @@ class Settings(BaseSettings):
         False,
         alias="DOCUMENT_PAGE_VISUAL_PRESERVATION_ENABLED",
     )
+    document_adaptive_chunk_policy_enabled: bool = Field(
+        False,
+        alias="DOCUMENT_ADAPTIVE_CHUNK_POLICY_ENABLED",
+    )
     document_page_visual_min_coverage: float = Field(
         0.70,
         alias="DOCUMENT_PAGE_VISUAL_MIN_COVERAGE",

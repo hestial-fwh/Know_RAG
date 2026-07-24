@@ -329,7 +329,7 @@ backend/app/services/chunker/
 ├─ text_unit.py                           # 文本单元模型
 │
 ├─ canonical_parent_child.py              # Canonical → 父子切分计划 [当前核心算法]
-├─ chunk_policy_resolver.py               # 逐页 resolved policy [DCP-2 shadow，不改变切分]
+├─ chunk_policy_resolver.py               # 逐页 resolved policy 与 DCP-3 active/shadow 边界
 ├─ parent_child_splitter.py               # Know_RAG ↔ WeKnora Python 算法适配
 ├─ weknora_splitter.py                    # Old 两阶段 Parent/Child 实际算法实现
 │

@@ -14,11 +14,12 @@ problems in the old Know_RAG chain:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import re
 from typing import Any
 
 from app.services.chunker.heading_utils import is_page_noise_text
+from app.services.chunker.chunk_policy_resolver import ResolvedChunkPolicy
 from app.services.chunker.models import ChunkerConfig, ParsedChunk
 from app.services.chunker.parent_child_splitter import (
     ParentChildSplitResult,
@@ -1736,6 +1737,280 @@ def _visual_page_ranges(
     return ranges
 
 
+def _canonical_page_ranges(
+    provenance_nodes: list[CanonicalSourceNode],
+    *,
+    canonical_markdown: str,
+    normalized_markdown: str,
+    child_size: int,
+    markdown_length: int,
+) -> list[tuple[int, int, int]]:
+    """Build stable page ranges, including nodes rewritten by normalization."""
+    page_starts: dict[int, int] = {}
+    recovery_cursor = 0
+    for node in sorted(provenance_nodes, key=lambda item: item.source_order):
+        if node.page_no is None:
+            continue
+        normalized_start = node.normalized_start
+        normalized_node_text = (
+            normalize_canonical_markdown(node.canonical_text, child_size)
+            if normalized_start is None and node.canonical_text
+            else ""
+        )
+        if normalized_start is None and node.canonical_start is not None:
+            raw_prefix = canonical_markdown[: int(node.canonical_start)]
+            normalized_start = len(
+                normalize_canonical_markdown(raw_prefix, child_size)
+            )
+        if normalized_start is None and node.canonical_text:
+            position = (
+                normalized_markdown.find(normalized_node_text, recovery_cursor)
+                if normalized_node_text
+                else -1
+            )
+            if (
+                position < 0
+                and normalized_node_text
+                and normalized_markdown.count(normalized_node_text) == 1
+            ):
+                position = normalized_markdown.find(normalized_node_text)
+            normalized_start = position if position >= 0 else None
+        if normalized_start is None:
+            continue
+        page_no = int(node.page_no)
+        page_starts[page_no] = min(
+            int(normalized_start),
+            page_starts.get(page_no, int(normalized_start)),
+        )
+        recovery_cursor = max(
+            recovery_cursor,
+            int(normalized_start)
+            + len(normalized_node_text or node.canonical_text),
+        )
+    ordered_pages = sorted(page_starts.items(), key=lambda item: item[1])
+    if not ordered_pages or len({start for _, start in ordered_pages}) != len(
+        ordered_pages
+    ):
+        return []
+    ranges: list[tuple[int, int, int]] = []
+    for index, (page_no, page_start) in enumerate(ordered_pages):
+        start = 0 if index == 0 else page_start
+        end = (
+            ordered_pages[index + 1][1]
+            if index + 1 < len(ordered_pages)
+            else markdown_length
+        )
+        if end > start:
+            ranges.append((page_no, start, end))
+    return ranges
+
+
+def _append_offset_split_result(
+    *,
+    destination_parents: list[ParsedChunk],
+    destination_children: list[ParsedChunk],
+    local: ParentChildSplitResult,
+    offset: int,
+    metadata: dict[str, Any],
+) -> None:
+    parent_index_map: dict[int, int] = {}
+    for local_index, parent in enumerate(local.parents):
+        global_parent_index = len(destination_parents)
+        parent_index_map[local_index] = global_parent_index
+        destination_parents.append(
+            ParsedChunk(
+                content=parent.content,
+                context_header=parent.context_header,
+                seq=global_parent_index,
+                start=offset + parent.start,
+                end=offset + parent.end,
+                metadata={**(parent.metadata or {}), **metadata},
+                chunk_type="parent_text",
+            )
+        )
+    for child in local.children:
+        destination_children.append(
+            ParsedChunk(
+                content=child.content,
+                context_header=child.context_header,
+                seq=len(destination_children),
+                start=offset + child.start,
+                end=offset + child.end,
+                metadata={**(child.metadata or {}), **metadata},
+                chunk_type=child.chunk_type,
+                parent_index=(
+                    parent_index_map.get(child.parent_index)
+                    if child.parent_index is not None
+                    else None
+                ),
+                source_section=child.source_section,
+            )
+        )
+
+
+def _split_dcp3_policy_segments(
+    text: str,
+    cfg: ChunkerConfig,
+    page_ranges: list[tuple[int, int, int]],
+    policies: tuple[ResolvedChunkPolicy, ...],
+) -> ParentChildSplitResult:
+    """Apply active page policies while preserving fallback page runs."""
+    policies_by_page = {policy.page_no: policy for policy in policies}
+    segments: list[
+        tuple[int, int, tuple[int, ...], ResolvedChunkPolicy | None]
+    ] = []
+    fallback_pages: list[int] = []
+    fallback_start: int | None = None
+    fallback_end: int | None = None
+
+    def flush_fallback() -> None:
+        nonlocal fallback_pages, fallback_start, fallback_end
+        if fallback_start is not None and fallback_end is not None:
+            segments.append(
+                (
+                    fallback_start,
+                    fallback_end,
+                    tuple(fallback_pages),
+                    None,
+                )
+            )
+        fallback_pages = []
+        fallback_start = None
+        fallback_end = None
+
+    for page_no, page_start, page_end in page_ranges:
+        policy = policies_by_page.get(page_no)
+        if policy is not None and not policy.shadow_only:
+            flush_fallback()
+            segments.append((page_start, page_end, (page_no,), policy))
+            continue
+        if fallback_start is None:
+            fallback_start = page_start
+        fallback_end = page_end
+        fallback_pages.append(page_no)
+    flush_fallback()
+
+    parents: list[ParsedChunk] = []
+    children: list[ParsedChunk] = []
+    for segment_start, segment_end, page_nos, policy in segments:
+        segment_text = text[segment_start:segment_end]
+        if not segment_text.strip():
+            continue
+        local_cfg = cfg
+        metadata: dict[str, Any] = {
+            "dcp3_segment_page_nos": list(page_nos),
+        }
+        if policy is not None:
+            local_cfg = replace(
+                cfg,
+                child_chunk_size=policy.child_size,
+                child_chunk_overlap=policy.child_overlap,
+                parent_chunk_size=policy.parent_size,
+            )
+            metadata.update(
+                {
+                    "dcp3_policy_scoped_split": True,
+                    "chunk_policy_id": policy.policy_id,
+                    "chunk_policy_version": policy.policy_version,
+                    "chunk_policy_applied": True,
+                    "chunk_policy_page_no": policy.page_no,
+                    "chunk_policy_boundary_strategy": policy.boundary_strategy,
+                    "dcp3_executed_policy_id": policy.policy_id,
+                    "dcp3_executed_policy_page_no": policy.page_no,
+                }
+            )
+            if policy.policy_id in {"poster-page-v1", "visual-collection-v1"}:
+                metadata.update(
+                    {
+                        "visual_page_scoped_split": True,
+                        "visual_page_no": policy.page_no,
+                    }
+                )
+        local = split_parent_child_result(segment_text, local_cfg)
+        _append_offset_split_result(
+            destination_parents=parents,
+            destination_children=children,
+            local=local,
+            offset=segment_start,
+            metadata=metadata,
+        )
+    return ParentChildSplitResult(parents=parents, children=children)
+
+
+def _policy_for_span(
+    *,
+    start: int,
+    end: int,
+    page_ranges: list[tuple[int, int, int]],
+    policies_by_page: dict[int, ResolvedChunkPolicy],
+) -> tuple[ResolvedChunkPolicy | None, list[int]]:
+    overlaps = [
+        (
+            max(0, min(end, page_end) - max(start, page_start)),
+            page_no,
+        )
+        for page_no, page_start, page_end in page_ranges
+        if page_no in policies_by_page
+    ]
+    positive_pages = [page_no for overlap, page_no in overlaps if overlap > 0]
+    if positive_pages:
+        _, selected_page = max(overlaps, key=lambda item: (item[0], -item[1]))
+        return policies_by_page[selected_page], sorted(positive_pages)
+    if len(policies_by_page) == 1:
+        policy = next(iter(policies_by_page.values()))
+        return policy, [policy.page_no]
+    return None, []
+
+
+def _apply_chunk_policy_metadata(
+    *,
+    parents: list[CanonicalParentDraft],
+    children: list[CanonicalChildDraft],
+    page_ranges: list[tuple[int, int, int]],
+    policies: tuple[ResolvedChunkPolicy, ...],
+) -> None:
+    policies_by_page = {policy.page_no: policy for policy in policies}
+    for draft in [*parents, *children]:
+        policy, candidate_pages = _policy_for_span(
+            start=draft.start,
+            end=draft.end,
+            page_ranges=page_ranges,
+            policies_by_page=policies_by_page,
+        )
+        if policy is None:
+            continue
+        try:
+            executed_page_no = int(
+                draft.metadata.get("dcp3_executed_policy_page_no")
+            )
+        except (TypeError, ValueError):
+            executed_page_no = None
+        applied = (
+            draft.metadata.get("dcp3_executed_policy_id") == policy.policy_id
+            and executed_page_no == policy.page_no
+        )
+        draft.metadata.update(
+            {
+                "chunk_policy_id": policy.policy_id,
+                "chunk_policy_version": policy.policy_version,
+                "chunk_policy_reasons": list(policy.reasons),
+                "chunk_policy_page_no": policy.page_no,
+                "chunk_policy_candidate_page_nos": candidate_pages,
+                "chunk_policy_boundary_strategy": policy.boundary_strategy,
+                "chunk_policy_preserve_page_boundary": (
+                    policy.preserve_page_boundary
+                ),
+                "chunk_policy_table_mode": policy.table_mode,
+                "chunk_policy_image_ocr_mode": policy.image_ocr_mode,
+                "chunk_policy_applied": applied,
+                "chunk_policy_mode": "active" if applied else "shadow_fallback",
+            }
+        )
+        if isinstance(draft, CanonicalChildDraft):
+            draft.flags["chunk_policy_id"] = policy.policy_id
+            draft.flags["chunk_policy_applied"] = applied
+
+
 def _split_visual_pages_parent_child(
     text: str,
     cfg: ChunkerConfig,
@@ -1900,6 +2175,8 @@ def _build_visual_page_parents(
 def build_canonical_parent_child_plan(
     canonical: CanonicalDocument,
     cfg: ChunkerConfig,
+    *,
+    resolved_policies: tuple[ResolvedChunkPolicy, ...] = (),
 ) -> CanonicalChunkPlan:
     child_size = max(getattr(cfg, "child_chunk_size", 384) or 384, 1)
     normalized_markdown = normalize_canonical_markdown(
@@ -1919,14 +2196,33 @@ def build_canonical_parent_child_plan(
         provenance_nodes,
         markdown_length=len(normalized_markdown),
     )
+    page_ranges = _canonical_page_ranges(
+        provenance_nodes,
+        canonical_markdown=canonical.markdown_content,
+        normalized_markdown=normalized_markdown,
+        child_size=child_size,
+        markdown_length=len(normalized_markdown),
+    )
+    has_active_dcp3_policy = any(
+        not policy.shadow_only for policy in resolved_policies
+    )
     result = (
-        _split_visual_pages_parent_child(
+        _split_dcp3_policy_segments(
             normalized_markdown,
             cfg,
-            visual_page_ranges,
+            page_ranges,
+            resolved_policies,
         )
-        if visual_page_ranges
-        else split_parent_child_result(normalized_markdown, cfg)
+        if has_active_dcp3_policy and page_ranges
+        else (
+            _split_visual_pages_parent_child(
+                normalized_markdown,
+                cfg,
+                visual_page_ranges,
+            )
+            if visual_page_ranges
+            else split_parent_child_result(normalized_markdown, cfg)
+        )
     )
     _apply_heading_context_to_source_children(result.children)
 
@@ -2135,6 +2431,12 @@ def build_canonical_parent_child_plan(
     # Re-sequence expanded children in actual document order.  Multiple drafts
     # from one source child keep their local order (text -> image -> text).
     children = [child for child in children if child.content.strip()]
+    _apply_chunk_policy_metadata(
+        parents=parents,
+        children=children,
+        page_ranges=page_ranges,
+        policies=resolved_policies,
+    )
     return CanonicalChunkPlan(
         markdown_content=normalized_markdown,
         parents=parents,

@@ -60,7 +60,7 @@ rebuild_document_chunks (chunk_service.py)
 | Metadata builder | `chunking/metadata_builder.py` | 244 | Unified metadata/flags (NEW, pure) |
 | Chunk drafts | `chunking/chunk_draft.py` | 96 | Pure dataclasses (NEW) |
 | Low-level splitting | `chunker/` (13 files) | ~4500 total | Recursive split, markdown split, heading split, text_unit, boundary utils |
-| Shadow policy resolver | `chunker/chunk_policy_resolver.py` | — | PageProfile → versioned ResolvedChunkPolicy；DCP-2 只写 artifact |
+| Chunk policy resolver | `chunker/chunk_policy_resolver.py` | — | PageProfile → versioned ResolvedChunkPolicy；标记 DCP-3 active/shadow |
 
 ## Embedding Flow
 
