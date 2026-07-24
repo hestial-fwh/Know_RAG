@@ -29,10 +29,11 @@ Gateway (:8483) ────────▶ FastAPI + MCP
 上传 → MinIO → ParseTask
 → MinerU / RAGFlow / Legacy fallback
 → ParsedDocument / ParsedBlock
+→ 可选 PDF 页面主视觉画像、选页渲染与缺失 asset 补偿
 → 展示型富文本规范化（代码围栏除外）
 → Canonical Markdown + Asset Sidecar
 → normalize 后 provenance grounding + FigureLinker
-→ CanonicalRelationGraph merger（caption/footnote/explicit）
+→ CanonicalRelationGraph merger（caption/footnote/explicit/group/shared）
 → Parent/Child 或 flat compatibility chunk
 → 同事务写 PostgreSQL chunks + document_canonical_artifacts
 → pgvector / 可选外部向量库 + Elasticsearch BM25
@@ -46,6 +47,27 @@ Canonical 层再写入 Asset Sidecar 和 image child。RAGFlow 可作为显式�
 引用合并为 versioned `CanonicalRelationGraph`；完整 graph 与 Canonical provenance 同 revision
 持久化，Chunk 只保留检索所需的 compact summaries。
 
+PDF 页面主视觉保护由 `DOCUMENT_PAGE_VISUAL_PRESERVATION_ENABLED` 控制并默认关闭，同时尊重
+文档上传选项 `enable_media_crop`。开启后，系统只对存在高覆盖嵌入图像、且 parser 没有近整页
+image block 的页面进行选页渲染；已有页面图按 page/bbox 覆盖率去重，普通论文小图页不补整页图。
+补入的 block 标记为 `page_primary_visual`，保留权威 PDF page extent，并设置
+`exclude_from_asset_group=true`，避免与普通 figure 组成错误图片组。画像或渲染失败时 fail-open
+返回原 ParsedDocument，不触发 parser fallback，也不删除任何 OCR/正文。
+已有整页 parser 图片也会标记为 `page_primary_visual`。`block_reflow` 对这类视觉页使用页级
+section scope：只接受本页顶部、短文本形态可靠的作品标题；页面中部的 parser 标题会降级为
+普通文本，没有可靠标题时生成“第 N 页内容”边界。视觉页标题不会跨页传播，普通论文和连续正文
+仍保留原有跨页章节继承。父子切分开启时，只有一个 `page_primary_visual` child 的页级 section
+仍保留轻量 context-only parent，避免页面主视觉在树形接口中成为孤立块；普通单子块 section
+继续沿用原有压平规则。若一个未分裂的 WeKnora source child 在 Canonical 物化后展开成两个
+以上 table/image/text child，则按最终子块数量补建 source parent，避免续表等多块结构因
+“先判父块、后展开”而整体落入孤立区。若单个未挂载 source child 与已保留的相邻父窗口
+存在至少 25%（上限 64 字符）的明确区间重叠，则归入重叠度最高的父窗口；该规则只修复
+父窗口边界遗漏，不为真正独立的单子块创建内容重复的父块。
+当 `page_primary_visual` 至少覆盖 3 页且占已知页面 60% 以上时，文档进入视觉页主导切分：
+先按 Canonical provenance 的权威页边界分段，再在页内生成检索子块，最终将同页 text/image
+统一挂到唯一的 page-scoped context parent。该策略不跨页合并作品；纯图片页的父块使用图片
+检索内容，避免只保存无信息的 `asset://` 标记。普通论文和低视觉覆盖文档仍使用通用滑窗。
+
 Canonical 构建图片 asset 前会调用 `image_relation_resolver`：过滤与 OCR 重复的纯编号 caption，
 将包含多个不同图号的单图 caption 标记为 ambiguous，并在 MinerU 原生字段缺失时使用归一化
 同页 bbox、水平重叠、垂直距离和阅读顺序选择唯一 caption/footnote 候选。候选不唯一或坐标
@@ -53,7 +75,8 @@ Canonical 构建图片 asset 前会调用 `image_relation_resolver`：过滤与 
 footnote 歧义分别记录，脚注冲突不会污染可靠 caption 的图号绑定资格。
 
 `figure_linker` 在 Canonical normalize 后、父子切分前识别“如图 1 所示 / see Fig. 1”等
-显式正文引用，只链接 P1 允许确定绑定的 asset。唯一图号直接绑定；重复图号按 page、section
+显式正文引用；中文范围同时支持“图 1～图 2”和期刊常见的“详见表 1、图 1～2”写法。
+它只链接 P1 允许确定绑定的 asset。唯一图号直接绑定；重复图号按 page、section
 依次要求唯一证据，否则保留 ambiguous 候选。规则分、页/章节匹配和距离等候选证据随
 `document_canonical_artifacts` 持久化，明确不冒充概率 confidence。source node 保留 page、bbox、
 source order、semantic role 和 normalize 前后字符范围；chunk 继承必要的 `source_node_ids`。
@@ -64,16 +87,22 @@ metadata 属于 P3/P4。
 排除 parent/image/table/OCR/equation，并在图片侧写有序 `image_bindings[]`；旧
 `image_binding` 保留稳定的 v1 单关系投影。P5 对每个原始 hit、每种关系类型分别限制 3 张图和
 5 个正文 child，按 metadata 声明顺序恢复结果，只允许同 KB 且同 document 的目标，数据库或
-metadata 异常时 fail-open。物化与扩展分别受两个默认关闭的环境开关控制。MinerU adapter 当前
-仍没有把真实 page width/height 标准化进 `ParsedBlock`；Canonical page extent 是内容 bbox
-推导值，不能当成权威页面尺寸。
+metadata 异常时 fail-open。物化与扩展分别受两个默认关闭的环境开关控制。
 
 Phase 2 graph 由 `DOCUMENT_RELATION_GRAPH_ENABLED` 独立控制并默认关闭。开启 graph、关闭
 materialization 时只 shadow 写 artifact，不改变 Chunk 数量、正文或检索；两者同时开启时才写
 `relation_ids`、`relation_summaries`、有序出入边 Chunk ID 等轻量摘要。新 artifact 使用 schema v2
 和 `relation_graph_json`，继续写 `figure_links_json` 兼容投影；旧 artifact 读取时可从兼容投影构造
-仅含 explicit edge 的 graph。带 graph schema 标记的空图不会回退并复活旧关系。图片组、公共上下文
-和方向隐式规则仍未进入本阶段。
+仅含 explicit edge 的 graph。带 graph schema 标记的空图不会回退并复活旧关系。
+
+Phase 3 由 `DOCUMENT_ASSET_GROUP_ENABLED` 独立控制并默认关闭，且只有总 graph 开启时才运行。
+MinerU raw `page_width/page_height` 同时有效时，adapter 将其标为 authoritative extent；否则
+page layout graph 只能使用 derived/missing extent。只有同页、同 section、权威 extent、唯一的
+横向/纵向 partition，并且存在同 section 的显式 shared-context 节点时才生成 bound group；
+缺少组级证据、缺 bbox、derived extent 或并列 partition 保持 ambiguous，跨 section rejected。
+顶部公共说明只有覆盖整个 group 且候选唯一时才能 bound；
+各图已有独立 caption 时 shared context rejected。Phase 4 的上下左右、以下 N 图和通用代词
+仍未实现。
 
 非 Markdown parser 输出进入 Canonical 前会移除 `<sub>/<sup>/<span>/<font>/<em>` 等展示型
 HTML 标签并保留标签内文本；脚本、样式和 SVG 内容不进入检索正文。围栏代码及
@@ -89,7 +118,8 @@ HTML 标签并保留标签内文本；脚本、样式和 SVG 内容不进入检�
 - `services/document_parser/`：格式解析与统一 ParsedDocument。
 - `services/chunker/`：Canonical 和低层切分算法。
 - `services/chunking/`：草稿构建、metadata、关联和持久化辅助。
-- `services/document_relation/`：无 ORM 依赖的 graph 模型、merger、legacy adapter 与纯物化逻辑。
+- `services/document_relation/`：无 ORM 依赖的 graph 模型、page layout graph、group/shared resolver、
+  merger、legacy adapter 与纯物化逻辑。
 - `document_relation_persistence_service.py`：Canonical artifact/graph 的 ORM 持久化与 dual-read 边界。
 - `document_relation_expansion_service.py`：scoped retrieval expansion 只读查询边界。
 - `services/embedding/`：索引文本构建；`embedding_service.py` 负责模型调用与写入。

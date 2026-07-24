@@ -20,12 +20,15 @@
 - 默认 Embedding 和 LLM 调用本地 Ollama。
 - 默认 hybrid search 在 PostgreSQL/pgvector 与 Elasticsearch 中执行。
 - 普通 API 不返回完整 embedding 向量，只返回维度、范数和最多 16 维预览。
+- PDF 页面主视觉保护只在本地读取原 PDF，并将选页渲染结果写入现有 MinIO 媒体边界；不开启
+  远程模型或外部搜索。功能默认关闭，且同时受文档 `enable_media_crop` 选项约束。
 - audit_logs 不记录 embedding 向量、不记录完整 chunk 内容、不记录大段检索结果。
 - 图文关系检索扩展同时以目标 ID、`knowledge_base_id` 和 `document_id` 约束数据库查询，并在映射
   返回前再次校验两个 scope；污染 metadata 不得跨知识库或跨文档读取 Chunk。
 - `DOCUMENT_RELATION_GRAPH_ENABLED`、`DOCUMENT_RELATION_MATERIALIZATION_ENABLED` 与
-  `DOCUMENT_RELATION_RETRIEVAL_EXPANSION_ENABLED` 默认关闭，可独立回滚；扩展异常 fail-open，
-  不扩大权限边界，也不使基础检索失败。
+  `DOCUMENT_RELATION_RETRIEVAL_EXPANSION_ENABLED`、`DOCUMENT_ASSET_GROUP_ENABLED` 默认关闭，
+  可独立回滚；group 仅使用同一 MinerU page coordinate space，不跨 parser/section 自动绑定；
+  扩展异常 fail-open，不扩大权限边界，也不使基础检索失败。
 - 完整 relation candidate/evidence 只保存在文档级本地 artifact；Chunk metadata 不复制完整候选图，
   只保存关系 ID 和检索所需摘要。
 - PostgreSQL 和 Redis 默认仅绑定本机。

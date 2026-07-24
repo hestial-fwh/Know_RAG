@@ -1,6 +1,6 @@
 # 通用文档关系图标注与验收样例
 
-> 状态：Phase 2 统一关系模型与持久化已通过  
+> 状态：Phase 3 图片组与公共上下文已通过
 > 审查日期：2026-07-23  
 > 依赖计划：`docs/document_relation_graph_phased_plan.md`  
 > 18 个顶层 case 已写入 `backend/tests/fixtures/document_relation_phase0/dataset.json`；
@@ -87,6 +87,17 @@ raw parser fixture（如可得）
 | `REL-AT-P2-006` | 新 graph 完成 round-trip；空新列从 legacy `figure_links_json` dual-read。 |
 | `REL-AT-P2-007` | Chunk 只保存 compact summaries，不复制 evidence/candidate graph。 |
 
+### Phase 3 图片组与公共上下文验收
+
+| Acceptance ID | 断言 |
+|---|---|
+| `REL-AT-P3-001` | raw page width/height 只有同时有效时才标记 authoritative；无效字段不得进入 extent。 |
+| `REL-AT-P3-002` | 同页、同 section、权威 extent 的唯一横/竖 partition 只有同时存在同 section shared-context 组级证据时才生成 bound group 与 member edges；否则保持 ambiguous。 |
+| `REL-AT-P3-003` | 顶部文本覆盖整个 group 且候选唯一时生成 shared_context_of；独立 captions 必须 rejected。 |
+| `REL-AT-P3-004` | 跨 section group rejected；缺 bbox、derived/missing extent、并列 grid partition 均不得 bound。 |
+| `REL-AT-P3-005` | group flag shadow on/off 的 Chunk 数量、正文和范围完全一致；materialization 才写 compact group IDs。 |
+| `REL-AT-P3-006` | 四类 synthetic 文档分别报告 group exact-match precision/recall，且明确不启用生产准确率 gate。 |
+
 ## 4. 标注判定规则
 
 1. **自动 bound 的最低条件**：目标唯一，证据字段完整，未跨 parser coordinate space，未跨禁止的
@@ -134,13 +145,14 @@ direct binding。报告还校验 gold ID 到 layout block 的完整映射，不�
 | 当前测试 | 已覆盖 | 未覆盖 |
 |---|---|---|
 | `test_figure_linker.py` | 图号语法、代码排除、page/section 消歧、ambiguous | Chunk overlap occurrence、一图多正文物化、图片组/隐式引用 |
-| `test_image_relation_resolver.py` | caption/footnote、bbox 候选、共享 caption 歧义、生产 ORM image metadata | 真实页面 extent、图片组、全文 shared context |
+| `test_image_relation_resolver.py` | caption/footnote、bbox 候选、共享 caption 歧义、生产 ORM image metadata | 真实 MinerU 准确率校准 |
 | `test_canonical_parent_child_integration.py` | artifact、range 基本形状、单关系 P4 happy path | full range containment、唯一 carrier、多关系不覆盖、P5 |
 | `test_canonical_pipeline_convergence.py` | Canonical 清洗、结构与 parent 收敛 | relation graph/expansion |
 | `test_retrieval_mapping.py` | flat result 字段映射 | `_expand_figure_bindings()` 的 scope/order/budget/fallback |
 | `test_document_relation_dataset_generator.py` | 四类 PDF/PNG、19 个生成场景、固定哈希、五层 replay、`图1‑图2` 范围引用、真实跨 document 污染 replay | 真实 MinerU 精度校准 |
 | `test_document_relation_phase0_entrypoints.py` | 生成语料接入 rebuild/hybrid 生产入口 | 外部服务端到端性能与容量 |
-| `test_document_relation_phase2.py` | 统一三类 edge、稳定 ID、round-trip、legacy dual-read、状态合并、shadow 与 compact materialization | Phase 3 group/shared resolver |
+| `test_document_relation_phase2.py` | 统一三类 edge、稳定 ID、round-trip、legacy dual-read、状态合并、shadow 与 compact materialization | Phase 4 implicit resolver |
+| `test_document_relation_phase3.py` | authoritative extent、横/竖 group、grid/缺 bbox/derived 歧义、section/caption guard、shadow/materialization | 真实 MinerU 准确率校准、Phase 4 方向引用 |
 
 因此，现有测试通过只能证明当前显式 happy path 没有回归，不能作为通用关系层或 P5 安全边界已经完成的证据。
 

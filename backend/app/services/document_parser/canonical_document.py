@@ -452,7 +452,17 @@ def _as_markdown_text(block: ParsedBlock, text: str | None = None) -> str:
 
 def _block_role(block: ParsedBlock) -> str:
     meta = _block_meta(block)
-    for key in ("raw_block_type", "block_type", "type", "semantic_type", "subtype", "role", "layout_role"):
+    # Explicit semantic/layout roles are more informative than the raw parser
+    # block type (usually just "text" or "image").
+    for key in (
+        "role",
+        "layout_role",
+        "semantic_type",
+        "subtype",
+        "raw_block_type",
+        "block_type",
+        "type",
+    ):
         value = meta.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip().lower()
@@ -725,6 +735,9 @@ def _node_section_path(block: ParsedBlock) -> str:
     heading_path = meta.get("heading_path")
     if isinstance(heading_path, (list, tuple)):
         return " > ".join(str(item).strip() for item in heading_path if str(item).strip())
+    section_path = normalize_extracted_rich_text(meta.get("section_path")).strip()
+    if section_path:
+        return section_path
     return normalize_extracted_rich_text(block.context_header).strip()
 
 

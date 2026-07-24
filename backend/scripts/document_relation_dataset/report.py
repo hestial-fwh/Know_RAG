@@ -46,6 +46,9 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
     retrieval_case_count = 0
     scope_guard_case_count = 0
     explicit_relation_count = 0
+    phase3_counts_by_type: dict[str, Counter] = {
+        document_type: Counter() for document_type in DATASET_TYPES
+    }
 
     for document in manifest["documents"]:
         layout = json.loads((output_dir / document["layout_path"]).read_text(encoding="utf-8"))
@@ -180,6 +183,7 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
                 )
 
         document_links = (snapshot.get("current_figure_links") or {}).get("links") or []
+        relation_graph = snapshot.get("current_relation_graph") or {}
         canonical_assets = canonical.get("assets") or {}
         layout_to_canonical_asset: dict[str, str] = {}
         for page in pages:
@@ -236,6 +240,40 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
                             f"({expected_assets} != {observed.get('asset_ids', [])})"
                         )
 
+        canonical_to_layout_asset = {
+            canonical_id: layout_id
+            for layout_id, canonical_id in layout_to_canonical_asset.items()
+        }
+        graph_groups = {
+            group.get("group_id"): group for group in relation_graph.get("groups") or []
+        }
+        expected_phase3 = {
+            tuple(sorted(relation.get("target_asset_ids") or []))
+            for relation in document_gold_relations
+            if relation.get("relation_type") == "shared_context_of"
+            and relation.get("status") == "bound"
+            and relation.get("target_asset_ids")
+        }
+        predicted_phase3: set[tuple[str, ...]] = set()
+        for edge in relation_graph.get("edges") or []:
+            if (
+                edge.get("relation_type") != "shared_context_of"
+                or edge.get("status") != "bound"
+            ):
+                continue
+            for group_id in edge.get("target_group_ids") or []:
+                group = graph_groups.get(group_id) or {}
+                layout_ids = [
+                    canonical_to_layout_asset.get(asset_id)
+                    for asset_id in group.get("member_asset_ids") or []
+                ]
+                if layout_ids and None not in layout_ids:
+                    predicted_phase3.add(tuple(sorted(layout_ids)))
+        counts = phase3_counts_by_type[document["document_type"]]
+        counts["gold"] += len(expected_phase3)
+        counts["predicted"] += len(predicted_phase3)
+        counts["true_positive"] += len(expected_phase3 & predicted_phase3)
+
         parsed_blocks.extend(document_parsed_blocks)
         current_links.extend(document_links)
 
@@ -256,6 +294,18 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
         and bool((block.get("metadata") or {}).get("page_height"))
         for block in parsed_blocks
     )
+    phase3_metrics_by_type = {}
+    for document_type, counts in phase3_counts_by_type.items():
+        gold = counts["gold"]
+        predicted = counts["predicted"]
+        true_positive = counts["true_positive"]
+        phase3_metrics_by_type[document_type] = {
+            "gold_bound_groups": gold,
+            "predicted_bound_groups": predicted,
+            "true_positive_groups": true_positive,
+            "precision": round(true_positive / predicted, 4) if predicted else 0.0,
+            "recall": round(true_positive / gold, 4) if gold else 0.0,
+        }
 
     report = {
         "schema_version": 1,
@@ -307,6 +357,8 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
         "explicit_conformance_gate_passed": (
             explicit_relation_count > 0 and not explicit_conformance_failures
         ),
+        "phase3_group_shared_metrics_by_document_type": phase3_metrics_by_type,
+        "phase3_accuracy_gate_applied": False,
         "engineering_baseline_passed": (
             all(pages_by_type.get(kind, 0) >= 5 for kind in DATASET_TYPES)
             and not any(scenario_gaps.values())
@@ -322,8 +374,9 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
         "accuracy_claim_allowed": False,
         "limitations": [
             "合成数据验证工程规则覆盖，不代表真实 MinerU precision/recall",
-            "当前 ParsedBlock 不保留 raw page_width/page_height，page_extent coverage 预期为 0",
-            "图片组、方向和共享上下文 resolver 尚未实现，当前 baseline 只会产生显式 figure links",
+            "只有 MinerU raw page_width/page_height 同时有效时才标记 authoritative page extent",
+            "Phase 3 图片组与共享上下文只做同页保守规则；方向和通用代词 resolver 尚未实现",
+            "Phase 3 合成 precision/recall 仅报告，不设生产准确率门槛",
         ],
     }
     report_path = output_dir / "reports" / "coverage.json"

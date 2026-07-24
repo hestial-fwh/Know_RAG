@@ -92,7 +92,11 @@ def test_markdown_directory_heading_is_not_a_standalone_database_chunk():
     assert all(len(chunk.content) < 600 for chunk in children)
 
 
-def test_p25_builds_durable_canonical_provenance_artifact_and_chunk_refs():
+def test_p25_builds_durable_canonical_provenance_artifact_and_chunk_refs(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.chunk_service.settings.document_relation_graph_enabled",
+        False,
+    )
     parsed = ParsedDocument(
         content="",
         blocks=[

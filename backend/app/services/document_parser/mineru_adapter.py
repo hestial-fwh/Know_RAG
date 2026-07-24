@@ -988,6 +988,10 @@ def _metadata_from_block(block: dict, parser: str) -> dict[str, Any]:
         "page_index",
         "page_no",
         "bbox",
+        "page_width",
+        "page_height",
+        "section_path",
+        "role",
         "text_level",
         "level",
         "img_path",
@@ -1011,6 +1015,21 @@ def _metadata_from_block(block: dict, parser: str) -> dict[str, Any]:
     })
     if "text_level" not in meta and "level" in block:
         meta["text_level"] = block.get("level")
+    try:
+        page_width = float(block.get("page_width"))
+        page_height = float(block.get("page_height"))
+    except (TypeError, ValueError):
+        page_width = 0.0
+        page_height = 0.0
+    if page_width > 0.0 and page_height > 0.0:
+        meta["page_width"] = page_width
+        meta["page_height"] = page_height
+        meta["page_extent"] = [0.0, 0.0, page_width, page_height]
+        meta["page_extent_source"] = "authoritative"
+        meta["page_extent_coordinate_space"] = "mineru_page"
+    else:
+        meta.pop("page_width", None)
+        meta.pop("page_height", None)
     return sanitize_json_for_postgres(meta)
 
 

@@ -17,7 +17,7 @@ from app.services.document_parser.canonical_document import (
 from app.services.document_parser.image_relation_resolver import normalize_figure_token
 
 
-_FIGURE_LABEL_PATTERN = r"(?:图|fig(?:s|ure|ures)?\.?)"
+_FIGURE_LABEL_PATTERN = r"(?:图|fig(?:ures?|s)?\.?)"
 _FIGURE_TOKEN_PATTERN = (
     r"(?:[Ss]\s*[-.]?\s*)?(?:[0-9]+|[一二三四五六七八九十百]+)"
     r"(?:\s*[-.]\s*[0-9]+)?"
@@ -37,7 +37,7 @@ _RANGE_ENDPOINT_PATTERN = (
 _LABELED_FIGURE_RANGE_RE = re.compile(
     rf"{_FIGURE_LABEL_PATTERN}\s*(?P<first>{_RANGE_ENDPOINT_PATTERN})"
     rf"\s*(?:-|–|—|‑|~|～|至|到)\s*"
-    rf"{_FIGURE_LABEL_PATTERN}\s*(?P<last>{_RANGE_ENDPOINT_PATTERN})",
+    rf"(?:{_FIGURE_LABEL_PATTERN}\s*)?(?P<last>{_RANGE_ENDPOINT_PATTERN})",
     re.IGNORECASE,
 )
 _PLURAL_FIGURE_RANGE_RE = re.compile(
@@ -48,7 +48,9 @@ _PLURAL_FIGURE_RANGE_RE = re.compile(
 _HEADING_RE = re.compile(r"^\s*(#{1,6})\s+(.+?)\s*#*\s*$")
 _FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})")
 _INLINE_CODE_RE = re.compile(r"(?<!`)`[^`\n]+`(?!`)")
-_ZH_PREFIX_CUE_RE = re.compile(r"(?:如|见|参见|详见|参考|根据|由)\s*$")
+_ZH_PREFIX_CUE_RE = re.compile(
+    r"(?:如|见|参见|详见|参考|根据|由)[^。；;！？!?\n]{0,24}$"
+)
 _ZH_SUFFIX_CUE_RE = re.compile(r"^\s*(?:所示|可见|中|给出|显示|表明|说明|展示|列出|比较|对比)")
 _EN_PREFIX_CUE_RE = re.compile(
     r"(?:as\s+shown\s+in|shown\s+in|see|refer(?:ring)?\s+to)\s*$",

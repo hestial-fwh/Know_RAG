@@ -45,6 +45,27 @@ def stable_relation_id(
     return f"rel-{digest}"
 
 
+def stable_group_id(
+    group_type: str,
+    member_asset_ids: Iterable[str],
+    *,
+    page_no: int | None,
+    section_path: str = "",
+) -> str:
+    payload = {
+        "group_type": group_type,
+        "member_asset_ids": list(_ordered_strings(member_asset_ids)),
+        "page_no": page_no,
+        "section_path": section_path,
+    }
+    digest = sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()[:24]
+    return f"group-{digest}"
+
+
 @dataclass
 class CanonicalRelationEdge:
     relation_id: str
@@ -225,5 +246,6 @@ __all__ = [
     "CanonicalAssetGroup",
     "CanonicalRelationEdge",
     "CanonicalRelationGraph",
+    "stable_group_id",
     "stable_relation_id",
 ]

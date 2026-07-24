@@ -14,7 +14,9 @@ class Settings(BaseSettings):
         alias="DATABASE_URL",
     )
     redis_url: str = Field("redis://redis:6379/0", alias="REDIS_URL")
-    ollama_base_url: str = Field("http://host.docker.internal:11434", alias="OLLAMA_BASE_URL")
+    ollama_base_url: str = Field(
+        "http://host.docker.internal:11434", alias="OLLAMA_BASE_URL"
+    )
     ollama_llm_model: str = Field("qwen2.5:3b", alias="OLLAMA_LLM_MODEL")
     ollama_embedding_model: str = Field("bge-m3", alias="OLLAMA_EMBEDDING_MODEL")
     ollama_embedding_dimension: int = Field(1024, alias="OLLAMA_EMBEDDING_DIMENSION")
@@ -26,25 +28,43 @@ class Settings(BaseSettings):
     rrf_vector_weight: float = Field(1.0, alias="RRF_VECTOR_WEIGHT")
     rrf_keyword_weight: float = Field(1.0, alias="RRF_KEYWORD_WEIGHT")
     embedding_content_max_chars: int = Field(6000, alias="EMBEDDING_CONTENT_MAX_CHARS")
-    retrieval_parent_context_max_chars: int = Field(2000, alias="RETRIEVAL_PARENT_CONTEXT_MAX_CHARS")
-    retrieval_neighbor_context_max_chars: int = Field(300, alias="RETRIEVAL_NEIGHBOR_CONTEXT_MAX_CHARS")
-    retrieval_parent_children_limit: int = Field(30, alias="RETRIEVAL_PARENT_CHILDREN_LIMIT")
+    retrieval_parent_context_max_chars: int = Field(
+        2000, alias="RETRIEVAL_PARENT_CONTEXT_MAX_CHARS"
+    )
+    retrieval_neighbor_context_max_chars: int = Field(
+        300, alias="RETRIEVAL_NEIGHBOR_CONTEXT_MAX_CHARS"
+    )
+    retrieval_parent_children_limit: int = Field(
+        30, alias="RETRIEVAL_PARENT_CHILDREN_LIMIT"
+    )
     retrieval_max_parent_contexts: int = Field(5, alias="RETRIEVAL_MAX_PARENT_CONTEXTS")
-    retrieval_merge_hits_by_parent: bool = Field(True, alias="RETRIEVAL_MERGE_HITS_BY_PARENT")
-    retrieval_parent_group_hit_bonus: float = Field(0.05, alias="RETRIEVAL_PARENT_GROUP_HIT_BONUS")
-    retrieval_parent_context_mode: str = Field("standard", alias="RETRIEVAL_PARENT_CONTEXT_MODE")
+    retrieval_merge_hits_by_parent: bool = Field(
+        True, alias="RETRIEVAL_MERGE_HITS_BY_PARENT"
+    )
+    retrieval_parent_group_hit_bonus: float = Field(
+        0.05, alias="RETRIEVAL_PARENT_GROUP_HIT_BONUS"
+    )
+    retrieval_parent_context_mode: str = Field(
+        "standard", alias="RETRIEVAL_PARENT_CONTEXT_MODE"
+    )
     llm_context_max_chars: int = Field(8000, alias="LLM_CONTEXT_MAX_CHARS")
     llm_context_max_sources: int = Field(8, alias="LLM_CONTEXT_MAX_SOURCES")
     llm_context_include_images: bool = Field(True, alias="LLM_CONTEXT_INCLUDE_IMAGES")
-    llm_context_include_image_urls: bool = Field(False, alias="LLM_CONTEXT_INCLUDE_IMAGE_URLS")
+    llm_context_include_image_urls: bool = Field(
+        False, alias="LLM_CONTEXT_INCLUDE_IMAGE_URLS"
+    )
 
     default_embedding_top_k: int = Field(10, alias="DEFAULT_EMBEDDING_TOP_K")
     default_score_threshold: float = Field(0.3, alias="DEFAULT_SCORE_THRESHOLD")
     default_chunk_size: int = Field(512, alias="DEFAULT_CHUNK_SIZE")
     default_chunk_overlap: int = Field(80, alias="DEFAULT_CHUNK_OVERLAP")
     chunk_strategy: str = Field("auto", alias="CHUNK_STRATEGY")
-    chunk_separators: str = Field("\\n\\n|\\n|。|.|；|;|，|,| ", alias="CHUNK_SEPARATORS")
-    enable_parent_child_chunking: bool = Field(False, alias="ENABLE_PARENT_CHILD_CHUNKING")
+    chunk_separators: str = Field(
+        "\\n\\n|\\n|。|.|；|;|，|,| ", alias="CHUNK_SEPARATORS"
+    )
+    enable_parent_child_chunking: bool = Field(
+        False, alias="ENABLE_PARENT_CHILD_CHUNKING"
+    )
     parent_chunk_size: int = Field(4096, alias="PARENT_CHUNK_SIZE")
     child_chunk_size: int = Field(384, alias="CHILD_CHUNK_SIZE")
     child_chunk_overlap: int = Field(64, alias="CHILD_CHUNK_OVERLAP")
@@ -60,10 +80,26 @@ class Settings(BaseSettings):
         False,
         alias="DOCUMENT_RELATION_RETRIEVAL_EXPANSION_ENABLED",
     )
+    document_asset_group_enabled: bool = Field(
+        False,
+        alias="DOCUMENT_ASSET_GROUP_ENABLED",
+    )
+    document_page_visual_preservation_enabled: bool = Field(
+        False,
+        alias="DOCUMENT_PAGE_VISUAL_PRESERVATION_ENABLED",
+    )
+    document_page_visual_min_coverage: float = Field(
+        0.70,
+        alias="DOCUMENT_PAGE_VISUAL_MIN_COVERAGE",
+    )
+    document_page_visual_render_dpi: int = Field(
+        144,
+        alias="DOCUMENT_PAGE_VISUAL_RENDER_DPI",
+    )
     local_storage_dir: str = Field("/data/files", alias="LOCAL_STORAGE_DIR")
     local_cache_dir: str = Field("/data/cache", alias="LOCAL_CACHE_DIR")
 
-    #--------------配置临时文件缓存和最终解析结果的存储位置，当前项目设计为：临时文件缓存使用本地目录，最终解析结果使用对象存储。----------------
+    # --------------配置临时文件缓存和最终解析结果的存储位置，当前项目设计为：临时文件缓存使用本地目录，最终解析结果使用对象存储。----------------
     storage_backend: str = Field("minio", alias="STORAGE_BACKEND")
 
     mineru_output_dir: str = Field("", alias="MINERU_OUTPUT_DIR")
@@ -71,8 +107,12 @@ class Settings(BaseSettings):
     # Optional compatibility path for old Windows-local MinerU output.  In the
     # dockerized MinerU deployment this should normally be empty/unused.
     mineru_legacy_output_dir: str = Field("", alias="MINERU_LEGACY_OUTPUT_DIR")
-    cleanup_parse_cache_after_parse: bool = Field(True, alias="CLEANUP_PARSE_CACHE_AFTER_PARSE")
-    cleanup_mineru_legacy_output_after_parse: bool = Field(True, alias="CLEANUP_MINERU_LEGACY_OUTPUT_AFTER_PARSE")
+    cleanup_parse_cache_after_parse: bool = Field(
+        True, alias="CLEANUP_PARSE_CACHE_AFTER_PARSE"
+    )
+    cleanup_mineru_legacy_output_after_parse: bool = Field(
+        True, alias="CLEANUP_MINERU_LEGACY_OUTPUT_AFTER_PARSE"
+    )
     # ── Object storage ─────────────────────────────────────────────────
     # 当前项目直接使用 MinIO 作为正式文件存储；本地目录仅作为解析缓存。
     storage_backend: str = Field("minio", alias="STORAGE_BACKEND")
@@ -88,8 +128,12 @@ class Settings(BaseSettings):
     # GPU mode may use vlm-auto-engine / hybrid-auto-engine depending on the
     # deployment.
     mineru_runtime_profile: str = Field("cpu", alias="MINERU_RUNTIME_PROFILE")
-    mineru_cpu_base_url: str = Field("http://mineru-cpu:8000", alias="MINERU_CPU_BASE_URL")
-    mineru_gpu_base_url: str = Field("http://mineru-gpu:8000", alias="MINERU_GPU_BASE_URL")
+    mineru_cpu_base_url: str = Field(
+        "http://mineru-cpu:8000", alias="MINERU_CPU_BASE_URL"
+    )
+    mineru_gpu_base_url: str = Field(
+        "http://mineru-gpu:8000", alias="MINERU_GPU_BASE_URL"
+    )
     mineru_cpu_backend: str = Field("pipeline", alias="MINERU_CPU_BACKEND")
     mineru_gpu_backend: str = Field("vlm-auto-engine", alias="MINERU_GPU_BACKEND")
     mineru_cpu_parse_method: str = Field("auto", alias="MINERU_CPU_PARSE_METHOD")
@@ -121,17 +165,30 @@ class Settings(BaseSettings):
     mineru_timeout_seconds: int = Field(300, alias="MINERU_TIMEOUT_SECONDS")
     mineru_fallback_to_deepdoc: bool = Field(True, alias="MINERU_FALLBACK_TO_DEEPDOC")
 
-
     # ── Elasticsearch BM25 keyword retrieval ─────────────────────────────
     keyword_search_backend: str = Field("elasticsearch", alias="KEYWORD_SEARCH_BACKEND")
-    elasticsearch_url: str = Field("http://elasticsearch:9200", alias="ELASTICSEARCH_URL")
+    elasticsearch_url: str = Field(
+        "http://elasticsearch:9200", alias="ELASTICSEARCH_URL"
+    )
     elasticsearch_index: str = Field("know_rag_chunks", alias="ELASTICSEARCH_INDEX")
-    elasticsearch_timeout_seconds: int = Field(10, alias="ELASTICSEARCH_TIMEOUT_SECONDS")
-    elasticsearch_query_max_chars: int = Field(256, alias="ELASTICSEARCH_QUERY_MAX_CHARS")
-    elasticsearch_query_max_terms: int = Field(24, alias="ELASTICSEARCH_QUERY_MAX_TERMS")
-    elasticsearch_ngram_query_max_chars: int = Field(64, alias="ELASTICSEARCH_NGRAM_QUERY_MAX_CHARS")
-    elasticsearch_safe_query_max_chars: int = Field(96, alias="ELASTICSEARCH_SAFE_QUERY_MAX_CHARS")
-    elasticsearch_fallback_to_sql: bool = Field(False, alias="ELASTICSEARCH_FALLBACK_TO_SQL")
+    elasticsearch_timeout_seconds: int = Field(
+        10, alias="ELASTICSEARCH_TIMEOUT_SECONDS"
+    )
+    elasticsearch_query_max_chars: int = Field(
+        256, alias="ELASTICSEARCH_QUERY_MAX_CHARS"
+    )
+    elasticsearch_query_max_terms: int = Field(
+        24, alias="ELASTICSEARCH_QUERY_MAX_TERMS"
+    )
+    elasticsearch_ngram_query_max_chars: int = Field(
+        64, alias="ELASTICSEARCH_NGRAM_QUERY_MAX_CHARS"
+    )
+    elasticsearch_safe_query_max_chars: int = Field(
+        96, alias="ELASTICSEARCH_SAFE_QUERY_MAX_CHARS"
+    )
+    elasticsearch_fallback_to_sql: bool = Field(
+        False, alias="ELASTICSEARCH_FALLBACK_TO_SQL"
+    )
 
     admin_username: str = Field("admin", alias="ADMIN_USERNAME")
     admin_password: str = Field("change-me", alias="ADMIN_PASSWORD")

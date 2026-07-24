@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from .models import CanonicalRelationEdge, CanonicalRelationGraph, stable_relation_id
+from .models import (
+    CanonicalAssetGroup,
+    CanonicalRelationEdge,
+    CanonicalRelationGraph,
+    stable_relation_id,
+)
 
 
 _STATUS_PRIORITY = {
@@ -237,8 +242,31 @@ def build_relation_graph(
     return CanonicalRelationGraph(edges=merge_relation_edges(image_edges, explicit_edges))
 
 
+def merge_group_relations(
+    graph: CanonicalRelationGraph,
+    *,
+    groups: Iterable[CanonicalAssetGroup],
+    edges: Iterable[CanonicalRelationEdge],
+) -> CanonicalRelationGraph:
+    groups_by_id = {group.group_id: group for group in (*graph.groups, *groups)}
+    return CanonicalRelationGraph(
+        edges=merge_relation_edges(graph.edges, edges),
+        groups=sorted(
+            groups_by_id.values(),
+            key=lambda group: (
+                group.page_start if group.page_start is not None else 10**9,
+                group.group_id,
+            ),
+        ),
+        schema_version=graph.schema_version,
+        algorithm_version="document-relation-graph-p3-v1",
+        coordinate_space=graph.coordinate_space,
+    )
+
+
 __all__ = [
     "build_relation_graph",
     "graph_from_legacy_figure_links",
+    "merge_group_relations",
     "merge_relation_edges",
 ]

@@ -1,6 +1,6 @@
 # 通用文档关系图分阶段实施计划
 
-> 状态：Phase 2 PASS，Phase 3 可开始  
+> 状态：Phase 3 PASS，Phase 4 可开始
 > 审查日期：2026-07-23  
 > 依赖审查：`docs/document_relation_graph_feasibility.md`  
 > Phase 0 已完成确定性生成语料与基线；Phase 1 已完成显式关系安全物化、scoped expansion、
@@ -143,6 +143,14 @@ Phase 3 图片组或公共上下文规则。
 **依赖阶段：**Phase 2 PASS，且 Phase 0 页面几何基线完成。  
 **目标：**生成同页 group/shared-context 候选；不处理通用代词。
 
+**当前状态（2026-07-23）：PASS。** MinerU adapter 仅在 raw `page_width/page_height` 同时为
+有效正数时保留 authoritative extent；纯逻辑 page layout graph、asset group 和 shared context
+resolver 已进入统一 graph。权威同页唯一横/竖 partition 还必须存在同 section 的显式
+shared-context 组级证据才能 bound；缺少组级证据、derived/missing extent、缺 bbox、并列
+partition 保持 ambiguous，跨 section 与独立 caption 分别 rejected。默认
+`DOCUMENT_ASSET_GROUP_ENABLED=false`，无需新增数据库迁移。160 页 replay 的 page extent
+覆盖为 524/572；四类 synthetic group/shared 指标分别报告但不作为生产准确率门槛。
+
 - **修改模块：**新增 `page_layout_graph.py`、`asset_group_resolver.py`、`shared_context_resolver.py`；
   MinerU adapter 仅在已验证原始字段存在时标准化真实 page extent。
 - **明确不修改：**RAGFlow vendor、跨解析器坐标融合、FigureLinker、检索排序、页面截图 VLM、前端审核。
@@ -239,5 +247,5 @@ Phase 3 图片组或公共上下文规则。
 
 ## 10. 阶段推进决策
 
-Phase 0、Phase 1 与 Phase 2 已 PASS。下一编码阶段是 **Phase 3：图片组与公共上下文**；在
-Phase 3 通过前仍不应直接开发隐式方向关系。
+Phase 0、Phase 1、Phase 2 与 Phase 3 已 PASS。下一编码阶段是 **Phase 4：隐式方向引用**；
+仍不得把通用“该图”或跨页指代强制绑定。

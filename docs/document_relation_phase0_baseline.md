@@ -12,7 +12,7 @@
   19 个场景，不依赖临时收集的业务文档。新增 `图1‑图2` 双目标范围引用，并对每个
   `contaminated_scope` occurrence 注入真实外部 document row。
 - `REL-P0-003`：MinerU-shaped raw response 显式携带 page width/height，并通过当前 adapter replay。
-  报告确认 568 个 ParsedBlock 的 page extent 保留率为 0，证明该字段被当前 allowlist 丢弃。
+  Phase 3 已关闭原 allowlist 缺口；只有两个字段同时有效时才保留 authoritative extent。
 - `REL-P0-004`：7 个 P4/P5 缺陷曾以严格 `xfail` 固定；Phase 1 已将原断言全部转为普通通过
   测试，gold 未为迎合实现而改写。
 - 生成语料已通过 `rebuild_document_chunks()` 和 `hybrid_search()` 生产入口基线测试。
@@ -61,9 +61,11 @@ reports/coverage.json
   无漏跑或顺序差异；8 个跨文档污染 occurrence 全部被 scope guard 拒绝。
 - 当前已实现范围的显式引用 gold 对比：68 个 occurrence 的 status 与 bound target 全部一致；
   其中 `图1‑图2` 被拆为两个有序 `explicit_range` occurrence；
-  方向、分组等尚未实现类型不计入这一门禁，也不宣称通过。
-- 当前 FigureLinker baseline：bound 92、ambiguous 16；其他关系类型尚未实现，不计算虚假准确率。
-- ParsedBlock page extent：0/568，作为 Phase 3 前必须处理的输入缺口保留。
+  方向等尚未实现类型不计入这一门禁，也不宣称通过。
+- 当前 FigureLinker baseline：bound 92、ambiguous 16；方向关系尚未实现，不计算虚假准确率。
+- ParsedBlock authoritative page extent：524/572（91.61%）；缺失样例继续验证 derived/missing guard。
+- Phase 3 group/shared synthetic exact-match：四类各 gold 4、predicted 4、TP 4；precision/recall
+  均为 1.0。该数字只描述确定性生成语料，`phase3_accuracy_gate_applied=false`，不得作为生产准确率。
 
 ## 测试基线
 

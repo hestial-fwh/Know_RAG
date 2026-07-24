@@ -10,17 +10,9 @@ from app.services.document_parser.mineru_adapter import (
     is_mineru_supported_format,
     parse_document_with_mineru,
 )
+from app.services.document_parser.page_visual_enricher import enrich_pdf_page_visuals
 from app.services.document_parser.ragflow_format_adapter import (
-    ARCHIVE_SUFFIXES,
-    EPUB_SUFFIXES,
-    HTML_SUFFIXES,
-    IMAGE_SUFFIXES,
-    LEGACY_DOC_SUFFIXES,
-    PRESENTATION_SUFFIXES,
-    STRUCTURED_TEXT_SUFFIXES,
     SUPPORTED_SUFFIXES,
-    TABLE_SUFFIXES,
-    TEXT_SUFFIXES,
     parse_binary_fallback,
     parse_document_with_ragflow,
     parse_markdown,
@@ -37,7 +29,16 @@ def _document_parse_options(document: Document) -> dict:
 
 def _document_parser_engine(document: Document) -> str:
     options = _document_parse_options(document)
-    engine = (options.get("parser_engine") or options.get("parse_mode") or getattr(settings, "document_parser_engine", "auto") or "auto").strip().lower()
+    engine = (
+        (
+            options.get("parser_engine")
+            or options.get("parse_mode")
+            or getattr(settings, "document_parser_engine", "auto")
+            or "auto"
+        )
+        .strip()
+        .lower()
+    )
     if engine == "deepdoc":
         return "ragflow"
     if engine in {"auto", "mineru", "ragflow", "legacy"}:
@@ -47,18 +48,79 @@ def _document_parser_engine(document: Document) -> str:
 
 def _document_mineru_profile(document: Document) -> str:
     options = _document_parse_options(document)
-    profile = (options.get("mineru_profile") or getattr(settings, "mineru_runtime_profile", "cpu") or "cpu").strip().lower()
+    profile = (
+        (
+            options.get("mineru_profile")
+            or getattr(settings, "mineru_runtime_profile", "cpu")
+            or "cpu"
+        )
+        .strip()
+        .lower()
+    )
     return "gpu" if profile in {"gpu", "cuda", "vlm"} else "cpu"
 
 
-def resolve_parser_engine(file_type: str, db: Session | None = None, document: Document | None = None) -> str:
+def _option_bool(value, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "off", "no"}
+    return bool(value)
+
+
+def _page_visual_preservation_enabled(document: Document) -> bool:
+    if not getattr(settings, "document_page_visual_preservation_enabled", False):
+        return False
+    options = _document_parse_options(document)
+    requested = options.get(
+        "preserve_page_visuals",
+        options.get("enable_media_crop"),
+    )
+    return _option_bool(requested, True)
+
+
+def _maybe_preserve_pdf_page_visuals(
+    path: Path,
+    document: Document,
+    suffix: str,
+    parsed: ParsedDocument,
+) -> ParsedDocument:
+    if suffix != "pdf" or not _page_visual_preservation_enabled(document):
+        return parsed
+    return enrich_pdf_page_visuals(
+        path,
+        parsed,
+        knowledge_base_id=document.knowledge_base_id,
+        document_id=document.id,
+        dominant_image_threshold=getattr(
+            settings,
+            "document_page_visual_min_coverage",
+            0.70,
+        ),
+        render_dpi=getattr(settings, "document_page_visual_render_dpi", 144),
+    )
+
+
+def resolve_parser_engine(
+    file_type: str, db: Session | None = None, document: Document | None = None
+) -> str:
     """Determine which parser engine to use for a given file type.
 
     Per-document upload options override global settings.  This makes the
     frontend parser selection effective instead of cosmetic.
     """
-    engine = _document_parser_engine(document) if document is not None else (getattr(settings, "document_parser_engine", "auto") or "auto").strip().lower()
-    profile = _document_mineru_profile(document) if document is not None else getattr(settings, "mineru_runtime_profile", "cpu")
+    engine = (
+        _document_parser_engine(document)
+        if document is not None
+        else (getattr(settings, "document_parser_engine", "auto") or "auto")
+        .strip()
+        .lower()
+    )
+    profile = (
+        _document_mineru_profile(document)
+        if document is not None
+        else getattr(settings, "mineru_runtime_profile", "cpu")
+    )
 
     if file_type.lower().lstrip(".") in {"md", "markdown"}:
         return "native_markdown"
@@ -77,7 +139,9 @@ def resolve_parser_engine(file_type: str, db: Session | None = None, document: D
     return "ragflow"
 
 
-def parse_local_document(document: Document, db: Session | None = None) -> ParsedDocument:
+def parse_local_document(
+    document: Document, db: Session | None = None
+) -> ParsedDocument:
     """Parse a local document using the configured parser engine.
 
     Dispatch logic:
@@ -98,7 +162,9 @@ def parse_local_document(document: Document, db: Session | None = None) -> Parse
     if engine == "native_markdown":
         parsed = parse_markdown(path)
         parsed.metadata["parser_requested"] = _document_parser_engine(document)
-        parsed.metadata["parser_actual"] = parsed.metadata.get("parser", "native_markdown_ordered")
+        parsed.metadata["parser_actual"] = parsed.metadata.get(
+            "parser", "native_markdown_ordered"
+        )
         parsed.metadata["fallback_used"] = False
         parsed.metadata["document_parser_engine"] = "native_markdown"
         return parsed
@@ -109,7 +175,9 @@ def parse_local_document(document: Document, db: Session | None = None) -> Parse
         if not mineru_cfg:
             # Should not happen — resolve_parser_engine already checked
             return _fallback_to_ragflow(
-                path, document, suffix,
+                path,
+                document,
+                suffix,
                 requested="mineru",
                 reason="MinerU config not found at parse time",
             )
@@ -126,18 +194,22 @@ def parse_local_document(document: Document, db: Session | None = None) -> Parse
             parsed.metadata["parser_requested"] = "mineru"
             parsed.metadata["parser_actual"] = "mineru"
             parsed.metadata["fallback_used"] = False
-            parsed.metadata["document_parser_engine"] = _document_parser_engine(document)
+            parsed.metadata["document_parser_engine"] = _document_parser_engine(
+                document
+            )
             parsed.metadata["mineru_runtime_profile"] = mineru_profile
             parsed.metadata["mineru_backend"] = mineru_cfg.backend
             parsed.metadata["mineru_parse_method"] = mineru_cfg.parse_method
             parsed.metadata["mineru_base_url"] = mineru_cfg.base_url
-            return parsed
+            return _maybe_preserve_pdf_page_visuals(path, document, suffix, parsed)
         except Exception as mineru_exc:
             fallback_enabled = getattr(settings, "mineru_fallback_to_deepdoc", True)
             if not fallback_enabled:
                 raise
             return _fallback_to_ragflow(
-                path, document, suffix,
+                path,
+                document,
+                suffix,
                 requested="mineru",
                 reason=str(mineru_exc)[:1000],
                 mineru_base_url=mineru_cfg.base_url,
@@ -150,9 +222,15 @@ def parse_local_document(document: Document, db: Session | None = None) -> Parse
 def _parse_with_ragflow(path: Path, document: Document, suffix: str) -> ParsedDocument:
     """Parse document using the original RAGFlow/DeepDoc chain."""
     if suffix not in SUPPORTED_SUFFIXES:
-        fallback = parse_binary_fallback(path, parser="ragflow_generic_attachment", reason="未知格式已保存为附件，并生成可检索占位切片")
+        fallback = parse_binary_fallback(
+            path,
+            parser="ragflow_generic_attachment",
+            reason="未知格式已保存为附件，并生成可检索占位切片",
+        )
         fallback.metadata["parser_requested"] = _document_parser_engine(document)
-        fallback.metadata["parser_actual"] = fallback.metadata.get("parser", "ragflow_generic_attachment")
+        fallback.metadata["parser_actual"] = fallback.metadata.get(
+            "parser", "ragflow_generic_attachment"
+        )
         fallback.metadata["fallback_used"] = False
         fallback.metadata["document_parser_engine"] = _document_parser_engine(document)
         return fallback
@@ -168,7 +246,7 @@ def _parse_with_ragflow(path: Path, document: Document, suffix: str) -> ParsedDo
         parsed.metadata["parser_actual"] = parsed.metadata.get("parser", "ragflow")
         parsed.metadata["fallback_used"] = False
         parsed.metadata["document_parser_engine"] = _document_parser_engine(document)
-        return parsed
+        return _maybe_preserve_pdf_page_visuals(path, document, suffix, parsed)
     except Exception as exc:
         # A supported format failing at runtime is a real parse failure, not an
         # unsupported attachment.  Returning searchable placeholder text here

@@ -40,7 +40,18 @@ from app.services.document_relation.materializer import (
     materialize_figure_bindings,
     materialize_relation_summaries,
 )
-from app.services.document_relation.relation_graph_merger import build_relation_graph
+from app.services.document_relation.asset_group_resolver import (
+    build_member_edges,
+    resolve_asset_groups,
+)
+from app.services.document_relation.page_layout_graph import build_page_layout_graph
+from app.services.document_relation.relation_graph_merger import (
+    build_relation_graph,
+    merge_group_relations,
+)
+from app.services.document_relation.shared_context_resolver import (
+    resolve_shared_context_edges,
+)
 from app.services.document_relation_persistence_service import replace_canonical_artifact
 from app.services.chunker_config_service import runtime_config_from_db
 from app.services.content_cleaning import (
@@ -1137,12 +1148,38 @@ def _rebuild_canonical_weknora_parent_child(
     )
     plan = build_canonical_parent_child_plan(canonical, runtime_cfg)
     relation_graph = None
+    phase3_applied = False
     if settings.document_relation_graph_enabled:
         relation_graph = build_relation_graph(
             assets=plan.assets,
             provenance_nodes=plan.provenance_nodes,
             figure_links=plan.figure_links,
         )
+        if settings.document_asset_group_enabled:
+            try:
+                layout_graph = build_page_layout_graph(
+                    assets=plan.assets,
+                    provenance_nodes=plan.provenance_nodes,
+                )
+                asset_groups = resolve_asset_groups(layout_graph)
+                member_edges = build_member_edges(asset_groups)
+                shared_edges = resolve_shared_context_edges(
+                    layout_graph,
+                    asset_groups,
+                    assets=plan.assets,
+                )
+                relation_graph = merge_group_relations(
+                    relation_graph,
+                    groups=asset_groups,
+                    edges=[*member_edges, *shared_edges],
+                )
+                phase3_applied = True
+            except Exception:
+                logger.warning(
+                    "Phase 3 asset-group resolution failed open: document_id=%s",
+                    document.id,
+                    exc_info=True,
+                )
     if artifact_out is not None:
         link_status_counts: dict[str, int] = {}
         for link in plan.figure_links.links:
@@ -1155,7 +1192,11 @@ def _rebuild_canonical_weknora_parent_child(
                 "parse_revision": new_id(),
                 "schema_version": 2 if relation_graph is not None else 1,
                 "algorithm_version": (
-                    "canonical-relation-graph-p2-v1"
+                    (
+                        "canonical-relation-graph-p3-v1"
+                        if phase3_applied
+                        else "canonical-relation-graph-p2-v1"
+                    )
                     if relation_graph is not None
                     else "canonical-provenance-p2.5-v1"
                 ),
@@ -1219,7 +1260,9 @@ def _rebuild_canonical_weknora_parent_child(
                 "canonical_source": canonical.metadata.get("canonical_source"),
                 "canonical_source_format": canonical.source_format,
                 "canonical_asset_count": len(canonical.assets),
-                "parent_materialization_rule": "two_or_more_surviving_children",
+                "parent_materialization_rule": (
+                    "two_or_more_surviving_children_or_single_page_primary_visual"
+                ),
                 "coordinate_space": "normalized_canonical_markdown",
             },
         )
@@ -1334,11 +1377,13 @@ def _rebuild_canonical_weknora_parent_child(
 
 
 def _enforce_parent_child_integrity(chunks: list[Chunk]) -> list[Chunk]:
-    """Guarantee that persisted parents have at least two surviving children.
+    """Guarantee valid persisted parents after all cleanup stages.
 
     WeKnora only creates a parent when subdivision actually happened. Know_RAG
     has additional cleanup stages, so this final guard prevents those stages
-    from leaving 0-child or 1-child parents behind.
+    from leaving 0-child or ordinary 1-child parents behind.  Page-scoped
+    visual parents are the deliberate exception: their lightweight parent
+    preserves an authoritative page boundary even with one surviving child.
     """
     parents = {chunk.id: chunk for chunk in chunks if (chunk.chunk_type or "") == "parent_text"}
     if not parents:
@@ -1351,7 +1396,34 @@ def _enforce_parent_child_integrity(chunks: list[Chunk]) -> list[Chunk]:
     drop_parent_ids = {
         parent_id
         for parent_id, children in children_by_parent.items()
-        if len(children) < 2
+        if not (
+            len(children) >= 2
+            or (
+                len(children) == 1
+                and (
+                    bool(
+                        (parents[parent_id].metadata_json or {}).get(
+                            "singleton_primary_visual_parent"
+                        )
+                    )
+                    or bool(
+                        (parents[parent_id].metadata_json or {}).get(
+                            "visual_page_scoped_parent"
+                        )
+                    )
+                    or bool(
+                        (children[0].metadata_json or {}).get(
+                            "singleton_primary_visual_parent"
+                        )
+                    )
+                    or bool(
+                        (children[0].metadata_json or {}).get(
+                            "visual_page_scoped_parent"
+                        )
+                    )
+                )
+            )
+        )
     }
     if not drop_parent_ids:
         return chunks

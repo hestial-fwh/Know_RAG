@@ -261,3 +261,30 @@ def test_explicit_reference_inside_caption_provenance_is_ignored():
     )
 
     assert extract_explicit_figure_references(markdown, provenance_nodes=[node]) == []
+
+
+def test_links_spaced_chinese_figure_range_after_intervening_table_reference():
+    markdown = (
+        "## 1 化学成分\n\n"
+        "主要三萜类化合物详见表 1、图 1～ 2。\n\n"
+        "![图 1 茯苓中三萜类化合物结构式（Ⅰ）](asset://image-1)\n\n"
+        "![图 2 茯苓中三萜类化合物结构式（Ⅱ）](asset://image-2)"
+    )
+
+    result = link_figure_references(
+        markdown,
+        {
+            "image-1": _asset("image-1", "figure:1", source_order=31),
+            "image-2": _asset("image-2", "figure:2", source_order=37),
+        },
+    )
+
+    assert [link.reference.figure_id for link in result.links] == [
+        "figure:1",
+        "figure:2",
+    ]
+    assert [link.status for link in result.links] == ["bound", "bound"]
+    assert [link.asset_ids for link in result.links] == [
+        ("image-1",),
+        ("image-2",),
+    ]

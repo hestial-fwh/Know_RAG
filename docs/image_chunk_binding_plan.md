@@ -1,6 +1,6 @@
 # MinerU 主链路图文绑定方案
 
-> 状态：Current（显式图文关系 P0-P5 与通用关系图 Phase 2 已完成；运行开关默认关闭）
+> 状态：Current（显式图文关系 P0-P5 与通用关系图 Phase 3 已完成；运行开关默认关闭）
 > 维护日期：2026-07-23
 > 首期范围：MinerU 主解析链路  
 > 非首期范围：RAGFlow/DeepDoc fallback 的高质量图文绑定
@@ -14,6 +14,8 @@
 到 asset 的确定、歧义或未匹配结果。P2.5 已持久化规范化 Canonical Markdown、source node
 provenance、asset sidecar 和完整候选证据；chunk 继承 `source_node_ids`。引用到 text child 的
 精确 range、P4 occurrence 双侧摘要与 P5 scoped expansion 均已完成；运行时双开关默认关闭。
+Phase 3 已增加同页图片 group 与顶部公共说明关系：仅 authoritative page extent 的唯一横/竖
+partition 可以 bound；独立 caption、跨 section、缺 bbox 和 derived extent 均由保守 guard 处理。
 
 - MinerU 是首期可靠输入，提供 caption、footnote、OCR、VLM、page 和 bbox。
 - RAGFlow 是可显式选择的辅助解析器，同时也是 MinerU 整篇解析失败时的文档级 fallback；

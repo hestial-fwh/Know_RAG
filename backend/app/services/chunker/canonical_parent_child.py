@@ -11,6 +11,7 @@ problems in the old Know_RAG chain:
    combines section context, caption, VLM description, OCR and nearby prose,
    while raw media metadata stays in the asset sidecar.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -18,8 +19,11 @@ import re
 from typing import Any
 
 from app.services.chunker.heading_utils import is_page_noise_text
-from app.services.chunker.models import ChunkerConfig
-from app.services.chunker.parent_child_splitter import split_parent_child_result
+from app.services.chunker.models import ChunkerConfig, ParsedChunk
+from app.services.chunker.parent_child_splitter import (
+    ParentChildSplitResult,
+    split_parent_child_result,
+)
 from app.services.document_parser.canonical_document import (
     CanonicalAsset,
     CanonicalDocument,
@@ -27,7 +31,10 @@ from app.services.document_parser.canonical_document import (
     find_image_asset_refs,
     ground_canonical_provenance,
 )
-from app.services.document_parser.figure_linker import FigureLinkResult, link_figure_references
+from app.services.document_parser.figure_linker import (
+    FigureLinkResult,
+    link_figure_references,
+)
 
 
 _FENCE_START_RE = re.compile(r"(?m)^[ \t]*(`{3,}|~{3,})([^\n]*)\n")
@@ -142,7 +149,10 @@ def _split_fenced_block(block: str, child_size: int) -> list[str]:
         newline = "\n" if line.endswith("\n") else ""
         core = line[:-1] if newline else line
         pieces = _split_long_line(core, body_limit)
-        normalized_lines.extend(piece + ("\n" if idx < len(pieces) - 1 or newline else "") for idx, piece in enumerate(pieces))
+        normalized_lines.extend(
+            piece + ("\n" if idx < len(pieces) - 1 or newline else "")
+            for idx, piece in enumerate(pieces)
+        )
 
     chunks: list[str] = []
     current: list[str] = []
@@ -180,7 +190,9 @@ def split_oversize_fenced_blocks(markdown: str, child_size: int) -> str:
             break
         out.append(text[cursor : match.start()])
         marker = match.group(1)
-        close_re = re.compile(rf"(?m)^[ \t]*{re.escape(marker[0])}{{{len(marker)},}}[ \t]*$")
+        close_re = re.compile(
+            rf"(?m)^[ \t]*{re.escape(marker[0])}{{{len(marker)},}}[ \t]*$"
+        )
         close_match = close_re.search(text, match.end())
         if not close_match:
             out.append(text[match.start() :])
@@ -242,7 +254,11 @@ def split_oversize_markdown_tables(markdown: str, child_size: int) -> str:
         fence_match = re.match(r"^[ \t]*(`{3,}|~{3,})", line)
         if fence:
             out.append(line)
-            if fence_match and fence_match.group(1)[0] == fence[0] and len(fence_match.group(1)) >= len(fence):
+            if (
+                fence_match
+                and fence_match.group(1)[0] == fence[0]
+                and len(fence_match.group(1)) >= len(fence)
+            ):
                 fence = ""
             index += 1
             continue
@@ -252,7 +268,11 @@ def split_oversize_markdown_tables(markdown: str, child_size: int) -> str:
             index += 1
             continue
 
-        if index + 1 < len(lines) and "|" in line and _is_table_delimiter_line(lines[index + 1]):
+        if (
+            index + 1 < len(lines)
+            and "|" in line
+            and _is_table_delimiter_line(lines[index + 1])
+        ):
             end = index + 2
             while end < len(lines):
                 candidate = lines[end]
@@ -305,10 +325,14 @@ def is_structural_only(text: str) -> bool:
 
 
 def _is_native_markdown_metadata(metadata: dict[str, Any]) -> bool:
-    return str(metadata.get("canonical_source") or "").strip().lower() == "native_markdown"
+    return (
+        str(metadata.get("canonical_source") or "").strip().lower() == "native_markdown"
+    )
 
 
-def _strip_parser_page_noise_from_text(text: str, *, native_markdown: bool) -> tuple[str, int]:
+def _strip_parser_page_noise_from_text(
+    text: str, *, native_markdown: bool
+) -> tuple[str, int]:
     """Conservatively remove parser page-number noise from materialized text.
 
     Native Markdown is authoritative and is never rewritten by this guard. For
@@ -330,7 +354,11 @@ def _strip_parser_page_noise_from_text(text: str, *, native_markdown: bool) -> t
         stripped = raw.strip()
         fence_match = _FENCE_LINE_RE.match(raw)
         if fence:
-            if fence_match and fence_match.group(1)[0] == fence[0] and len(fence_match.group(1)) >= len(fence):
+            if (
+                fence_match
+                and fence_match.group(1)[0] == fence[0]
+                and len(fence_match.group(1)) >= len(fence)
+            ):
                 fence = ""
             continue
         if fence_match:
@@ -385,7 +413,11 @@ def _quality_gate_plain_text(
 
 def _is_pure_markdown_table(text: str) -> bool:
     lines = [line for line in _preserve(text).splitlines() if line.strip()]
-    return len(lines) >= 2 and "|" in lines[0] and bool(_MD_TABLE_DELIMITER_RE.match(lines[1]))
+    return (
+        len(lines) >= 2
+        and "|" in lines[0]
+        and bool(_MD_TABLE_DELIMITER_RE.match(lines[1]))
+    )
 
 
 def _is_pure_html_table(text: str) -> bool:
@@ -516,6 +548,14 @@ def _asset_image_info(asset: CanonicalAsset) -> dict[str, Any]:
     return info
 
 
+def _is_page_primary_visual_asset(asset: CanonicalAsset) -> bool:
+    metadata = asset.metadata or {}
+    return (
+        metadata.get("visual_role") == "page_primary_visual"
+        or metadata.get("semantic_role") == "page_primary_visual"
+    )
+
+
 def compose_image_child_content(
     asset: CanonicalAsset,
     *,
@@ -548,7 +588,9 @@ def compose_image_child_content(
     if asset.caption:
         if local_context.strip() and asset.caption.strip() in local_context:
             local_context = local_context.replace(asset.caption.strip(), "", 1).strip()
-        trusted_before = asset.nearby_before if _has_reliable_parser_order(asset) else ""
+        trusted_before = (
+            asset.nearby_before if _has_reliable_parser_order(asset) else ""
+        )
         nearby = _join_context(trusted_before, local_context)
     else:
         nearby = _join_context(local_context, asset.nearby_before, asset.nearby_after)
@@ -582,7 +624,11 @@ def _split_pipe_table_segments(text: str) -> list[tuple[str, str, int, int]]:
         line = lines[index]
         fence_match = re.match(r"^[ \t]*(`{3,}|~{3,})", line)
         if fence:
-            if fence_match and fence_match.group(1)[0] == fence[0] and len(fence_match.group(1)) >= len(fence):
+            if (
+                fence_match
+                and fence_match.group(1)[0] == fence[0]
+                and len(fence_match.group(1)) >= len(fence)
+            ):
                 fence = ""
             index += 1
             continue
@@ -590,9 +636,15 @@ def _split_pipe_table_segments(text: str) -> list[tuple[str, str, int, int]]:
             fence = fence_match.group(1)
             index += 1
             continue
-        if index + 1 < len(lines) and "|" in line and _is_table_delimiter_line(lines[index + 1]):
+        if (
+            index + 1 < len(lines)
+            and "|" in line
+            and _is_table_delimiter_line(lines[index + 1])
+        ):
             if index > text_start:
-                out.append(("text", "".join(lines[text_start:index]), text_start, index))
+                out.append(
+                    ("text", "".join(lines[text_start:index]), text_start, index)
+                )
             end = index + 2
             while end < len(lines) and lines[end].strip() and "|" in lines[end]:
                 end += 1
@@ -618,7 +670,7 @@ def _split_table_segments(text: str) -> list[tuple[str, str, int, int]]:
     out: list[tuple[str, str, int, int]] = []
     cursor = 0
     for match in _HTML_TABLE_FIND_RE.finditer(value):
-        before = value[cursor:match.start()]
+        before = value[cursor : match.start()]
         if before.strip():
             before_segments = _split_pipe_table_segments(before)
             if before_segments:
@@ -637,7 +689,7 @@ def _split_table_segments(text: str) -> list[tuple[str, str, int, int]]:
         else:
             out.append(("text", tail, cursor, len(value)))
     if not out and value.strip():
-        out.append(('text', value, 0, len(value)))
+        out.append(("text", value, 0, len(value)))
     return out
 
 
@@ -665,7 +717,9 @@ def _emit_table_child(
             end=end,
             source_child_seq=source_child_seq,
             metadata={**metadata, "content_kind": "table"},
-            image_info={"table_markdown": value} if not _is_pure_html_table(value) else {"table_html": value},
+            image_info={"table_markdown": value}
+            if not _is_pure_html_table(value)
+            else {"table_html": value},
             flags={"content_kind": "table", "canonical_markdown": True},
         )
     )
@@ -685,8 +739,16 @@ def _emit_plain_child(
     value = _preserve(text).strip()
     if not value or is_structural_only(value):
         return
-    chunk_type = "table" if (_is_pure_markdown_table(value) or _is_pure_html_table(value)) else "text"
-    content_kind = "code_block" if _is_pure_fenced_code(value) else ("table" if chunk_type == "table" else "text")
+    chunk_type = (
+        "table"
+        if (_is_pure_markdown_table(value) or _is_pure_html_table(value))
+        else "text"
+    )
+    content_kind = (
+        "code_block"
+        if _is_pure_fenced_code(value)
+        else ("table" if chunk_type == "table" else "text")
+    )
     if content_kind == "text":
         value, metadata = _quality_gate_plain_text(value, metadata=metadata)
         if not value:
@@ -751,7 +813,9 @@ def _materialize_text_segment_with_assets(
                     pending_structure_start = cursor
                 pending_structure = _join_context(pending_structure, before)
             else:
-                emit_start = segment_offset + (pending_structure_start if pending_structure else cursor)
+                emit_start = segment_offset + (
+                    pending_structure_start if pending_structure else cursor
+                )
                 _emit_plain_child(
                     children,
                     text=_join_context(pending_structure, before),
@@ -768,8 +832,16 @@ def _materialize_text_segment_with_assets(
         asset = canonical.assets.get(asset_id)
         if asset is not None:
             local_heading = _last_heading(pending_structure)
-            image_context = _join_context(source_child.context_header, local_heading)
-            next_asset_start = refs[ref_index + 1][2] if ref_index + 1 < len(refs) else len(text)
+            if _is_page_primary_visual_asset(asset):
+                image_context = asset.context_header.strip() or local_heading
+            else:
+                image_context = _join_context(
+                    source_child.context_header,
+                    local_heading,
+                )
+            next_asset_start = (
+                refs[ref_index + 1][2] if ref_index + 1 < len(refs) else len(text)
+            )
             local_prose = _immediate_tail_context(text, end, next_asset_start)
 
             content = compose_image_child_content(
@@ -794,7 +866,9 @@ def _materialize_text_segment_with_assets(
                 "figure_ids": list(asset.figure_ids),
                 "deterministic_binding_allowed": asset.deterministic_binding_allowed,
                 "spatial_status": asset.spatial_status,
-                "normalized_bbox": list(asset.normalized_bbox) if asset.normalized_bbox else None,
+                "normalized_bbox": list(asset.normalized_bbox)
+                if asset.normalized_bbox
+                else None,
                 "bbox_coordinate_space": asset.bbox_coordinate_space,
                 "selected_candidate_orders": list(asset.selected_candidate_orders),
                 "footnote": asset.footnote,
@@ -804,7 +878,9 @@ def _materialize_text_segment_with_assets(
                 "bbox": list(asset.bbox) if asset.bbox else None,
                 "source_block_order": asset.source_block_order,
                 "source_node_id": asset.source_node_id,
-                "source_node_ids": [asset.source_node_id] if asset.source_node_id else [],
+                "source_node_ids": [asset.source_node_id]
+                if asset.source_node_id
+                else [],
                 "source_provenance_resolution": "asset_node_exact",
                 "image_semantics_in_child": True,
             }
@@ -841,7 +917,9 @@ def _materialize_text_segment_with_assets(
                 pending_structure_start = cursor
             pending_structure = _join_context(pending_structure, after)
         else:
-            emit_start = segment_offset + (pending_structure_start if pending_structure else cursor)
+            emit_start = segment_offset + (
+                pending_structure_start if pending_structure else cursor
+            )
             _emit_plain_child(
                 children,
                 text=_join_context(pending_structure, after),
@@ -872,7 +950,9 @@ def _materialize_source_child(
         "canonical_source": canonical.metadata.get("canonical_source"),
         "canonical_source_format": canonical.source_format,
     }
-    for kind, segment, seg_start, seg_end in _split_table_segments(source_child.content):
+    for kind, segment, seg_start, seg_end in _split_table_segments(
+        source_child.content
+    ):
         if kind == "table":
             _emit_table_child(
                 children,
@@ -895,7 +975,6 @@ def _materialize_source_child(
                 )
             )
     return children
-
 
 
 # ---------------------------------------------------------------------------
@@ -943,14 +1022,18 @@ def deduplicate_repeated_asset_children(
                     carrier.metadata.get("asset_overlap_dedup_count") or 0
                 )
                 + 1,
-                "deduplicated_asset_source_child_seqs": list(dict.fromkeys(source_seqs)),
+                "deduplicated_asset_source_child_seqs": list(
+                    dict.fromkeys(source_seqs)
+                ),
             }
         )
         carrier.flags["asset_overlap_dedup_applied"] = True
     return result
 
 
-def _source_spans_overlap(left: CanonicalChildDraft, right: CanonicalChildDraft) -> tuple[int, float, float]:
+def _source_spans_overlap(
+    left: CanonicalChildDraft, right: CanonicalChildDraft
+) -> tuple[int, float, float]:
     """Return overlap chars and per-side source-span coverage ratios.
 
     WeKnora's child overlap reuses complete split units. A short unit can
@@ -963,7 +1046,9 @@ def _source_spans_overlap(left: CanonicalChildDraft, right: CanonicalChildDraft)
     right_len = max(0, int(right.end) - int(right.start))
     if left_len <= 0 or right_len <= 0:
         return 0, 0.0, 0.0
-    overlap = max(0, min(int(left.end), int(right.end)) - max(int(left.start), int(right.start)))
+    overlap = max(
+        0, min(int(left.end), int(right.end)) - max(int(left.start), int(right.start))
+    )
     if overlap <= 0:
         return 0, 0.0, 0.0
     return overlap, overlap / left_len, overlap / right_len
@@ -1032,7 +1117,10 @@ def _mark_overlap_shadow_dedup(
     carrier.metadata.update(
         {
             "overlap_shadow_dedup_applied": True,
-            "overlap_shadow_dedup_count": int(carrier.metadata.get("overlap_shadow_dedup_count") or 0) + 1,
+            "overlap_shadow_dedup_count": int(
+                carrier.metadata.get("overlap_shadow_dedup_count") or 0
+            )
+            + 1,
             "deduplicated_overlap_shadow_source_child_seqs": source_seqs,
             "overlap_shadow_last_direction": direction,
             "overlap_shadow_last_source_coverage": round(float(source_coverage), 4),
@@ -1084,7 +1172,10 @@ def deduplicate_overlap_shadow_children(
             left = work[index]
             right = work[index + 1]
 
-            if not (_is_mergeable_plain_text_child(left) and _is_mergeable_plain_text_child(right)):
+            if not (
+                _is_mergeable_plain_text_child(left)
+                and _is_mergeable_plain_text_child(right)
+            ):
                 index += 1
                 continue
             if int(left.source_child_seq) == int(right.source_child_seq):
@@ -1093,7 +1184,9 @@ def deduplicate_overlap_shadow_children(
                 index += 1
                 continue
 
-            _, left_source_coverage, right_source_coverage = _source_spans_overlap(left, right)
+            _, left_source_coverage, right_source_coverage = _source_spans_overlap(
+                left, right
+            )
             left_text = _shadow_comparable_text(left.content)
             right_text = _shadow_comparable_text(right.content)
             if not left_text or not right_text:
@@ -1107,8 +1200,14 @@ def deduplicate_overlap_shadow_children(
                 right.content,
                 expected_boundary="prefix",
             )
-            right_has_extra = len(right_text) > len(left_text) or int(right.end) > int(left.end)
-            exact_duplicate = left_text == right_text and left.start == right.start and left.end == right.end
+            right_has_extra = len(right_text) > len(left_text) or int(right.end) > int(
+                left.end
+            )
+            exact_duplicate = (
+                left_text == right_text
+                and left.start == right.start
+                and left.end == right.end
+            )
             if (
                 left_source_coverage >= min_source_coverage
                 and left_text_coverage >= min_text_coverage
@@ -1133,8 +1232,14 @@ def deduplicate_overlap_shadow_children(
                 left.content,
                 expected_boundary="suffix",
             )
-            left_has_extra = len(left_text) > len(right_text) or int(left.start) < int(right.start)
-            exact_duplicate = left_text == right_text and left.start == right.start and left.end == right.end
+            left_has_extra = len(left_text) > len(right_text) or int(left.start) < int(
+                right.start
+            )
+            exact_duplicate = (
+                left_text == right_text
+                and left.start == right.start
+                and left.end == right.end
+            )
             if (
                 right_source_coverage >= min_source_coverage
                 and right_text_coverage >= min_text_coverage
@@ -1156,6 +1261,7 @@ def deduplicate_overlap_shadow_children(
 
     return work
 
+
 # ---------------------------------------------------------------------------
 # Short sibling text merge
 # ---------------------------------------------------------------------------
@@ -1164,9 +1270,7 @@ def deduplicate_overlap_shadow_children(
 def _normalized_context_header(value: str) -> str:
     """Normalize a context header for safe sibling-merge comparison."""
     return "\n".join(
-        line.strip()
-        for line in _preserve(value).splitlines()
-        if line.strip()
+        line.strip() for line in _preserve(value).splitlines() if line.strip()
     )
 
 
@@ -1178,17 +1282,25 @@ def _semantic_text_length(text: str) -> int:
 def _is_mergeable_plain_text_child(child: CanonicalChildDraft) -> bool:
     if child.chunk_type != "text":
         return False
-    content_kind = str(
-        child.metadata.get("content_kind")
-        or child.flags.get("content_kind")
-        or "text"
-    ).strip().lower()
+    content_kind = (
+        str(
+            child.metadata.get("content_kind")
+            or child.flags.get("content_kind")
+            or "text"
+        )
+        .strip()
+        .lower()
+    )
     if content_kind != "text":
         return False
     value = _preserve(child.content).strip()
     if not value or is_structural_only(value):
         return False
-    if _is_pure_fenced_code(value) or _is_pure_markdown_table(value) or _is_pure_html_table(value):
+    if (
+        _is_pure_fenced_code(value)
+        or _is_pure_markdown_table(value)
+        or _is_pure_html_table(value)
+    ):
         return False
     return True
 
@@ -1207,9 +1319,13 @@ def _children_are_merge_compatible(
     """
     if left.parent_index != right.parent_index:
         return False
-    if not (_is_mergeable_plain_text_child(left) and _is_mergeable_plain_text_child(right)):
+    if not (
+        _is_mergeable_plain_text_child(left) and _is_mergeable_plain_text_child(right)
+    ):
         return False
-    return _normalized_context_header(left.context_header) == _normalized_context_header(right.context_header)
+    return _normalized_context_header(
+        left.context_header
+    ) == _normalized_context_header(right.context_header)
 
 
 def _exact_suffix_prefix_overlap(left: str, right: str, max_chars: int = 192) -> int:
@@ -1257,7 +1373,9 @@ def _merge_two_text_children(
     threshold: int,
 ) -> CanonicalChildDraft:
     content = _combine_sibling_text(left.content, right.content)
-    source_seqs = list(dict.fromkeys(_merged_source_sequences(left) + _merged_source_sequences(right)))
+    source_seqs = list(
+        dict.fromkeys(_merged_source_sequences(left) + _merged_source_sequences(right))
+    )
     left_count = int(left.metadata.get("short_sibling_merge_count") or 1)
     right_count = int(right.metadata.get("short_sibling_merge_count") or 1)
 
@@ -1317,7 +1435,11 @@ def merge_short_text_siblings(
         return []
 
     max_size = max(int(child_size or 1), 1)
-    threshold = int(min_child_size) if min_child_size is not None else min(120, max(80, max_size // 3))
+    threshold = (
+        int(min_child_size)
+        if min_child_size is not None
+        else min(120, max(80, max_size // 3))
+    )
     threshold = max(1, min(threshold, max_size))
     work = list(children)
 
@@ -1342,13 +1464,29 @@ def merge_short_text_siblings(
                 if _children_are_merge_compatible(previous, current):
                     combined = _combine_sibling_text(previous.content, current.content)
                     if len(combined) <= max_size:
-                        candidates.append(("backward", index - 1, _merge_two_text_children(previous, current, threshold=threshold)))
+                        candidates.append(
+                            (
+                                "backward",
+                                index - 1,
+                                _merge_two_text_children(
+                                    previous, current, threshold=threshold
+                                ),
+                            )
+                        )
             if index + 1 < len(work):
                 following = work[index + 1]
                 if _children_are_merge_compatible(current, following):
                     combined = _combine_sibling_text(current.content, following.content)
                     if len(combined) <= max_size:
-                        candidates.append(("forward", index, _merge_two_text_children(current, following, threshold=threshold)))
+                        candidates.append(
+                            (
+                                "forward",
+                                index,
+                                _merge_two_text_children(
+                                    current, following, threshold=threshold
+                                ),
+                            )
+                        )
 
             if not candidates:
                 index += 1
@@ -1369,7 +1507,10 @@ def merge_short_text_siblings(
             pool = preferred or candidates
             direction, replace_at, merged = min(
                 pool,
-                key=lambda item: (max_size - len(item[2].content), 0 if item[0] == preferred_direction else 1),
+                key=lambda item: (
+                    max_size - len(item[2].content),
+                    0 if item[0] == preferred_direction else 1,
+                ),
             )
             work[replace_at : replace_at + 2] = [merged]
             changed = True
@@ -1403,7 +1544,10 @@ def merge_overlap_tail_text_children(
             index += 1
             continue
         overlap_chars, _, _ = _source_spans_overlap(left, right)
-        if overlap_chars <= 0 or _semantic_text_length(right.content) >= short_threshold:
+        if (
+            overlap_chars <= 0
+            or _semantic_text_length(right.content) >= short_threshold
+        ):
             index += 1
             continue
         left_text = left.content.strip()
@@ -1438,14 +1582,37 @@ def _flatten_underfilled_parent_links(
     *,
     pass_name: str,
 ) -> tuple[list[CanonicalChildDraft], dict[int, int], set[int]]:
-    """Flatten parent links that have fewer than two surviving children."""
+    """Flatten underfilled parents except one-page primary-visual containers."""
     counts: dict[int, int] = {}
     for child in children:
         if child.parent_index is not None:
             counts[child.parent_index] = counts.get(child.parent_index, 0) + 1
 
-    kept = {parent_index for parent_index, count in counts.items() if count >= 2}
-    dropped = {parent_index for parent_index, count in counts.items() if count < 2}
+    singleton_primary_visual_parents = {
+        int(child.parent_index)
+        for child in children
+        if child.parent_index is not None
+        and counts.get(child.parent_index) == 1
+        and child.chunk_type == "image"
+        and (
+            child.metadata.get("visual_role") == "page_primary_visual"
+            or child.metadata.get("semantic_role") == "page_primary_visual"
+        )
+    }
+    kept = {
+        parent_index
+        for parent_index, count in counts.items()
+        if count >= 2 or parent_index in singleton_primary_visual_parents
+    }
+    dropped = set(counts) - kept
+    for child in children:
+        if child.parent_index not in singleton_primary_visual_parents:
+            continue
+        child.metadata["singleton_primary_visual_parent"] = True
+        child.metadata["parent_materialization_rule"] = (
+            "single_page_primary_visual_allowed"
+        )
+        child.flags["singleton_primary_visual_parent"] = True
     if dropped:
         for child in children:
             if child.parent_index not in dropped:
@@ -1453,10 +1620,276 @@ def _flatten_underfilled_parent_links(
             child.parent_index = None
             child.metadata["parent_materialized"] = False
             child.metadata["parent_dropped_after_materialization"] = True
-            child.metadata["parent_flattened_reason"] = "fewer_than_two_surviving_children"
+            child.metadata["parent_flattened_reason"] = (
+                "fewer_than_two_surviving_children"
+            )
             child.metadata["parent_flattened_pass"] = pass_name
             child.flags["parent_materialized"] = False
     return children, counts, kept
+
+
+def _rehome_single_overlapping_orphans(
+    children: list[CanonicalChildDraft],
+    source_parents: list[Any],
+    *,
+    kept_parent_indexes: set[int],
+    counts: dict[int, int],
+) -> None:
+    """Attach a singleton orphan to an overlapping surviving parent window.
+
+    Parent windows intentionally overlap.  The two-pass splitter can emit a
+    standalone source child at a window boundary, and exact-overlap
+    deduplication can also leave a formerly valid parent with one child.  Such
+    a child must not become a tree orphan when its source range still has
+    substantial coverage in an adjacent parent.
+
+    Groups that expanded into multiple durable children are left untouched so
+    the synthetic expanded-source parent rule below can preserve them together.
+    """
+    flattened_by_source: dict[int, list[CanonicalChildDraft]] = {}
+    for child in children:
+        source_seq = child.metadata.get("canonical_source_child_seq")
+        if (
+            child.parent_index is not None
+            or source_seq is None
+            or _is_page_primary_visual_asset(child)
+        ):
+            continue
+        flattened_by_source.setdefault(int(source_seq), []).append(child)
+
+    for group in flattened_by_source.values():
+        if len(group) != 1:
+            continue
+        child = group[0]
+        child_length = max(child.end - child.start, 1)
+        minimum_overlap = min(64, max(1, child_length // 4))
+        candidates: list[tuple[int, int]] = []
+        for parent_index in kept_parent_indexes:
+            if parent_index < 0 or parent_index >= len(source_parents):
+                continue
+            parent = source_parents[parent_index]
+            overlap = max(
+                0,
+                min(child.end, parent.end) - max(child.start, parent.start),
+            )
+            if overlap >= minimum_overlap:
+                candidates.append((overlap, parent_index))
+        if not candidates:
+            continue
+
+        overlap, parent_index = max(candidates, key=lambda item: (item[0], -item[1]))
+        child.parent_index = parent_index
+        child.metadata["parent_materialized"] = True
+        child.metadata["parent_rehomed_from_orphan"] = True
+        child.metadata["parent_materialization_rule"] = (
+            "overlapping_surviving_parent_window"
+        )
+        child.metadata["parent_rehome_overlap_chars"] = overlap
+        child.flags["parent_materialized"] = True
+        child.flags["parent_rehomed_from_orphan"] = True
+        counts[parent_index] = counts.get(parent_index, 0) + 1
+
+
+def _visual_page_ranges(
+    canonical: CanonicalDocument,
+    provenance_nodes: list[CanonicalSourceNode],
+    *,
+    markdown_length: int,
+    minimum_visual_pages: int = 3,
+    minimum_visual_ratio: float = 0.60,
+) -> list[tuple[int, int, int]]:
+    """Return authoritative page ranges for a visual-page-dominant document."""
+    visual_pages = {
+        int(asset.page_no)
+        for asset in canonical.assets.values()
+        if asset.page_no is not None and _is_page_primary_visual_asset(asset)
+    }
+    page_starts: dict[int, int] = {}
+    for node in provenance_nodes:
+        if node.page_no is None or node.normalized_start is None:
+            continue
+        page_no = int(node.page_no)
+        page_starts[page_no] = min(
+            int(node.normalized_start),
+            page_starts.get(page_no, int(node.normalized_start)),
+        )
+    if (
+        len(visual_pages) < minimum_visual_pages
+        or not page_starts
+        or len(visual_pages) / len(page_starts) < minimum_visual_ratio
+    ):
+        return []
+
+    ordered_pages = sorted(page_starts.items(), key=lambda item: item[1])
+    if len({start for _, start in ordered_pages}) != len(ordered_pages):
+        return []
+    ranges: list[tuple[int, int, int]] = []
+    for index, (page_no, page_start) in enumerate(ordered_pages):
+        start = 0 if index == 0 else page_start
+        end = (
+            ordered_pages[index + 1][1]
+            if index + 1 < len(ordered_pages)
+            else markdown_length
+        )
+        if end > start:
+            ranges.append((page_no, start, end))
+    return ranges
+
+
+def _split_visual_pages_parent_child(
+    text: str,
+    cfg: ChunkerConfig,
+    page_ranges: list[tuple[int, int, int]],
+) -> ParentChildSplitResult:
+    """Run the existing splitter independently inside each authoritative page."""
+    parents: list[ParsedChunk] = []
+    children: list[ParsedChunk] = []
+    child_seq = 0
+    for page_no, page_start, page_end in page_ranges:
+        page_text = text[page_start:page_end]
+        if not page_text.strip():
+            continue
+        local = split_parent_child_result(page_text, cfg)
+        parent_index_map: dict[int, int] = {}
+        for local_index, parent in enumerate(local.parents):
+            global_parent_index = len(parents)
+            parent_index_map[local_index] = global_parent_index
+            parents.append(
+                ParsedChunk(
+                    content=parent.content,
+                    context_header=parent.context_header,
+                    seq=global_parent_index,
+                    start=page_start + parent.start,
+                    end=page_start + parent.end,
+                    metadata={
+                        **(parent.metadata or {}),
+                        "visual_page_scoped_split": True,
+                        "visual_page_no": page_no,
+                    },
+                    chunk_type="parent_text",
+                )
+            )
+        for child in local.children:
+            children.append(
+                ParsedChunk(
+                    content=child.content,
+                    context_header=child.context_header,
+                    seq=child_seq,
+                    start=page_start + child.start,
+                    end=page_start + child.end,
+                    metadata={
+                        **(child.metadata or {}),
+                        "visual_page_scoped_split": True,
+                        "visual_page_no": page_no,
+                    },
+                    chunk_type=child.chunk_type,
+                    parent_index=(
+                        parent_index_map.get(child.parent_index)
+                        if child.parent_index is not None
+                        else None
+                    ),
+                    source_section=child.source_section,
+                )
+            )
+            child_seq += 1
+    return ParentChildSplitResult(parents=parents, children=children)
+
+
+def _build_visual_page_parents(
+    children: list[CanonicalChildDraft],
+    markdown: str,
+    page_ranges: list[tuple[int, int, int]],
+) -> tuple[list[CanonicalParentDraft], dict[int, int], set[int]]:
+    """Make one context-only parent per visual page after child materialization."""
+    children_by_page: dict[int, list[CanonicalChildDraft]] = {}
+    for child in children:
+        raw_page_no = child.metadata.get("visual_page_no")
+        try:
+            page_no = int(raw_page_no) if raw_page_no is not None else None
+        except (TypeError, ValueError):
+            page_no = None
+        if page_no is None:
+            candidates = [
+                (max(0, min(child.end, end) - max(child.start, start)), candidate_page)
+                for candidate_page, start, end in page_ranges
+            ]
+            overlap, candidate_page = max(candidates, default=(0, 0))
+            page_no = candidate_page if overlap > 0 else None
+        if page_no is not None:
+            children_by_page.setdefault(page_no, []).append(child)
+
+    parents: list[CanonicalParentDraft] = []
+    counts: dict[int, int] = {}
+    kept: set[int] = set()
+    for page_no, page_start, page_end in page_ranges:
+        group = sorted(
+            children_by_page.get(page_no, []),
+            key=lambda child: (child.start, child.end, child.source_child_seq),
+        )
+        if not group:
+            continue
+        parent_index = len(parents)
+        singleton_primary_visual = (
+            len(group) == 1
+            and group[0].chunk_type == "image"
+            and _is_page_primary_visual_asset(group[0])
+        )
+        for child in group:
+            child.parent_index = parent_index
+            child.metadata["parent_materialized"] = True
+            child.metadata["visual_page_scoped_parent"] = True
+            child.metadata["visual_page_no"] = page_no
+            child.metadata["parent_materialization_rule"] = (
+                "visual_page_authoritative_boundary"
+            )
+            child.flags["parent_materialized"] = True
+            child.flags["visual_page_scoped_parent"] = True
+            if singleton_primary_visual:
+                child.metadata["singleton_primary_visual_parent"] = True
+                child.flags["singleton_primary_visual_parent"] = True
+
+        parent_content = _preserve(markdown[page_start:page_end]).strip()
+        semantic_parent_content = re.sub(
+            r"!\[[^\]]*\]\(asset://[^)]+\)",
+            "",
+            parent_content,
+        )
+        if _semantic_text_length(semantic_parent_content) < 80:
+            parent_content = "\n\n".join(child.content for child in group)
+        parents.append(
+            CanonicalParentDraft(
+                parent_index=parent_index,
+                content=parent_content,
+                context_header=next(
+                    (child.context_header for child in group if child.context_header),
+                    "",
+                ),
+                start=page_start,
+                end=page_end,
+                metadata={
+                    "canonical_markdown": True,
+                    "chunk_role": "parent",
+                    "children_count_planned": len(group),
+                    "visual_page_scoped_parent": True,
+                    "visual_page_no": page_no,
+                    "parent_materialization_rule": (
+                        "visual_page_authoritative_boundary"
+                    ),
+                    "singleton_primary_visual_parent": singleton_primary_visual,
+                    "source_node_ids": list(
+                        dict.fromkeys(
+                            node_id
+                            for child in group
+                            for node_id in (child.metadata.get("source_node_ids") or [])
+                        )
+                    ),
+                    "runtime_postprocess_policy": "structure_first",
+                },
+            )
+        )
+        counts[parent_index] = len(group)
+        kept.add(parent_index)
+    return parents, counts, kept
 
 
 # ---------------------------------------------------------------------------
@@ -1469,7 +1902,9 @@ def build_canonical_parent_child_plan(
     cfg: ChunkerConfig,
 ) -> CanonicalChunkPlan:
     child_size = max(getattr(cfg, "child_chunk_size", 384) or 384, 1)
-    normalized_markdown = normalize_canonical_markdown(canonical.markdown_content, child_size)
+    normalized_markdown = normalize_canonical_markdown(
+        canonical.markdown_content, child_size
+    )
     provenance_nodes = ground_canonical_provenance(
         normalized_markdown,
         canonical.provenance_nodes,
@@ -1479,12 +1914,27 @@ def build_canonical_parent_child_plan(
         canonical.assets,
         provenance_nodes=provenance_nodes,
     )
-    result = split_parent_child_result(normalized_markdown, cfg)
+    visual_page_ranges = _visual_page_ranges(
+        canonical,
+        provenance_nodes,
+        markdown_length=len(normalized_markdown),
+    )
+    result = (
+        _split_visual_pages_parent_child(
+            normalized_markdown,
+            cfg,
+            visual_page_ranges,
+        )
+        if visual_page_ranges
+        else split_parent_child_result(normalized_markdown, cfg)
+    )
     _apply_heading_context_to_source_children(result.children)
 
     children: list[CanonicalChildDraft] = []
     for source_child in sorted(result.children, key=lambda item: item.seq):
-        children.extend(_materialize_source_child(source_child, canonical, child_size=child_size))
+        children.extend(
+            _materialize_source_child(source_child, canonical, child_size=child_size)
+        )
 
     # Structure-first post-processing policy.
     #
@@ -1515,33 +1965,172 @@ def build_canonical_parent_child_plan(
             child.metadata["source_node_ids"] = list(dict.fromkeys(source_node_ids))
             child.metadata["source_provenance_resolution"] = "source_child_overlap"
 
-    # Final integrity rule only: parent materialization follows surviving child
-    # links without changing child content or boundaries.
-    children, counts, kept_parent_indexes = _flatten_underfilled_parent_links(
-        children,
-        pass_name="structure_first_final_validation",
-    )
-
-    parents: list[CanonicalParentDraft] = []
-    for parent_index, parent in enumerate(result.parents):
-        if parent_index not in kept_parent_indexes:
-            continue
-        parents.append(
-            CanonicalParentDraft(
-                parent_index=parent_index,
-                content=_preserve(parent.content),
-                context_header=parent.context_header,
-                start=parent.start,
-                end=parent.end,
-                metadata={
-                    **(parent.metadata or {}),
-                    "canonical_markdown": True,
-                    "chunk_role": "parent",
-                    "children_count_planned": counts.get(parent_index, 0),
-                    "runtime_postprocess_policy": "structure_first",
-                },
-            )
+    if visual_page_ranges:
+        parents, counts, kept_parent_indexes = _build_visual_page_parents(
+            children,
+            normalized_markdown,
+            visual_page_ranges,
         )
+    else:
+        # Final integrity rule only: parent materialization follows surviving
+        # child links without changing child content or boundaries.
+        children, counts, kept_parent_indexes = _flatten_underfilled_parent_links(
+            children,
+            pass_name="structure_first_final_validation",
+        )
+        _rehome_single_overlapping_orphans(
+            children,
+            result.parents,
+            kept_parent_indexes=kept_parent_indexes,
+            counts=counts,
+        )
+
+        parents = []
+        for parent_index, parent in enumerate(result.parents):
+            if parent_index not in kept_parent_indexes:
+                continue
+            parents.append(
+                CanonicalParentDraft(
+                    parent_index=parent_index,
+                    content=_preserve(parent.content),
+                    context_header=parent.context_header,
+                    start=parent.start,
+                    end=parent.end,
+                    metadata={
+                        **(parent.metadata or {}),
+                        "canonical_markdown": True,
+                        "chunk_role": "parent",
+                        "children_count_planned": counts.get(parent_index, 0),
+                        "singleton_primary_visual_parent": (
+                            counts.get(parent_index, 0) == 1
+                        ),
+                        "runtime_postprocess_policy": "structure_first",
+                    },
+                )
+            )
+
+    if getattr(cfg, "enable_parent_child", False):
+        next_parent_index = (
+            max(
+                [
+                    *(parent.parent_index for parent in parents),
+                    *(
+                        child.parent_index
+                        for child in children
+                        if child.parent_index is not None
+                    ),
+                ],
+                default=-1,
+            )
+            + 1
+        )
+
+        # One WeKnora source child can expand into several durable children
+        # after table/image materialization.  The two-pass splitter cannot
+        # decide that a parent is needed before this expansion, so restore the
+        # parent here when the final source-child group actually has 2+ items.
+        # This keeps multi-part/continued tables out of the orphan bucket
+        # without changing the normal singleton-flattening rule.
+        source_children_by_seq = {
+            int(source_child.seq): source_child for source_child in result.children
+        }
+        expanded_orphans: dict[int, list[CanonicalChildDraft]] = {}
+        for child in children:
+            source_seq = child.metadata.get("canonical_source_child_seq")
+            if (
+                child.parent_index is not None
+                or source_seq is None
+                or _is_page_primary_visual_asset(child)
+            ):
+                continue
+            expanded_orphans.setdefault(int(source_seq), []).append(child)
+        for source_seq, group in sorted(
+            expanded_orphans.items(),
+            key=lambda item: min(child.start for child in item[1]),
+        ):
+            if len(group) < 2:
+                continue
+            source_child = source_children_by_seq.get(source_seq)
+            if source_child is None or source_child.parent_index is not None:
+                continue
+            for child in group:
+                child.parent_index = next_parent_index
+                child.metadata["parent_materialized"] = True
+                child.metadata["parent_materialization_rule"] = (
+                    "expanded_source_child_multiple_children"
+                )
+                child.flags["parent_materialized"] = True
+                child.flags["expanded_source_child_parent"] = True
+            parents.append(
+                CanonicalParentDraft(
+                    parent_index=next_parent_index,
+                    content=_preserve(source_child.content),
+                    context_header=source_child.context_header,
+                    start=source_child.start,
+                    end=source_child.end,
+                    metadata={
+                        **(source_child.metadata or {}),
+                        "canonical_markdown": True,
+                        "chunk_role": "parent",
+                        "children_count_planned": len(group),
+                        "synthetic_expanded_source_parent": True,
+                        "source_node_ids": list(
+                            dict.fromkeys(
+                                node_id
+                                for child in group
+                                for node_id in (
+                                    child.metadata.get("source_node_ids") or []
+                                )
+                            )
+                        ),
+                        "source_provenance_resolution": (
+                            "expanded_source_child_union"
+                        ),
+                        "parent_materialization_rule": (
+                            "expanded_source_child_multiple_children"
+                        ),
+                        "runtime_postprocess_policy": "structure_first",
+                    },
+                )
+            )
+            next_parent_index += 1
+
+        for child in children:
+            if (
+                child.parent_index is not None
+                or child.chunk_type != "image"
+                or (
+                    child.metadata.get("visual_role") != "page_primary_visual"
+                    and child.metadata.get("semantic_role") != "page_primary_visual"
+                )
+            ):
+                continue
+            child.parent_index = next_parent_index
+            child.metadata["parent_materialized"] = True
+            child.metadata["singleton_primary_visual_parent"] = True
+            child.metadata["parent_materialization_rule"] = (
+                "single_page_primary_visual_allowed"
+            )
+            child.flags["parent_materialized"] = True
+            child.flags["singleton_primary_visual_parent"] = True
+            parents.append(
+                CanonicalParentDraft(
+                    parent_index=next_parent_index,
+                    content=child.content,
+                    context_header=child.context_header,
+                    start=child.start,
+                    end=child.end,
+                    metadata={
+                        "canonical_markdown": True,
+                        "chunk_role": "parent",
+                        "children_count_planned": 1,
+                        "singleton_primary_visual_parent": True,
+                        "synthetic_visual_page_parent": True,
+                        "runtime_postprocess_policy": "structure_first",
+                    },
+                )
+            )
+            next_parent_index += 1
 
     # Re-sequence expanded children in actual document order.  Multiple drafts
     # from one source child keep their local order (text -> image -> text).

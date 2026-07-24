@@ -84,7 +84,12 @@ def test_replay_builds_five_layers_and_engineering_coverage_report(tmp_path):
     assert report["scope_guard_replay_case_count"] == len(DATASET_TYPES)
     assert report["explicit_conformance_gate_passed"] is True
     assert report["retrieval_replay_case_count"] > len(DATASET_TYPES)
-    assert report["parsed_field_coverage"]["page_extent"]["rate"] == 0.0
+    assert report["parsed_field_coverage"]["page_extent"]["rate"] > 0.9
+    assert report["phase3_accuracy_gate_applied"] is False
+    assert all(
+        metrics["gold_bound_groups"] > 0
+        for metrics in report["phase3_group_shared_metrics_by_document_type"].values()
+    )
     assert report["accuracy_claim_allowed"] is False
 
 

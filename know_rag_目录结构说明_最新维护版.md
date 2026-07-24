@@ -282,10 +282,13 @@ backend/app/services/document_parser/
 ├─ deepdoc_local_ocr.py                   # DeepDoc 本地 OCR 支撑
 ├─ pdf_ragflow_advanced.py                # PDF 高级解析
 ├─ pdf_ragflow_lite.py                    # PDF 轻量解析
+├─ page_visual_profile.py                 # PDF 页面事实与主视觉覆盖判定 [主链路，可选]
+├─ pdf_page_renderer.py                   # 选页渲染与媒体保存 [主链路，可选]
+├─ page_visual_enricher.py                # 缺失页面主视觉补偿、去重与降级统计 [主链路，可选]
 ├─ docx_multimodal.py                     # DOCX 多模态解析
 ├─ generic_parsers.py                     # 通用格式解析器
 ├─ media_storage.py                       # 解析媒体文件保存
-├─ block_reflow.py                        # ParsedBlock 重排、OCR 文本修复、标题路径继承 [主链路]
+├─ block_reflow.py                        # ParsedBlock 重排、OCR 修复、视觉页 section scope、普通正文标题继承 [主链路]
 ├─ image_relation_resolver.py             # 图片 caption 质量、图号歧义、bbox 空间候选与 binding_score [主链路]
 ├─ figure_linker.py                       # normalize 后正文图号引用 → asset 候选证据（P2/P2.5）[主链路]
 └─ canonical_document.py                  # Canonical Markdown + asset/source-node provenance [核心算法]
@@ -294,7 +297,9 @@ backend/app/services/document_parser/
 通用关系层位于 `backend/app/services/document_relation/`：`models.py` 定义 versioned edge/group/graph，
 `relation_graph_merger.py` 合并 caption、footnote 与 explicit relation，`materializer.py` 生成 compact
 Chunk summaries。ORM 读写独立位于 `document_relation_persistence_service.py`，纯逻辑包禁止依赖
-SQLAlchemy。当前不包含图片组、公共上下文或方向隐式规则。
+SQLAlchemy。`page_layout_graph.py` 规范化 authoritative/derived page extent，
+`asset_group_resolver.py` 生成同页横/竖 group 与 member edges，`shared_context_resolver.py`
+生成公共顶部说明并执行独立 caption、section 和 geometry guard。方向隐式规则仍属于 Phase 4。
 
 ### 统一解析中间层
 
@@ -536,6 +541,7 @@ POST /api/v1/knowledge-bases/{kb_id}/documents
 └─ services/document_service.py
    └─ parse_document()
       ├─ parser_service.parse_local_document()
+      │  └─ 可选 PDF page visual profile / selected render / block enrichment
       ├─ vision_service.enhance_ocr_blocks()
       ├─ vision_service.enhance_image_blocks()
       ├─ document_parser.block_reflow.reflow_parsed_document()

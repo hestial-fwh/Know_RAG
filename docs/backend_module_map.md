@@ -11,6 +11,7 @@ upload_document (document_service.py)
   └─> parse_document (document_service.py)  [889 lines, 10-stage pipeline]
         ├─> resolve_parser_engine (parser_service.py)
         ├─> parse_local_document (parser_service.py → ragflow_adapter / mineru_adapter)
+        ├─> optional page visual profile → selected page render → ParsedBlock enrichment
         ├─> enhance_ocr_blocks (vision_service.py)
         ├─> enhance_image_blocks (vision_service.py)
         ├─> reflow_parsed_document (document_parser/block_reflow.py)
@@ -25,7 +26,10 @@ upload_document (document_service.py)
 | Parser router | `parser_service.py` | 210 | Engine selection (RAGFlow / MinerU), fallback |
 | RAGFlow adapter | `document_parser/ragflow_format_adapter.py` | 743 | Multi-format parsing via RAGFlow vendor |
 | MinerU adapter | `document_parser/mineru_adapter.py` | 1218 | External MinerU API adapter |
-| Block reflow | `document_parser/block_reflow.py` | — | Layout-aware block reordering |
+| Page visual profiler | `document_parser/page_visual_profile.py` | — | PDF facts、dominant-image 与 parser coverage 的纯只读判定 |
+| Selected page renderer | `document_parser/pdf_page_renderer.py` | — | 仅渲染选中的 PDF 页面并保存到现有媒体存储 |
+| Page visual enricher | `document_parser/page_visual_enricher.py` | — | 缺失页面主视觉注入、已有整页图标记、去重统计和 fail-open |
+| Block reflow | `document_parser/block_reflow.py` | — | Layout-aware block reordering、视觉页 section scope 与普通正文跨页标题继承 |
 
 ## Chunk Rebuild Flow
 
@@ -96,6 +100,9 @@ hybrid_search (retrieval_service.py)
 | Relation materializer | `document_relation/materializer.py` | — | Pure occurrence carrier selection and bilateral metadata |
 | Relation graph models | `document_relation/models.py` | — | Versioned edge/group/graph schema, validation and stable IDs |
 | Relation graph merger | `document_relation/relation_graph_merger.py` | — | caption/footnote/explicit merge, stable order and legacy adapter |
+| Page layout graph | `document_relation/page_layout_graph.py` | — | Authoritative/derived page extent and normalized page nodes |
+| Asset group resolver | `document_relation/asset_group_resolver.py` | — | Same-page horizontal/vertical groups and member edges |
+| Shared context resolver | `document_relation/shared_context_resolver.py` | — | Top shared text candidates, caption/section/geometry guards |
 | Relation persistence | `document_relation_persistence_service.py` | — | Artifact graph ORM write and dual-read fallback |
 | Relation expansion | `document_relation_expansion_service.py` | — | Ordered per-hit budgets, KB/doc scope and fail-open DB read |
 

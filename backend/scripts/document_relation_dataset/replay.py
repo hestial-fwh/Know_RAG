@@ -18,6 +18,18 @@ from app.services.document_parser.mineru_adapter import (
     _post_file_parse,
 )
 from app.services.document_parser.types import ParsedDocument
+from app.services.document_relation.asset_group_resolver import (
+    build_member_edges,
+    resolve_asset_groups,
+)
+from app.services.document_relation.page_layout_graph import build_page_layout_graph
+from app.services.document_relation.relation_graph_merger import (
+    build_relation_graph,
+    merge_group_relations,
+)
+from app.services.document_relation.shared_context_resolver import (
+    resolve_shared_context_edges,
+)
 from app.services.retrieval_service import _expand_figure_bindings
 
 
@@ -96,6 +108,28 @@ def _draft_chunks(plan, document_id: str, knowledge_base_id: str):
             )
         )
     return _apply_figure_bindings(chunks, plan)
+
+
+def _phase3_graph_snapshot(canonical, plan) -> dict[str, Any]:
+    graph = build_relation_graph(
+        assets=plan.assets,
+        provenance_nodes=plan.provenance_nodes,
+        figure_links=plan.figure_links,
+    )
+    layout = build_page_layout_graph(
+        assets=plan.assets,
+        provenance_nodes=plan.provenance_nodes,
+    )
+    groups = resolve_asset_groups(layout)
+    graph = merge_group_relations(
+        graph,
+        groups=groups,
+        edges=[
+            *build_member_edges(groups),
+            *resolve_shared_context_edges(layout, groups, assets=plan.assets),
+        ],
+    )
+    return graph.to_dict()
 
 
 class _RowsQuery:
@@ -296,6 +330,7 @@ def replay_raw_response(
             "retrieval_output": _retrieval_snapshot(chunks),
         },
         "current_figure_links": plan.figure_links.to_metadata(),
+        "current_relation_graph": _phase3_graph_snapshot(canonical, plan),
     }
     _json(destination, snapshot)
     return snapshot

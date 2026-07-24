@@ -1,9 +1,19 @@
 from app.services.chunker.canonical_parent_child import (
+    CanonicalChildDraft,
+    _build_visual_page_parents,
+    _rehome_single_overlapping_orphans,
+    _split_visual_pages_parent_child,
+    _visual_page_ranges,
     build_canonical_parent_child_plan,
     is_structural_only,
 )
-from app.services.chunker.models import ChunkerConfig
-from app.services.document_parser.canonical_document import build_canonical_document
+from app.services.chunker.models import ChunkerConfig, ParsedChunk
+from app.services.document_parser.canonical_document import (
+    CanonicalAsset,
+    CanonicalDocument,
+    CanonicalSourceNode,
+    build_canonical_document,
+)
 from app.services.document_parser.types import ParsedBlock, ParsedDocument
 
 
@@ -17,6 +27,213 @@ def _cfg() -> ChunkerConfig:
         child_chunk_overlap=64,
         separators=["\n\n", "\n", "。"],
     )
+
+
+def test_singleton_orphan_rehomes_to_best_overlapping_parent_window():
+    parents = [
+        ParsedChunk(
+            content="left parent",
+            context_header="## Section",
+            seq=0,
+            start=0,
+            end=11107,
+            metadata={},
+            chunk_type="parent_text",
+        ),
+        ParsedChunk(
+            content="right parent",
+            context_header="## Section",
+            seq=1,
+            start=11167,
+            end=18709,
+            metadata={},
+            chunk_type="parent_text",
+        ),
+    ]
+    child = CanonicalChildDraft(
+        content="meaningful boundary paragraph",
+        chunk_type="text",
+        parent_index=None,
+        context_header="## Section",
+        start=10954,
+        end=11308,
+        source_child_seq=29,
+        metadata={
+            "canonical_source_child_seq": 29,
+            "parent_materialized": False,
+        },
+    )
+    counts = {0: 2, 1: 2}
+
+    _rehome_single_overlapping_orphans(
+        [child],
+        parents,
+        kept_parent_indexes={0, 1},
+        counts=counts,
+    )
+
+    assert child.parent_index == 0
+    assert child.metadata["parent_rehome_overlap_chars"] == 153
+    assert child.metadata["parent_materialization_rule"] == (
+        "overlapping_surviving_parent_window"
+    )
+    assert child.flags["parent_rehomed_from_orphan"] is True
+    assert counts[0] == 3
+
+
+def test_visual_page_dominant_document_splits_parents_inside_page_boundaries():
+    page_texts = [
+        "## Work A\n\n" + ("page one artwork description. " * 35),
+        "## Work B\n\n" + ("page two artwork description. " * 35),
+        "## Work C\n\n" + ("page three artwork description. " * 35),
+    ]
+    markdown = "".join(page_texts)
+    starts = [0, len(page_texts[0]), len(page_texts[0]) + len(page_texts[1])]
+    assets = {
+        f"image-{page_no}": CanonicalAsset(
+            asset_id=f"image-{page_no}",
+            page_no=page_no,
+            metadata={"visual_role": "page_primary_visual"},
+        )
+        for page_no in range(1, 4)
+    }
+    nodes = [
+        CanonicalSourceNode(
+            node_id=f"node-{page_no}",
+            node_type="text",
+            source_order=page_no - 1,
+            canonical_text=page_texts[page_no - 1],
+            text_hash=f"hash-{page_no}",
+            page_no=page_no,
+            normalized_start=starts[page_no - 1],
+            normalized_end=starts[page_no - 1] + len(page_texts[page_no - 1]),
+        )
+        for page_no in range(1, 4)
+    ]
+    canonical = CanonicalDocument(
+        markdown_content=markdown,
+        assets=assets,
+        provenance_nodes=nodes,
+        source_format="pdf",
+    )
+
+    ranges = _visual_page_ranges(
+        canonical,
+        nodes,
+        markdown_length=len(markdown),
+    )
+    result = _split_visual_pages_parent_child(markdown, _cfg(), ranges)
+
+    assert ranges == [
+        (1, starts[0], starts[1]),
+        (2, starts[1], starts[2]),
+        (3, starts[2], len(markdown)),
+    ]
+    assert len(result.parents) == 3
+    assert {
+        parent.metadata["visual_page_no"] for parent in result.parents
+    } == {1, 2, 3}
+    for parent in result.parents:
+        page_no = parent.metadata["visual_page_no"]
+        _, page_start, page_end = ranges[page_no - 1]
+        assert page_start <= parent.start < parent.end <= page_end
+        assert f"Work {chr(64 + page_no)}" in parent.content
+        assert all(
+            f"Work {chr(64 + other_page)}" not in parent.content
+            for other_page in range(1, 4)
+            if other_page != page_no
+        )
+    assert all(child.metadata["visual_page_scoped_split"] is True for child in result.children)
+
+
+def test_visual_page_ranges_use_normalized_markdown_length_for_last_page():
+    canonical = CanonicalDocument(
+        markdown_content="x" * 100,
+        assets={
+            f"image-{page_no}": CanonicalAsset(
+                asset_id=f"image-{page_no}",
+                page_no=page_no,
+                metadata={"visual_role": "page_primary_visual"},
+            )
+            for page_no in range(1, 4)
+        },
+    )
+    nodes = [
+        CanonicalSourceNode(
+            node_id=f"node-{page_no}",
+            node_type="text",
+            source_order=page_no,
+            canonical_text="x",
+            text_hash=f"hash-{page_no}",
+            page_no=page_no,
+            normalized_start=start,
+            normalized_end=start + 1,
+        )
+        for page_no, start in ((1, 0), (2, 40), (3, 80))
+    ]
+
+    ranges = _visual_page_ranges(
+        canonical,
+        nodes,
+        markdown_length=140,
+    )
+
+    assert ranges[-1] == (3, 80, 140)
+
+
+def test_visual_page_parent_collects_all_same_page_children():
+    children = [
+        CanonicalChildDraft(
+            content="work A description",
+            chunk_type="text",
+            parent_index=None,
+            context_header="## Work A",
+            start=0,
+            end=80,
+            source_child_seq=0,
+            metadata={"visual_page_no": 1},
+        ),
+        CanonicalChildDraft(
+            content="work A image",
+            chunk_type="image",
+            parent_index=None,
+            context_header="## Work A",
+            start=80,
+            end=100,
+            source_child_seq=1,
+            metadata={
+                "visual_page_no": 1,
+                "visual_role": "page_primary_visual",
+            },
+        ),
+        CanonicalChildDraft(
+            content="work B image",
+            chunk_type="image",
+            parent_index=None,
+            context_header="## Work B",
+            start=100,
+            end=140,
+            source_child_seq=2,
+            metadata={
+                "visual_page_no": 2,
+                "visual_role": "page_primary_visual",
+            },
+        ),
+    ]
+
+    parents, counts, _ = _build_visual_page_parents(
+        children,
+        ("A" * 100) + ("B" * 40),
+        [(1, 0, 100), (2, 100, 140)],
+    )
+
+    assert len(parents) == 2
+    assert counts == {0: 2, 1: 1}
+    assert [child.parent_index for child in children] == [0, 0, 1]
+    assert parents[0].metadata["visual_page_no"] == 1
+    assert parents[1].metadata["singleton_primary_visual_parent"] is True
+    assert parents[1].content == "work B image"
+    assert all(child.metadata["visual_page_scoped_parent"] is True for child in children)
 
 
 def test_heading_and_separator_do_not_become_standalone_children():
@@ -175,6 +392,36 @@ def test_table_block_is_canonicalized_and_kept_as_table_child():
     assert len(tables) == 1
     assert tables[0].content.startswith("| A | B |")
     assert tables[0].context_header.endswith("## 实验结果")
+
+
+def test_multiple_tables_expanded_from_one_source_child_share_a_parent():
+    canonical = CanonicalDocument(
+        markdown_content=(
+            "## 续表 2\n\n"
+            "<table><tr><td>成分 1</td></tr></table>\n\n"
+            "<table><tr><td>成分 2</td></tr></table>\n\n"
+            "<table><tr><td>成分 3</td></tr></table>"
+        ),
+        metadata={"canonical_source": "ordered_parsed_blocks"},
+        source_format="pdf",
+    )
+
+    plan = build_canonical_parent_child_plan(canonical, _cfg())
+
+    tables = [child for child in plan.children if child.chunk_type == "table"]
+    assert len(tables) == 3
+    assert len({table.parent_index for table in tables}) == 1
+    assert tables[0].parent_index is not None
+    parent = next(
+        parent for parent in plan.parents if parent.parent_index == tables[0].parent_index
+    )
+    assert parent.metadata["synthetic_expanded_source_parent"] is True
+    assert parent.metadata["children_count_planned"] == 3
+    assert all(
+        table.metadata["parent_materialization_rule"]
+        == "expanded_source_child_multiple_children"
+        for table in tables
+    )
 
 
 def test_large_markdown_table_is_split_without_heading_scatter():
