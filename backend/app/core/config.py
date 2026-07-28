@@ -100,6 +100,10 @@ class Settings(BaseSettings):
         False,
         alias="DOCUMENT_VISUAL_SECTION_PARENT_ENABLED",
     )
+    document_pipeline_debug_artifacts_enabled: bool = Field(
+        False,
+        alias="DOCUMENT_PIPELINE_DEBUG_ARTIFACTS_ENABLED",
+    )
     document_page_visual_min_coverage: float = Field(
         0.70,
         alias="DOCUMENT_PAGE_VISUAL_MIN_COVERAGE",

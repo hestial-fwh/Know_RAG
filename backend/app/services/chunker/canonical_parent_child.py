@@ -2153,13 +2153,7 @@ def _build_visual_page_parents(
                         "visual_page_authoritative_boundary"
                     ),
                     "singleton_primary_visual_parent": singleton_primary_visual,
-                    "source_node_ids": list(
-                        dict.fromkeys(
-                            node_id
-                            for child in group
-                            for node_id in (child.metadata.get("source_node_ids") or [])
-                        )
-                    ),
+                    "source_node_ids": _dedup_source_node_ids(group),
                     "runtime_postprocess_policy": "structure_first",
                 },
             )
@@ -2167,6 +2161,42 @@ def _build_visual_page_parents(
         counts[parent_index] = len(group)
         kept.add(parent_index)
     return parents, counts, kept
+
+
+def _dedup_source_node_ids(children: list[CanonicalChildDraft]) -> list:
+    """Collect unique ``source_node_ids`` from a group of children."""
+    return list(
+        dict.fromkeys(
+            node_id
+            for child in children
+            for node_id in (child.metadata.get("source_node_ids") or [])
+        )
+    )
+
+
+def _stamp_child_binding(
+    child: CanonicalChildDraft,
+    *,
+    binding_key: int | None,
+    rule: str,
+    flag_key: str,
+    source_parent_index: int | None = None,
+    source_page_no: int | None = None,
+) -> None:
+    """Stamp a child draft with parent-binding metadata and flags.
+
+    Used for both within-page upward binding and cross-page binding to avoid
+    duplicating the metadata/flag assignment in multiple places.
+    """
+    child.parent_index = binding_key
+    child.metadata["parent_materialized"] = True
+    child.metadata["parent_materialization_rule"] = rule
+    child.flags["parent_materialized"] = True
+    child.flags[flag_key] = True
+    if source_parent_index is not None:
+        child.metadata["original_source_parent_index"] = source_parent_index
+    if source_page_no is not None:
+        child.metadata["source_visual_page_no"] = source_page_no
 
 
 # ---------------------------------------------------------------------------
@@ -2302,11 +2332,13 @@ def _build_visual_section_parents(
         )
         kept_sections: set[int | None] = set()
         dissolved_sections: set[int | None] = set()
+        page_has_semantic_text = False
 
         for section_key in sorted_keys:
             group = sections[section_key]
             if _section_has_semantic_text(group, semantic_text_threshold):
                 kept_sections.add(section_key)
+                page_has_semantic_text = True
             elif _is_singleton_primary_visual_section(group):
                 kept_sections.add(section_key)
             else:
@@ -2317,10 +2349,7 @@ def _build_visual_section_parents(
         # will be cross-page-bound in Pass 2.  A primary visual only
         # keeps its own parent when it co-exists with a text section
         # on the same page (e.g. a figure between two paragraphs).
-        if not any(
-            _section_has_semantic_text(sections[k], semantic_text_threshold)
-            for k in sorted_keys
-        ):
+        if not page_has_semantic_text:
             for section_key in list(kept_sections):
                 if _is_singleton_primary_visual_section(sections[section_key]):
                     kept_sections.discard(section_key)
@@ -2344,14 +2373,13 @@ def _build_visual_section_parents(
                             break
                 if nearest is not None:
                     for child in sections[section_key]:
-                        child.parent_index = nearest
-                        child.metadata["parent_materialized"] = True
-                        child.metadata["parent_materialization_rule"] = (
-                            "visual_section_upward_binding"
+                        _stamp_child_binding(
+                            child,
+                            binding_key=nearest,
+                            rule="visual_section_upward_binding",
+                            flag_key="visual_section_upward_binding",
+                            source_parent_index=section_key,
                         )
-                        child.metadata["original_source_parent_index"] = section_key
-                        child.flags["parent_materialized"] = True
-                        child.flags["visual_section_upward_binding"] = True
                     sections[nearest].extend(sections[section_key])
                 del sections[section_key]
 
@@ -2380,6 +2408,7 @@ def _build_visual_section_parents(
     text_pages = sorted(
         pno for pno, data in page_data.items() if data["kept_sections"]
     )
+    absorbed_pages: list[int] = []
 
     for page_no in sorted(page_data.keys()):
         data = page_data[page_no]
@@ -2421,26 +2450,26 @@ def _build_visual_section_parents(
                 )
                 for section_key in sections:
                     for child in sections[section_key]:
-                        child.parent_index = target_key
-                        child.metadata["parent_materialized"] = True
-                        child.metadata["parent_materialization_rule"] = (
-                            "visual_section_cross_page_binding"
+                        _stamp_child_binding(
+                            child,
+                            binding_key=target_key,
+                            rule="visual_section_cross_page_binding",
+                            flag_key="visual_section_cross_page_binding",
+                            source_parent_index=section_key,
+                            source_page_no=page_no,
                         )
-                        child.metadata[
-                            "original_source_parent_index"
-                        ] = section_key
-                        child.metadata["source_visual_page_no"] = page_no
-                        child.flags["parent_materialized"] = True
-                        child.flags["visual_section_cross_page_binding"] = True
                     target_data["sections"][target_key].extend(
                         sections[section_key]
                     )
-            # Page fully absorbed — remove from materialization pass
-            del page_data[page_no]
+            # Page fully absorbed — mark for removal after the loop
+            absorbed_pages.append(page_no)
         else:
             # No text page anywhere → fall back to page-level parent
             if sorted_keys:
                 data["kept_sections"].add(sorted_keys[0])
+
+    for page_no in absorbed_pages:
+        page_data.pop(page_no, None)
 
     # ==================================================================
     # Pass 3 — materialize kept sections as parents
@@ -2529,15 +2558,7 @@ def _build_visual_section_parents(
                     "visual_section_authoritative_boundary"
                 ),
                 "singleton_primary_visual_parent": singleton_primary_visual,
-                "source_node_ids": list(
-                    dict.fromkeys(
-                        node_id
-                        for child in group
-                        for node_id in (
-                            child.metadata.get("source_node_ids") or []
-                        )
-                    )
-                ),
+                "source_node_ids": _dedup_source_node_ids(group),
                 "runtime_postprocess_policy": "structure_first",
             }
             all_parents.append(
@@ -2773,15 +2794,7 @@ def build_canonical_parent_child_plan(
                         "chunk_role": "parent",
                         "children_count_planned": len(group),
                         "synthetic_expanded_source_parent": True,
-                        "source_node_ids": list(
-                            dict.fromkeys(
-                                node_id
-                                for child in group
-                                for node_id in (
-                                    child.metadata.get("source_node_ids") or []
-                                )
-                            )
-                        ),
+                        "source_node_ids": _dedup_source_node_ids(group),
                         "source_provenance_resolution": (
                             "expanded_source_child_union"
                         ),

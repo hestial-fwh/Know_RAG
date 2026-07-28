@@ -29,6 +29,7 @@ from app.core.config import settings
 from app.db.models import ModelConfig
 from app.services.document_parser.media_storage import save_media_bytes
 from app.services.document_parser.types import ParsedBlock, ParsedDocument
+from app.services.pipeline_debug_artifacts import save_debug_mineru_raw
 from app.utils.text import sanitize_json_for_postgres, sanitize_text_for_postgres
 
 logger = logging.getLogger(__name__)
@@ -1362,6 +1363,15 @@ def parse_document_with_mineru(
         endpoint=endpoint,
         mineru_output_dir=mineru_output_dir,
         mineru_local_output_dir=mineru_local_output_dir,
+    )
+
+    save_debug_mineru_raw(
+        payload=payload,
+        content_list=content_list,
+        image_map=image_map,
+        markdown=_find_markdown(payload),
+        source_dir=mineru_local_output_dir,
+        source_file_name=path.name,
     )
 
     if content_list:

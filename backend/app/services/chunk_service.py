@@ -41,6 +41,14 @@ from app.services.chunker.canonical_parent_child import build_canonical_parent_c
 from app.services.document_parser.canonical_document import build_canonical_document
 from app.services.document_parser.document_profiler import profile_canonical_document
 from app.services.document_parser.types import ParsedBlock, ParsedDocument
+from app.services.pipeline_debug_artifacts import (
+    mark_debug_relation_graph_disabled,
+    save_debug_canonical_document,
+    save_debug_chunk_plan,
+    save_debug_page_profile,
+    save_debug_relation_graph,
+    save_debug_resolved_policies,
+)
 from app.services.document_relation.materializer import (
     materialize_figure_bindings,
     materialize_relation_summaries,
@@ -1100,6 +1108,7 @@ def _rebuild_canonical_weknora_parent_child(
         file_type=file_type,
         document_title=document.title,
     )
+    save_debug_canonical_document(canonical)
     block_count = len(parsed_document.blocks or [])
     if not canonical.markdown_content.strip():
         logger.warning(
@@ -1161,17 +1170,20 @@ def _rebuild_canonical_weknora_parent_child(
         DCP3_ACTIVE_POLICY_IDS if adaptive_policy_active else frozenset()
     )
     document_profile = profile_canonical_document(canonical)
+    save_debug_page_profile(document_profile)
     resolved_policies = resolve_chunk_policies(
         document_profile,
         runtime_cfg,
         materialize_parent=materialize_parents,
         active_policy_ids=active_policy_ids,
     )
+    save_debug_resolved_policies(resolved_policies)
     plan = build_canonical_parent_child_plan(
         canonical,
         runtime_cfg,
         resolved_policies=resolved_policies,
     )
+    save_debug_chunk_plan(plan)
     relation_graph = None
     phase3_applied = False
     if settings.document_relation_graph_enabled:
@@ -1205,6 +1217,9 @@ def _rebuild_canonical_weknora_parent_child(
                     document.id,
                     exc_info=True,
                 )
+        save_debug_relation_graph(relation_graph)
+    else:
+        mark_debug_relation_graph_disabled()
     if artifact_out is not None:
         resolved_policy_counts: dict[str, int] = {}
         active_resolved_policy_counts: dict[str, int] = {}

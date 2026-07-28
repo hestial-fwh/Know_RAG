@@ -1,7 +1,7 @@
 # Know_RAG 项目目录结构与主链路维护手册（最新代码基线）
 
-> **代码基线**：当前工作区
-> **维护日期**：2026-07-23
+> **代码基线**：当前工作区（最新提交 a582f73）
+> **维护日期**：2026-07-27
 > **用途**：用于后续项目维护、功能定位、主链路排查、代码重构和新人接手。  
 > **分析原则**：以本次上传代码的**真实调用关系**为准，不以历史设计文档或曾经存在的重构方案代替当前运行时事实。
 
@@ -57,6 +57,11 @@ Canonical Markdown
 9. Current 文档入口是 `docs/index.md`；历史变更通过 Git 记录追溯，不保留重复 Phase/repair 报告。
 10. 上传链路不设置应用层大小上限；容量边界由临时磁盘、MinIO 和外部代理决定。
 11. `ParseTaskEvent` 仅是运行期临时进度，任务结束即清空，不保存 block/chunk 预览。
+12. **DCP（Document Chunking Pipeline）分五个阶段**：DCP-0（基线画像）→ DCP-1（页面主视觉保护）→ DCP-2（文档/页面/块三级画像）→ DCP-3（差异化切分策略）→ DCP-4（视觉页 OCR 隔离），DCP-5（前端可观测性）待开发。
+13. **视觉类文档跨页绑定**：`_build_visual_section_parents()` 使用三 Pass 算法——Pass 1 逐页分类+页内绑定，Pass 2 跨页孤儿绑定（纯图页→最近文字页），Pass 3 统一物化。由 `DOCUMENT_VISUAL_SECTION_PARENT_ENABLED` 控制。
+14. **文档分类全链路**：PDF 视觉分析 → page_primary_visual 注入 → CanonicalDocument 构建 → 页面级分类（table_dense/visual_dominant/scanned_prose/slide/native_text）→ 策略映射 → 三条切分路径（DCP-3 活跃策略 / visual_page_ranges / 普通文本）。详见 `docs/explain/document_classification_pipeline.md`。
+15. **8 个 feature flags 控制渐进式功能**：`DOCUMENT_PAGE_VISUAL_PRESERVATION_ENABLED`、`DOCUMENT_ADAPTIVE_CHUNK_POLICY_ENABLED`、`DOCUMENT_VISUAL_SECTION_PARENT_ENABLED`、`DOCUMENT_VISUAL_OCR_QUARANTINE_ENABLED`、`DOCUMENT_RELATION_GRAPH_ENABLED`、`DOCUMENT_RELATION_MATERIALIZATION_ENABLED`、`DOCUMENT_RELATION_RETRIEVAL_EXPANSION_ENABLED`、`DOCUMENT_ASSET_GROUP_ENABLED`。全部默认 `false`，按环境显式启用。
+16. `content_cleaning.py` 提供 DCP-4 OCR 隔离常量和 `is_visual_ocr_quarantined()` 函数，`embedding_service.py` 在向量化前检查隔离标记，确保视觉页 OCR 文本不参与 embedding 和 ES 索引。
 
 ---
 
@@ -104,7 +109,9 @@ know_rag/
 │  └─ nginx/                             # Nginx 反向代理配置
 │
 ├─ docs/                                 # Current 专项文档
-│  └─ index.md                           # 文档权威顺序与维护入口
+│  ├─ index.md                           # 文档权威顺序与维护入口
+│  └─ explain/                           # 技术说明文档
+│     └─ document_classification_pipeline.md  # 文档类型判断全链路
 │
 ├─ .env                                  # 当前本地环境变量（敏感，不应纳入版本控制）
 ├─ .env.example                          # 环境变量模板
@@ -173,10 +180,25 @@ main.py
 
 ```text
 backend/app/core/
-├─ config.py                              # Settings；读取环境变量；集中管理模型/存储/解析配置
+├─ config.py                              # Settings；读取环境变量；集中管理模型/存储/解析/特性开关
 ├─ logging.py                             # 日志配置
 ├─ response.py                            # success_response / error_response 等统一响应
 └─ security.py                            # 密码哈希、JWT、当前用户认证
+
+### `config.py` Feature Flags（渐进式功能开关）
+
+所有开关默认 `false`，按环境显式启用：
+
+| 开关 | 默认值 | 所属模块 | 作用 |
+|------|--------|----------|------|
+| `DOCUMENT_PAGE_VISUAL_PRESERVATION_ENABLED` | `false` | DCP-1 | PDF 页面主视觉分析与 page_primary_visual 注入 |
+| `DOCUMENT_ADAPTIVE_CHUNK_POLICY_ENABLED` | `false` | DCP-3 | 差异化切分策略映射（活跃策略 vs 影子策略） |
+| `DOCUMENT_VISUAL_SECTION_PARENT_ENABLED` | `false` | 跨页绑定 | 视觉文档段落级父块 + 跨页图片绑定（三 Pass 算法） |
+| `DOCUMENT_VISUAL_OCR_QUARANTINE_ENABLED` | `false` | DCP-4 | 视觉页 OCR 文本隔离（不参与 embedding/ES） |
+| `DOCUMENT_RELATION_GRAPH_ENABLED` | `false` | 关系图 | 文档关系图总开关 |
+| `DOCUMENT_RELATION_MATERIALIZATION_ENABLED` | `false` | 关系图 P3 | 关系边物化（Chunk 摘要生成） |
+| `DOCUMENT_RELATION_RETRIEVAL_EXPANSION_ENABLED` | `false` | 关系图 P4 | 检索时按关系边扩展上下文 |
+| `DOCUMENT_ASSET_GROUP_ENABLED` | `false` | 关系图 P3 | 同页横/竖 asset group 解析 |
 
 backend/app/db/
 ├─ models.py                              # 全部核心数据库表 ORM [支撑]
@@ -194,7 +216,8 @@ backend/app/db/
       ├─ 0008_parse_workbench_phase_z.py  # Parse Workbench
       ├─ 0009_parse_eval_plugin_phase_aa.py# 解析评估插件
       ├─ 0010_parse_event_retention.py    # 解析事件保留策略
-      └─ 0011_canonical_provenance_p25.py # Canonical provenance 当前 revision
+      ├─ 0011_canonical_provenance_p25.py # Canonical provenance 当前 revision
+      └─ 0012_document_relation_graph.py  # 文档关系图（versioned edges/groups/graphs）
 ```
 
 ### `models.py` 中的核心实体
@@ -265,7 +288,8 @@ backend/app/services/
 ├─ knowledge_base_service.py              # 知识库业务
 ├─ model_config_service.py                # 模型配置业务
 ├─ ollama_service.py                      # Ollama 连通/模型辅助
-├─ content_cleaning.py                    # 文本清洗公共逻辑
+├─ content_cleaning.py                    # 文本清洗公共逻辑 + DCP-4 OCR 隔离
+├─ document_relation_persistence_service.py # 关系图 ORM 读写层（纯逻辑包禁止依赖 SQLAlchemy）
 └─ mcp_placeholder_service.py             # 旧占位服务 [预留/非真实 MCP]
 ```
 
@@ -295,12 +319,33 @@ backend/app/services/document_parser/
 └─ canonical_document.py                  # Canonical Markdown + asset/source-node provenance [核心算法]
 ```
 
-通用关系层位于 `backend/app/services/document_relation/`：`models.py` 定义 versioned edge/group/graph，
-`relation_graph_merger.py` 合并 caption、footnote 与 explicit relation，`materializer.py` 生成 compact
-Chunk summaries。ORM 读写独立位于 `document_relation_persistence_service.py`，纯逻辑包禁止依赖
-SQLAlchemy。`page_layout_graph.py` 规范化 authoritative/derived page extent，
-`asset_group_resolver.py` 生成同页横/竖 group 与 member edges，`shared_context_resolver.py`
-生成公共顶部说明并执行独立 caption、section 和 geometry guard。方向隐式规则仍属于 Phase 4。
+## 3.4 文档关系图层 `document_relation/`
+
+```text
+backend/app/services/document_relation/
+├─ models.py                              # VersionedEdge / VersionedGroup / VersionedGraph 模型定义 [核心]
+├─ relation_graph_merger.py               # 合并 caption、footnote、explicit relation 生成 edges [主链路]
+├─ materializer.py                        # 生成 compact Chunk 摘要（关系边物化）[主链路]
+├─ page_layout_graph.py                   # 规范化 authoritative/derived page extent [主链路]
+├─ asset_group_resolver.py                # 同页横/竖 group 与 member edges 生成 [主链路]
+├─ shared_context_resolver.py             # 公共顶部说明生成 + 独立 caption/section/geometry guard [主链路]
+└─ __init__.py
+```
+
+ORM 读写独立位于 `backend/app/services/document_relation_persistence_service.py`，纯逻辑包禁止依赖
+SQLAlchemy。
+
+### 关系图开发阶段
+
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| Phase 0 | 基线：160 页确定性生成语料、五层 replay | ✅ 完成 |
+| Phase 1 | 显式 caption/footnote 关系提取 | ✅ 完成 |
+| Phase 2 | 正文图号引用 → asset 候选（figure_linker） | ✅ 完成 |
+| Phase 3 | 资产组（asset_group）与 shared_context | ✅ 完成 |
+| Phase 4 | 隐式方向引用（"上方/下方/接下来N图"） | 🔲 下一步 |
+| Phase 5 | 语义重排序（纯文本 reranker） | 🔲 远期 |
+| Phase 6 | 前端审核 UI：接受/拒绝/重新绑定 | 🔲 远期 |
 
 ### 统一解析中间层
 
@@ -761,7 +806,90 @@ Parent
 
 ---
 
-# 9. 主链路四：非父子兼容切分
+# 9. 视觉文档管线（DCP + 跨页绑定）
+
+当文档包含大量整页图片（画册/书法集/海报集），标准文本切分不适用。系统通过 **DCP（Document Chunking Pipeline）** 和**跨页绑定算法**专门处理这类文档。
+
+## 9.1 DCP 阶段总览
+
+| 阶段 | 内容 | 关键文件 | 状态 |
+|------|------|----------|------|
+| DCP-0 | 基线文档画像（page_kind 分类） | `document_profiler.py` | ✅ 完成 |
+| DCP-1 | PDF 页面主视觉保护 | `page_visual_profile.py` + `page_visual_enricher.py` | ✅ 完成 |
+| DCP-2 | 文档/页面/块三级画像 + 策略映射 | `document_profiler.py` + `chunk_policy_resolver.py` | ✅ 完成 |
+| DCP-3 | 差异化切分（活跃策略按页切分） | `canonical_parent_child.py` → `_split_dcp3_policy_segments()` | ✅ 完成 |
+| DCP-4 | 视觉页 OCR 隔离（不参与 embedding/ES） | `content_cleaning.py` + `embedding_service.py` | ✅ 完成 |
+| DCP-5 | 前端可观测性（画像提示、按知识库灰度） | — | 🔲 下一步 |
+
+## 9.2 文档分类全链路（6 阶段）
+
+```
+PDF 原始文件
+  → ① page_visual_profile.py（pdfplumber 分析嵌入图覆盖面积）
+  → ② page_visual_enricher.py（注入 page_primary_visual 标签）
+  → ③ canonical_document.py（构建 CanonicalDocument）
+  → ④ document_profiler.py（页面级分类：table_dense/visual_dominant/scanned_prose/slide/native_text）
+  → ⑤ chunk_policy_resolver.py（策略映射：poster-page-v1/scanned-prose-v1/table-row-group-v1/visual-collection-v1/...）
+  → ⑥ canonical_parent_child.py（三条路径分支）
+```
+
+详见 `docs/explain/document_classification_pipeline.md`。
+
+## 9.3 三条切分路径
+
+```
+┌─ 路径 A：DCP-3 活跃策略
+│   has_active_dcp3_policy = True
+│   → _split_dcp3_policy_segments() 按策略独立切分每一页
+│
+├─ 路径 B：visual_page_ranges 非空（≥3 视觉页 AND ≥60% 占比）
+│   ├─ flag=true  → _build_visual_section_parents()  ← 段落级 + 跨页绑定
+│   └─ flag=false → _build_visual_page_parents()     ← 页面级父块（旧行为）
+│
+└─ 路径 C：普通文本路径
+    → split_parent_child_result() 标准切分
+```
+
+## 9.4 跨页绑定算法（三 Pass）
+
+`_build_visual_section_parents()` 的核心算法：
+
+```
+Pass 1（Phase 2+3）：逐页分类 + 同页内孤儿绑定
+  ├─ _section_has_semantic_text()：≥80 字符 → "有语义文本"，保留为独立父块
+  ├─ 无语义文本的组 → "待溶解"，children 变孤儿
+  └─ 孤儿向上绑定到同页内最近的保留父块
+
+Pass 2（NEW）：跨页孤儿绑定
+  ├─ 遍历所有页，找出"无语义文本"的页（纯图页）
+  ├─ 纯图页 children → 最近的前一个有文字页的最后一个保留段
+  ├─ 向下兼容：前方无文字页 → 绑定到最近的后一个文字页的第一个保留段
+  └─ 全都在前面且后方也无文字页 → fallback 到页面级父块
+
+Pass 3（Phase 4）：统一物化
+  └─ 每个保留组物化为一个 CanonicalParentDraft
+```
+
+## 9.5 DCP-4 OCR 隔离
+
+视觉页（纯图页）的 OCR 文本通常质量低（书法字识别错误、版面乱码），不应参与语义检索。
+
+- `content_cleaning.py`：定义 `is_visual_ocr_quarantined()` 检查隔离标记
+- `embedding_service.py`：在向量化前检查隔离标记，跳过已隔离 chunk
+- 隔离的 chunk 既不生成 embedding，也不同步到 Elasticsearch
+
+## 9.6 关键阈值
+
+| 参数 | 默认值 | 作用 |
+|------|--------|------|
+| `dominant_image_threshold` | 0.70 | PDF 嵌入图覆盖≥70% → 主图 |
+| `minimum_visual_pages` | 3 | 至少 3 页有 page_primary_visual |
+| `minimum_visual_ratio` | 0.60 | 视觉页占总页数 ≥60% |
+| `_semantic_text_length()` 阈值 | 80 字符 | 组内文字≥80 → "有语义文本" |
+
+---
+
+# 10. 主链路四：非父子兼容切分
 
 ```text
 rebuild_document_chunks()
@@ -790,7 +918,7 @@ rebuild_document_chunks()
 
 ---
 
-# 10. 主链路五：Embedding 与向量存储
+# 11. 主链路五：Embedding 与向量存储
 
 ## 10.1 调用树
 
@@ -847,7 +975,7 @@ POST /documents/{document_id}/embedding
 
 ---
 
-# 11. 主链路六：Elasticsearch BM25 索引
+# 12. 主链路六：Elasticsearch BM25 索引
 
 ## 11.1 入库链路
 
@@ -890,7 +1018,7 @@ Hybrid 已成功的向量结果继续返回；关键词单检索返回明确错�
 
 ---
 
-# 12. 主链路七：Hybrid Retrieval
+# 13. 主链路七：Hybrid Retrieval
 
 ## 12.1 总链路树
 
@@ -960,7 +1088,7 @@ Parent Text
 
 ---
 
-# 13. 主链路八：统一 LLM Context
+# 14. 主链路八：统一 LLM Context
 
 ## 13.1 调用树
 
@@ -1047,7 +1175,7 @@ Chat ────┘
 
 ---
 
-# 14. 主链路九：MCP → Know_RAG Context
+# 15. 主链路九：MCP → Know_RAG Context
 
 ## 14.1 总链路
 
@@ -1088,7 +1216,7 @@ Claude / Codex / 其他 MCP Client
 
 ---
 
-# 15. 文档删除与数据清理链路
+# 16. 文档删除与数据清理链路
 
 ```text
 DELETE document
@@ -1130,7 +1258,7 @@ Elasticsearch
 
 ---
 
-# 16. 主要链路 Python 文件总表
+# 17. 主要链路 Python 文件总表
 
 > 后续排障可先从这张表定位。
 
@@ -1161,7 +1289,7 @@ Elasticsearch
 
 ---
 
-# 17. 按“要改什么”快速定位文件
+# 18. 按”要改什么”快速定位文件
 
 | 需求/问题 | 第一修改位置 | 第二检查位置 |
 |---|---|---|
@@ -1189,12 +1317,20 @@ Elasticsearch
 | MCP 返回结构不对 | `llm_context_builder.py` | `knowledge_context_service.py` |
 | MCP 能连但查不到数据 | `http_client.py` | 后端 `/llm-context` 接口 |
 | 删除后残留文件 | `document_service.delete_document()` | MinIO/ES/外部向量库清理 |
+| 画册/书法集切分不对 | `canonical_parent_child.py` → `_build_visual_section_parents()` | `chunk_policy_resolver.py` |
+| 纯图页没绑定到文字页 | `_build_visual_section_parents()` Pass 2 | `page_visual_enricher.py` |
+| 视觉页 OCR 乱码进入检索 | `content_cleaning.py` → `is_visual_ocr_quarantined()` | `embedding_service.py` |
+| DCP 策略没生效 | `DOCUMENT_ADAPTIVE_CHUNK_POLICY_ENABLED` 开关 | `chunk_policy_resolver.py` |
+| 跨页绑定没生效 | `DOCUMENT_VISUAL_SECTION_PARENT_ENABLED` 开关 | `.env` / `docker-compose.yml` |
+| 页面主视觉没注入 | `DOCUMENT_PAGE_VISUAL_PRESERVATION_ENABLED` 开关 | `page_visual_enricher.py` |
+| 关系图边没物化 | `DOCUMENT_RELATION_MATERIALIZATION_ENABLED` 开关 | `materializer.py` |
+| 检索没扩展关系上下文 | `DOCUMENT_RELATION_RETRIEVAL_EXPANSION_ENABLED` | `retrieval_service.py` |
 
 ---
 
-# 18. 容易误判的代码与维护陷阱
+# 19. 容易误判的代码与维护陷阱
 
-## 18.1 `services/chunking/` 不是当前切分 dispatcher
+## 19.1 `services/chunking/` 不是当前切分 dispatcher
 
 存在测试 ≠ 已接管生产主链路。
 
@@ -1212,7 +1348,7 @@ ChunkRebuildService.rebuild()
 
 后续若要正式迁移，必须显式修改 dispatcher，并做回归测试后再更新本文。
 
-## 18.2 不要把旧父子函数当成当前 Canonical 主链路
+## 19.2 不要把旧父子函数当成当前 Canonical 主链路
 
 当前父子分支：
 
@@ -1227,7 +1363,7 @@ _rebuild_markdown_weknora_parent_child()
 _rebuild_document_chunks_structured_parent_child()
 ```
 
-## 18.3 不要看到短块就自动合并
+## 19.3 不要看到短块就自动合并
 
 `merge_short_text_siblings()` 当前保留但不进入生产 plan，原因是单纯追求“没有短块”会损害文档结构。生产只定向修复有来源范围重叠和精确文本重叠证据的短尾。
 
@@ -1243,7 +1379,7 @@ overlap 加少量新尾句 → 定向合并回前块
 错误 Parent 关系    → integrity 修复
 ```
 
-## 18.4 `mcp_placeholder` 不是实际 MCP
+## 19.4 `mcp_placeholder` 不是实际 MCP
 
 ```text
 api/routes_mcp_placeholder.py
@@ -1258,7 +1394,7 @@ services/mcp_placeholder_service.py
 integrations/mcp/
 ```
 
-## 18.5 `ragflow_vendor/` 不应随意修改
+## 19.5 `ragflow_vendor/` 不应随意修改
 
 它是 DeepDoc 解析链路的运行时 Vendor 依赖。正常业务修复优先落在
 `backend/app/services/` 内；只有上游同步或明确的兼容修复才修改 Vendor。
@@ -1266,11 +1402,27 @@ integrations/mcp/
 未接入运行时的 WeKnora Python 参考副本已经移除；算法差异通过上游仓库和 Git 历史追溯，
 不再在生产仓库维护第二份实现。
 
+## 19.6 Feature Flags 默认全部关闭
+
+所有 `DOCUMENT_*` 特性开关默认值都是 `false`。如果视觉文档管线（DCP/跨页绑定/OCR 隔离）或
+关系图功能在环境中没有生效，首先检查 `.env` 和 `docker-compose.yml` 中对应的环境变量是否
+已显式设为 `true`。容器重建后新 flag 才会生效。
+
 ---
 
-# 19. 测试目录与回归范围
+## 19.7 `document_relation_persistence_service.py` 是 ORM 读写层
 
-## 19.1 当前测试重点分组
+关系图纯逻辑包（`document_relation/`）禁止依赖 SQLAlchemy。所有数据库读写集中在
+`backend/app/services/document_relation_persistence_service.py`。修改关系图模型时，
+同步检查该文件的序列化/反序列化逻辑。
+
+---
+
+# 20. 测试目录与回归范围
+
+## 20.1 当前测试重点分组
+
+### 父子切分 & Canonical（核心链路）
 
 ```text
 backend/tests/
@@ -1279,31 +1431,97 @@ backend/tests/
 ├─ test_canonical_parent_child_integration.py     # 集成行为
 ├─ test_canonical_pipeline_convergence.py         # Pipeline 收敛
 ├─ test_canonical_overlap_shadow_dedup.py         # overlap shadow 去重
-├─ test_figure_linker.py                           # P2 正文图号提取、消歧与生产计划接入
 ├─ test_canonical_short_sibling_merge.py          # 短兄弟 helper 行为（不代表生产调用）
 ├─ test_chunk_boundary_quality.py                 # 边界质量
 ├─ test_context_header_continuation.py            # 标题上下文继承
-├─ test_markdown_code_context_merge.py            # 代码上下文
+├─ test_chunk_rebuild_not_empty.py                # Chunk 重建非空验证
+├─ test_chunk_rebuild_fallback.py                 # Chunk 重建 fallback 验证
+├─ test_chunk_persistence_not_drop_all.py         # Chunk 持久化增量验证
+├─ test_weknora_parent_child_reuse.py             # WeKnora 父块复用
+├─ test_orphan_short_chunks.py                    # 孤立短块处理
+├─ test_chunk_image_info_compat.py                # Chunk 图片信息兼容
+├─ test_chunk_api_security.py                     # Chunk API 安全
+├─ test_document_chunk_store_metadata.py          # 文档 Chunk 存储元数据
+```
+
+### 图文绑定 & 图片关系
+
+```text
+├─ test_image_binding_p0.py                       # P0 图文绑定基础
+├─ test_image_relation_resolver.py                # 图片 caption 质量、图号消歧
+├─ test_figure_linker.py                          # P2 正文图号提取、消歧与生产计划接入
+```
+
+### DCP（文档画像与差异化切分）
+
+```text
+├─ test_page_visual_preservation.py               # DCP-1：PDF 页面主视觉保护
+├─ test_document_profile_dcp0.py                  # DCP-0：基线文档画像
+├─ test_document_profile_dcp2.py                  # DCP-2：文档/页面/块三级画像
+├─ test_document_profile_dcp3.py                  # DCP-3：差异化切分策略
+├─ test_document_pipeline_safety.py               # DCP 管线安全与回退
+├─ test_visual_page_section_scope.py              # 视觉文档段落级父块 + 跨页绑定（三 Pass 算法）
+├─ test_dcp4_ocr_quarantine.py                    # DCP-4：视觉页 OCR 隔离
+```
+
+### 文档关系图
+
+```text
+├─ test_document_relation_phase0_dataset.py       # Phase 0：合成数据集
+├─ test_document_relation_phase0_entrypoints.py   # Phase 0：入口点验证
+├─ test_document_relation_phase0_known_failures.py# Phase 0：已知失败边界
+├─ test_document_relation_phase2.py               # Phase 2：正文图号引用
+├─ test_document_relation_phase3.py               # Phase 3：资产组与 shared_context
+├─ test_document_relation_dataset_generator.py    # 关系图数据集生成器
+```
+
+### Markdown / 代码 / 表格
+
+```text
 ├─ test_markdown_ordered_tables.py                # Markdown 表格
 ├─ test_markdown_table_pipeline.py                # 表格主链路
+├─ test_markdown_code_context_merge.py            # 代码上下文
 ├─ test_chunker.py                                # 基础切分
 ├─ test_chunker_structure.py                      # 结构切分
-│
+```
+
+### Embedding
+
+```text
 ├─ test_embedding_content.py                      # Embedding 内容
 ├─ test_embedding_structure_content.py            # 结构文本 Embedding
-│
+```
+
+### Retrieval / Hybrid
+
+```text
 ├─ test_hybrid_result_mapping.py                  # Hybrid 结果映射
 ├─ test_retrieval_mapping.py                      # Retrieval 映射
 ├─ test_rrf_fusion.py                             # RRF 融合
 ├─ test_keyword_index_query_safety.py             # BM25 查询安全、单次重试与 Hybrid 异常隔离
-│
+```
+
+### 解析 & Block Reflow
+
+```text
 ├─ test_mineru_ocr.py                             # MinerU OCR
 ├─ test_mineru_parser_engine.py                   # MinerU parser routing
 ├─ test_parse_quality_fix.py                      # 解析质量修复
+├─ test_parse_task_retention_and_upload_size.py   # 解析任务保留与上传大小
 └─ test_block_reflow_structure.py                 # Block Reflow 结构
 ```
 
-## 19.2 修改后最低回归建议
+### Chunking 模块化重构（非当前主链路）
+
+```text
+├─ test_chunking_drafts.py                        # Chunk draft 中间模型
+├─ test_chunking_metadata_builder.py              # Metadata 构建
+├─ test_chunking_linker.py                        # Chunk 链接
+├─ test_chunking_child_builder.py                 # Child 构建
+├─ test_chunking_rebuild_service_smoke.py         # RebuildService 烟雾测试
+```
+
+## 20.2 修改后最低回归建议
 
 ### 修改 Canonical/父子切分
 
@@ -1316,6 +1534,30 @@ test_canonical_parent_child_integration.py
 test_canonical_overlap_shadow_dedup.py
 test_chunk_boundary_quality.py
 test_context_header_continuation.py
+```
+
+### 修改 DCP / 视觉文档管线
+
+```text
+test_page_visual_preservation.py
+test_document_profile_dcp0.py
+test_document_profile_dcp2.py
+test_document_profile_dcp3.py
+test_document_pipeline_safety.py
+test_visual_page_section_scope.py
+test_dcp4_ocr_quarantine.py
+```
+
+### 修改图文绑定 / 关系图
+
+```text
+test_image_binding_p0.py
+test_image_relation_resolver.py
+test_figure_linker.py
+test_document_relation_phase0_dataset.py
+test_document_relation_phase0_entrypoints.py
+test_document_relation_phase2.py
+test_document_relation_phase3.py
 ```
 
 ### 修改 Markdown/代码/表格
@@ -1345,7 +1587,7 @@ test_rrf_fusion.py
 
 ---
 
-# 20. 运维与部署相关目录
+# 21. 运维与部署相关目录
 
 ```text
 docker-compose.yml
@@ -1377,7 +1619,7 @@ backend/scripts/
 
 ---
 
-# 21. 文档维护优先级
+# 22. 文档维护优先级
 
 `docs/` 只保留 Current 文档和仍有效的专项运维说明。历史设计、Phase 进度和一次性修复报告
 通过 Git 历史追溯，避免与运行时代码形成第二套事实来源。
@@ -1403,9 +1645,9 @@ backend/scripts/
 
 ---
 
-# 22. 推荐的后续维护规范
+# 23. 推荐的后续维护规范
 
-## 22.1 每次主链路修改后更新本手册
+## 23.1 每次主链路修改后更新本手册
 
 至少检查：
 
@@ -1426,7 +1668,7 @@ backend/scripts/
 [ ] API 是否意外返回完整向量、密钥或本地绝对路径
 ```
 
-### 22.1.1 仓库生成物边界
+### 23.1.1 仓库生成物边界
 
 以下内容不作为源码维护：
 
@@ -1443,7 +1685,7 @@ coverage/
 生成目录已从工作树清理并由 `.gitignore` 排除。`.env` 保留为本地运行配置；若历史提交包含
 真实凭据，仍需停止跟踪并执行凭据轮换。
 
-## 22.2 新模块接管旧主链路的判定标准
+## 23.2 新模块接管旧主链路的判定标准
 
 只有满足以下条件，本文才把模块标成 `[主链路]`：
 
@@ -1454,7 +1696,7 @@ coverage/
 4. 生产配置下存在可达路径。
 ```
 
-## 22.3 当前项目最应该保持清晰的五层边界
+## 23.3 当前项目最应该保持清晰的五层边界
 
 ```text
 解析层
@@ -1477,7 +1719,7 @@ Hybrid Retrieval + KnowledgeContextService + MCP
 
 ---
 
-# 23. 最终主链路总图
+# 24. 最终主链路总图
 
 ```text
 【文档入库】
@@ -1491,11 +1733,19 @@ Frontend
 → ParsedDocument / ParsedBlock
 → vision_service.py
 → block_reflow.py
+→ page_visual_profile.py（DCP-1：PDF 视觉分析）
+→ page_visual_enricher.py（DCP-1：主视觉注入）
+→ document_profiler.py（DCP-2：页面级分类）
+→ chunk_policy_resolver.py（DCP-3：策略映射）
 → chunk_service.rebuild_document_chunks()
 
     ├─ enable_parent_child=true
     │  → canonical_document.py
     │  → canonical_parent_child.py
+    │     ├─ DCP-3 活跃策略 → _split_dcp3_policy_segments()
+    │     ├─ visual_page_ranges → _build_visual_section_parents()
+    │     │   └─ Pass 1: 逐页分类 → Pass 2: 跨页绑定 → Pass 3: 物化
+    │     └─ 普通文本 → split_parent_child_result()
     │  → parent_child_splitter.py
     │  → weknora_splitter.py
     │  → Parent/Child Chunk
@@ -1504,11 +1754,13 @@ Frontend
        → split_document / direct block materialization
        → Compatibility Chunks
 
+→ content_cleaning.py（DCP-4：OCR 隔离标记）
 → PostgreSQL Chunks
 → Elasticsearch BM25
-→ Optional Embedding
+→ Optional Embedding（跳过隔离 chunk）
 → PostgreSQL ChunkEmbedding
 → Optional Qdrant / Milvus
+→ document_relation/（关系图：edges → materializer → summaries）
 
 
 【查询与 Agent 使用】
@@ -1536,7 +1788,11 @@ Client / MCP
 多格式解析
 → 统一 ParsedDocument
 → Canonical Markdown
+→ 文档画像与分类（DCP-0~DCP-2）
+→ 差异化切分策略（DCP-3）+ 跨页绑定
 → Old Structure First Parent/Child
+→ OCR 隔离（DCP-4）
+→ 文档关系图（Phase 0-3）
 → 多路索引
 → Hybrid Retrieval
 → Selective Context

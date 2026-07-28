@@ -18,6 +18,12 @@ from app.services.storage import delete_document_objects, object_key_for_source,
 from app.services.storage import delete_document_cache
 
 from app.services.document_parser.block_reflow import reflow_parsed_document
+from app.services.pipeline_debug_artifacts import (
+    finalize_debug_run,
+    init_debug_run,
+    save_debug_parsed_document,
+    update_debug_run_info,
+)
 from app.services.vision_service import enhance_image_blocks, enhance_ocr_blocks
 from app.services import parse_task_service
 from app.utils.files import ensure_dir
@@ -482,7 +488,16 @@ async def parse_document(
                     {"file_type": document.file_type},
                 )
 
+            init_debug_run(
+                document_id=doc_id,
+                task_id=task_id,
+                requested_parser=settings.document_parser_engine,
+            )
             parsed_document = parse_local_document(document, db)
+            save_debug_parsed_document("02_parsed_document", parsed_document)
+            update_debug_run_info(
+                actual_parser=(parsed_document.metadata or {}).get("parser", ""),
+            )
             parse_options = (document.metadata_json or {}).get("parse_options") or {}
             if not isinstance(parse_options, dict):
                 parse_options = {}
@@ -567,7 +582,9 @@ async def parse_document(
                 )
 
             enhanced_images = await enhance_image_blocks(db, parsed_document.blocks) if vlm_enabled else 0
+            save_debug_parsed_document("03_enhanced_document", parsed_document)
             parsed_document = reflow_parsed_document(parsed_document)
+            save_debug_parsed_document("04_reflowed_document", parsed_document)
 
             if task_id:
                 reflow_stats = {
@@ -1019,6 +1036,7 @@ async def parse_document(
         return success_response(document_to_dict(db, document), "解析完成")
 
     finally:
+        finalize_debug_run()
         if getattr(settings, "cleanup_parse_cache_after_parse", True):
             try:
                 delete_document_cache(knowledge_base_id, doc_id)

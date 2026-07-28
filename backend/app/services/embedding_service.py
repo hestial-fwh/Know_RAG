@@ -77,6 +77,23 @@ def validate_dimension(vector: list[float], runtime: EmbeddingRuntime) -> None:
         raise ValueError(f"Embedding 维度不一致：数据库配置为 {expected}，实际返回 {len(vector)}。请检查模型配置。")
 
 
+def _stamp_skip_reason(chunk: Chunk, reason: str) -> None:
+    """Stamp ``skip_embedding_recommended`` / ``skip_reason`` onto a chunk.
+
+    Used for both empty-content skips and visual-OCR quarantine skips so
+    downstream consumers (keyword index, content builder, audit queries) see
+    a consistent signal.
+    """
+    meta = dict(chunk.metadata_json or {})
+    meta.setdefault("skip_embedding_recommended", True)
+    meta.setdefault("skip_reason", reason)
+    flags = dict(chunk.flags or {})
+    flags.setdefault("skip_embedding_recommended", True)
+    flags.setdefault("skip_reason", meta.get("skip_reason") or reason)
+    chunk.metadata_json = meta
+    chunk.flags = flags
+
+
 def _apply_visual_ocr_quarantine(chunk: Chunk) -> bool:
     """Stamp quarantine flags and return True if chunk should be skipped.
 
@@ -103,14 +120,7 @@ def _apply_visual_ocr_quarantine(chunk: Chunk) -> bool:
     ):
         return True
 
-    meta = dict(meta)
-    meta["skip_embedding_recommended"] = True
-    meta["skip_reason"] = SKIP_REASON_VISUAL_OCR_QUARANTINE
-    flags = dict(flags)
-    flags["skip_embedding_recommended"] = True
-    flags["skip_reason"] = SKIP_REASON_VISUAL_OCR_QUARANTINE
-    chunk.metadata_json = meta
-    chunk.flags = flags
+    _stamp_skip_reason(chunk, SKIP_REASON_VISUAL_OCR_QUARANTINE)
     return True
 
 
@@ -408,14 +418,7 @@ async def embed_chunks(db: Session, actor: User | None, chunk_ids: list[str]):
             index_content = build_embedding_content(chunk, document)
             if not index_content:
                 skipped += 1
-                meta = dict(chunk.metadata_json or {})
-                flags = dict(chunk.flags or {})
-                meta.setdefault("skip_embedding_recommended", True)
-                meta.setdefault("skip_reason", "embedding_content_empty")
-                flags.setdefault("skip_embedding_recommended", True)
-                flags.setdefault("skip_reason", meta.get("skip_reason") or "embedding_content_empty")
-                chunk.metadata_json = meta
-                chunk.flags = flags
+                _stamp_skip_reason(chunk, "embedding_content_empty")
                 continue
             vector = await embed_text(index_content, db=db, check_model=False)
             _upsert_embedding(db, chunk, document, vector, index_content, runtime)
@@ -478,14 +481,7 @@ async def embed_document(
             index_content = build_embedding_content(chunk, document)
             if not index_content:
                 skipped += 1
-                meta = dict(chunk.metadata_json or {})
-                flags = dict(chunk.flags or {})
-                meta.setdefault("skip_embedding_recommended", True)
-                meta.setdefault("skip_reason", "embedding_content_empty")
-                flags.setdefault("skip_embedding_recommended", True)
-                flags.setdefault("skip_reason", meta.get("skip_reason") or "embedding_content_empty")
-                chunk.metadata_json = meta
-                chunk.flags = flags
+                _stamp_skip_reason(chunk, "embedding_content_empty")
                 if progress_callback:
                     progress_callback({
                         "document_id": document.id,
@@ -594,14 +590,7 @@ async def embed_knowledge_base(db: Session, actor: User | None, kb_id: str):
             index_content = build_embedding_content(chunk, document)
             if not index_content:
                 skipped += 1
-                meta = dict(chunk.metadata_json or {})
-                flags = dict(chunk.flags or {})
-                meta.setdefault("skip_embedding_recommended", True)
-                meta.setdefault("skip_reason", "embedding_content_empty")
-                flags.setdefault("skip_embedding_recommended", True)
-                flags.setdefault("skip_reason", meta.get("skip_reason") or "embedding_content_empty")
-                chunk.metadata_json = meta
-                chunk.flags = flags
+                _stamp_skip_reason(chunk, "embedding_content_empty")
                 continue
             vector = await embed_text(index_content, db=db, check_model=False)
             _upsert_embedding(db, chunk, document, vector, index_content, runtime)
