@@ -415,6 +415,10 @@ def _heading_level(block: ParsedBlock, text: str) -> int | None:
         return len(match.group(1))
 
     meta = _block_meta(block)
+    # Caption blocks (marked during reflow) must never be promoted to
+    # Markdown headings, even if the parser tagged them with is_heading.
+    if meta.get("is_caption"):
+        return None
     if not (
         bool(meta.get("is_heading"))
         or str(meta.get("raw_block_type") or meta.get("block_type") or meta.get("type") or "").lower()

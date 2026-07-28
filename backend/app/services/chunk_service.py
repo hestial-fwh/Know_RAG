@@ -1507,6 +1507,43 @@ def _enforce_parent_child_integrity(chunks: list[Chunk]) -> list[Chunk]:
         "Flattened %s parent chunks with fewer than two surviving children",
         len(drop_parent_ids),
     )
+
+    # ── Validate non-parent chunks without a parent ────────────────────────
+    # After all cleanup stages, every non-parent_text chunk must either have
+    # a valid parent or be a deliberate standalone candidate (promoted orphan
+    # chapter heading, singleton primary visual, etc.).
+    parent_ids = {chunk.id for chunk in repaired if (chunk.chunk_type or "") == "parent_text"}
+    for chunk in repaired:
+        if (chunk.chunk_type or "") == "parent_text":
+            continue
+        if chunk.parent_chunk_id and chunk.parent_chunk_id in parent_ids:
+            continue
+        meta = chunk.metadata_json or {}
+        flags = chunk.flags or {}
+        is_standalone = (
+            meta.get("standalone_root_child")
+            or flags.get("standalone_root_child")
+            or meta.get("singleton_primary_visual_parent")
+            or flags.get("singleton_primary_visual_parent")
+            or meta.get("parent_materialization_rule") in (
+                "single_page_primary_visual_allowed",
+                "floating_content_continuation_parent",
+                "continuation_rehomed_to_existing_parent",
+            )
+            or flags.get("continuation_across_floating_blocks")
+        )
+        if is_standalone:
+            continue  # promoted orphan — already has its own parent
+        logger.error(
+            "Orphan chunk without valid parent: chunk_id=%s chunk_index=%s "
+            "chunk_type=%s parent_chunk_id=%s context_header=%s",
+            chunk.id,
+            chunk.chunk_index,
+            chunk.chunk_type,
+            chunk.parent_chunk_id,
+            (chunk.context_header or "")[:120],
+        )
+
     return repaired
 
 

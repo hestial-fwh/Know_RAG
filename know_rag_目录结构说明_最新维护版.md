@@ -1,7 +1,7 @@
 # Know_RAG 项目目录结构与主链路维护手册（最新代码基线）
 
-> **代码基线**：当前工作区（最新提交 a582f73）
-> **维护日期**：2026-07-27
+> **代码基线**：当前工作区（最新提交 a582f73，含 heading 污染修复、跨浮动续写检测与边界调整）
+> **维护日期**：2026-07-28
 > **用途**：用于后续项目维护、功能定位、主链路排查、代码重构和新人接手。  
 > **分析原则**：以本次上传代码的**真实调用关系**为准，不以历史设计文档或曾经存在的重构方案代替当前运行时事实。
 
@@ -62,6 +62,7 @@ Canonical Markdown
 14. **文档分类全链路**：PDF 视觉分析 → page_primary_visual 注入 → CanonicalDocument 构建 → 页面级分类（table_dense/visual_dominant/scanned_prose/slide/native_text）→ 策略映射 → 三条切分路径（DCP-3 活跃策略 / visual_page_ranges / 普通文本）。详见 `docs/explain/document_classification_pipeline.md`。
 15. **8 个 feature flags 控制渐进式功能**：`DOCUMENT_PAGE_VISUAL_PRESERVATION_ENABLED`、`DOCUMENT_ADAPTIVE_CHUNK_POLICY_ENABLED`、`DOCUMENT_VISUAL_SECTION_PARENT_ENABLED`、`DOCUMENT_VISUAL_OCR_QUARANTINE_ENABLED`、`DOCUMENT_RELATION_GRAPH_ENABLED`、`DOCUMENT_RELATION_MATERIALIZATION_ENABLED`、`DOCUMENT_RELATION_RETRIEVAL_EXPANSION_ENABLED`、`DOCUMENT_ASSET_GROUP_ENABLED`。全部默认 `false`，按环境显式启用。
 16. `content_cleaning.py` 提供 DCP-4 OCR 隔离常量和 `is_visual_ocr_quarantined()` 函数，`embedding_service.py` 在向量化前检查隔离标记，确保视觉页 OCR 文本不参与 embedding 和 ES 索引。
+17. **跨浮动内容正文续接**：`_detect_floating_content_continuations()` 扫描未以句末标点结尾的 text child，跨越图片/表格/caption/页码噪声向前查找续写文本，匹配后调用 `_adjust_continuation_boundary()` 将切分点对齐到自然句末标点，尾部文本移入续写块头部。孤儿块不再创建 1:1 合成 Parent，改为标记 `standalone_root_child`。
 
 ---
 
@@ -725,8 +726,11 @@ chunk_service.rebuild_document_chunks()
       │  │  ├─ table
       │  │  └─ image / asset
       │  ├─ deduplicate_overlap_shadow_children()
-      │  └─ _flatten_underfilled_parent_links()
-      │     └─ 只做 Parent 0/1 最终完整性约束
+      │  ├─ _flatten_underfilled_parent_links()
+      │  │  └─ 只做 Parent 0/1 最终完整性约束
+      │  ├─ _detect_floating_content_continuations()
+      │  │  └─ 跨浮动块正文续接检测 + _adjust_continuation_boundary() 句末边界对齐
+      │  └─ standalone_root_child 标记（替代旧 1:1 合成 Parent）
       │
       ├─ ORM Materialization
       │  ├─ parent_text

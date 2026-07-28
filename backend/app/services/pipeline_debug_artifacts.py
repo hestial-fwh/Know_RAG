@@ -38,8 +38,10 @@ from __future__ import annotations
 
 import contextvars
 import dataclasses
+import hashlib
 import json
 import logging
+import re
 import shutil
 import uuid
 from datetime import date, datetime, timezone
@@ -80,6 +82,48 @@ def _is_sensitive_field(key: str) -> bool:
 _SERIALIZE_MAX_DEPTH = 10
 _REDACTED = "<redacted>"
 
+# Large string stripping: strings that are mostly base64 or data URLs
+# above this byte-length threshold are replaced with metadata only.
+_BASE64_STRIP_THRESHOLD = 10_000  # 10 KB
+_BASE64_LIKE_RE = re.compile(r"^[A-Za-z0-9+/=]{100,}$")
+_DATA_URL_RE = re.compile(r"^data:[^;]*;base64,", re.I)
+
+
+def _looks_like_base64_or_data_url(s: str) -> str | None:
+    """Return a label if *s* is a base64 blob or data URL, else None."""
+    if not s:
+        return None
+    if _DATA_URL_RE.match(s):
+        return "data_url"
+    # Check the first 500 chars for base64 character set
+    if len(s) >= 100 and _BASE64_LIKE_RE.match(s[:500]):
+        return "base64_blob"
+    return None
+
+
+def _strip_large_string(s: str) -> Any:
+    """Replace a large base64/data-URL string with a metadata dict.
+
+    Returns the dict for JSON output, or the original string if it is
+    not a recognised large-format string.
+    """
+    label = _looks_like_base64_or_data_url(s)
+    if label is None:
+        # For very long non-base64 strings, still note length but keep content
+        if len(s) > _BASE64_STRIP_THRESHOLD * 5:
+            return {
+                "__long_text_length__": len(s),
+                "__sha256__": hashlib.sha256(s.encode("utf-8", errors="replace")).hexdigest(),
+                "__text_prefix__": s[:200],
+            }
+        return s
+
+    return {
+        f"__{label}_length__": len(s),
+        "__sha256__": hashlib.sha256(s.encode("utf-8", errors="replace")).hexdigest(),
+        "__prefix__": s[:80],
+    }
+
 
 def safe_serialize(obj: Any, depth: int = 0, *, _visited: set[int] | None = None) -> Any:
     """Recursively serialise *obj* to a JSON-safe structure.
@@ -106,6 +150,10 @@ def safe_serialize(obj: Any, depth: int = 0, *, _visited: set[int] | None = None
     if isinstance(obj, float):
         return obj
     if isinstance(obj, str):
+        if len(obj) >= _BASE64_STRIP_THRESHOLD:
+            stripped = _strip_large_string(obj)
+            if not isinstance(stripped, str):
+                return stripped
         return obj
 
     # ── Circular reference guard ────────────────────────────────────────

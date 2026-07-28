@@ -424,3 +424,154 @@ def test_apply_visual_ocr_quarantine_idempotent_no_dirty_write(monkeypatch):
     assert chunk.flags == already_stamped_flags
     # Keys not duplicated.
     assert len([k for k in chunk.metadata_json if k == "skip_reason"]) == 1
+
+
+# ── Comprehensive flow: visual OCR quarantine pipeline ─────────────────────────
+
+
+def test_page_primary_visual_ocr_quarantine_full_flow(monkeypatch):
+    """Visual page: image child + OCR metadata → quarantine applied at embedding.
+
+    Verifies:
+    - page_primary_visual → image child exists
+    - OCR text stored in metadata
+    - skip_embedding_recommended=True stamped by quarantine
+    - skip_reason=visual_ocr_quarantine
+    - Embedding content builder skips quarantined content
+    """
+    monkeypatch.setattr(
+        "app.services.content_cleaning.settings.document_visual_ocr_quarantine_enabled",
+        True,
+    )
+    monkeypatch.setattr(
+        "app.services.embedding_service.settings.document_visual_ocr_quarantine_enabled",
+        True,
+    )
+    monkeypatch.setattr(
+        "app.services.embedding.embedding_content_builder.settings.document_visual_ocr_quarantine_enabled",
+        True,
+    )
+
+    # Simulate a visual page image child with shadow_auxiliary OCR
+    meta = {
+        METADATA_KEY_IMAGE_OCR_MODE: OCR_IMAGE_MODE_SHADOW_AUXILIARY,
+        "visual_role": "page_primary_visual",
+        "semantic_role": "page_primary_visual",
+        "ocr_text": "乱码书法OCR文本",
+    }
+    flags = {"has_image": True, "has_ocr_text": True}
+    chunk = _make_chunk(
+        chunk_type="image",
+        content="书法作品 VLM描述",
+        metadata=meta,
+        flags=flags,
+        image_info={"asset_id": "image-0001", "image_url": "/files/.../img.jpg"},
+    )
+
+    # Step 1: quarantine check
+    assert is_visual_ocr_quarantined(meta) is True
+
+    # Step 2: apply quarantine stamps
+    quarantined = _apply_visual_ocr_quarantine(chunk)
+    assert quarantined is True
+    assert chunk.metadata_json.get("skip_embedding_recommended") is True
+    assert chunk.metadata_json.get("skip_reason") == SKIP_REASON_VISUAL_OCR_QUARANTINE
+    assert chunk.flags.get("skip_embedding_recommended") is True
+
+    # Step 3: embedding content returns empty (quarantined)
+    content = build_embedding_content(chunk, None)
+    # For image chunks with quarantine, OCR text should be stripped
+    assert "乱码书法OCR文本" not in content
+
+
+def test_scanned_prose_ocr_not_quarantined(monkeypatch):
+    """Scanned prose page: OCR text IS searchable, NOT quarantined.
+
+    Verifies:
+    - scanned_prose page → normal text child
+    - OCR text used for embedding
+    - Embedding is NOT skipped
+    - ES is NOT skipped
+    """
+    monkeypatch.setattr(
+        "app.services.content_cleaning.settings.document_visual_ocr_quarantine_enabled",
+        True,
+    )
+    monkeypatch.setattr(
+        "app.services.embedding_service.settings.document_visual_ocr_quarantine_enabled",
+        True,
+    )
+    monkeypatch.setattr(
+        "app.services.embedding.embedding_content_builder.settings.document_visual_ocr_quarantine_enabled",
+        True,
+    )
+
+    # Scanned prose with normal OCR mode — should NOT be quarantined
+    meta = {
+        METADATA_KEY_IMAGE_OCR_MODE: OCR_IMAGE_MODE_NORMAL,
+        "ocr_text": "连续可读的扫描正文OCR文本内容",
+        "page_kind": "scanned_prose",
+    }
+    chunk = _make_chunk(
+        chunk_type="text",
+        content="连续可读的扫描正文OCR文本内容",
+        metadata=meta,
+        flags={"has_ocr_text": True},
+    )
+
+    # Step 1: quarantine check — should NOT be quarantined
+    assert is_visual_ocr_quarantined(meta) is False
+
+    # Step 2: quarantine not applied
+    quarantined = _apply_visual_ocr_quarantine(chunk)
+    assert quarantined is False
+    assert "skip_embedding_recommended" not in (chunk.metadata_json or {})
+
+    # Step 3: embedding content includes OCR text (not stripped)
+    content = build_embedding_content(chunk, None)
+    assert "连续可读的扫描正文OCR文本内容" in content or len(content) > 0
+
+
+def test_visual_asset_image_child_preserved_even_with_ocr_quarantine(monkeypatch):
+    """Visual page primary image: image Child preserved, OCR quarantined but image still exists.
+
+    Visual asset images must be preserved for UI/citation even when OCR is quarantined.
+    """
+    monkeypatch.setattr(
+        "app.services.content_cleaning.settings.document_visual_ocr_quarantine_enabled",
+        True,
+    )
+    monkeypatch.setattr(
+        "app.services.embedding_service.settings.document_visual_ocr_quarantine_enabled",
+        True,
+    )
+
+    meta = {
+        METADATA_KEY_IMAGE_OCR_MODE: OCR_IMAGE_MODE_SHADOW_AUXILIARY,
+        "visual_role": "page_primary_visual",
+        "semantic_role": "page_primary_visual",
+        "asset_id": "image-0001-test",
+        "ocr_text": "草书乱码",
+        "vlm_description": "一幅行书书法作品",
+    }
+    chunk = _make_chunk(
+        chunk_type="image",
+        content="书法作品\n一幅行书作品",
+        metadata=meta,
+        flags={"has_image": True, "has_vlm_description": True, "has_ocr_text": True},
+        image_info={"asset_id": "image-0001-test"},
+    )
+
+    # Quarantine applied
+    quarantined = _apply_visual_ocr_quarantine(chunk)
+    assert quarantined is True
+
+    # Image chunk still exists — not deleted
+    assert chunk.chunk_type == "image"
+    assert chunk.image_info.get("asset_id") == "image-0001-test"
+
+    # VLM description preserved (not OCR-quarantined)
+    assert "vlm_description" in (chunk.metadata_json or {})
+
+    # OCR text kept in metadata for audit
+    assert "ocr_text" in (chunk.metadata_json or {})

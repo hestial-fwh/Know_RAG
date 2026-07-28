@@ -16,7 +16,26 @@ ENGLISH_SECTION_RE = re.compile(r"^\s*(chapter|section|part)\s+([0-9]+|[ivxlcdm]
 ALL_CAPS_HEADING_RE = re.compile(r"^[A-Z][A-Z0-9 ,/&()_-]{2,80}$")
 FIGURE_CAPTION_RE = re.compile(r"^\s*(图|图表|figure|fig\.)\s*[\d一二三四五六七八九十]+(?:[.\-]\d+)?\b", re.I)
 TABLE_CAPTION_RE = re.compile(r"^\s*(表|table)\s*[\d一二三四五六七八九十]+(?:[.\-]\d+)?\b", re.I)
-PAGE_NOISE_RE = re.compile(r"^\s*(?:page\s+\d+\s+(?:of|/)\s+\d+|第\s*\d+\s*页|页码\s*\d*|\d{1,4})\s*$", re.I)
+# 续表2 / 续表 2 / 表2（续）/ 表 2（续）/ Continued Table 2 / Table 2 (continued)
+_TABLE_CONTINUATION_CAPTION_RE = re.compile(
+    r"^\s*(?:"
+    r"续(?:表|table)\s*[\d一二三四五六七八九十]+"
+    r"|表\s*[\d一二三四五六七八九十]+\s*（续）"
+    r"|table\s*\d+\s*\(continued\)"
+    r"|continued\s+table\s*\d+"
+    r")",
+    re.I,
+)
+PAGE_NOISE_RE = re.compile(
+    r"^\s*(?:"
+    r"page\s+\d+\s+(?:of|/)\s+\d+"
+    r"|第\s*\d+\s*页"
+    r"|第\s*\d+\s*卷\s*第\s*\d+\s*期"  # journal volume/issue boilerplate
+    r"|页码\s*\d*"
+    r"|\d{1,4}"
+    r")\s*$",
+    re.I,
+)
 SENTENCE_END_RE = re.compile(r"[。！？!?；;]$")
 CONTINUATION_SUFFIX_RE = re.compile(r"(?:（续）)+$")
 
@@ -49,12 +68,28 @@ def normalize_context_header(header: str) -> str:
     return make_continuation_header(value)
 
 
+# Simple HTML tag stripper — removes <sub>, <sup>, <i>, <b> etc.
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
 def is_caption_text(text: str) -> bool:
-    """Detect figure/table captions so they do not become section headings."""
+    """Detect figure/table captions so they do not become section headings.
+
+    Covers primary captions (表1, Table 1, 图1, Figure 1) as well as
+    continuation captions (续表2, 表2（续）, Continued Table 2, etc.).
+    HTML tags such as <sub> are stripped before matching so that MinerU
+    output like '续表 <sub>2</sub>' is correctly identified.
+    """
     value = normalized_heading_text(text)
     if not value or len(value) > 260:
         return False
-    return bool(FIGURE_CAPTION_RE.search(value) or TABLE_CAPTION_RE.search(value))
+    # Strip HTML tags so that "续表 <sub>2</sub>" → "续表 2"
+    clean = _HTML_TAG_RE.sub("", value).strip()
+    return bool(
+        FIGURE_CAPTION_RE.search(clean)
+        or TABLE_CAPTION_RE.search(clean)
+        or _TABLE_CONTINUATION_CAPTION_RE.search(clean)
+    )
 
 
 def is_page_noise_text(text: str) -> bool:

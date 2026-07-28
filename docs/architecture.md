@@ -1,7 +1,7 @@
 # Architecture
 
 > 状态：Current
-> 维护日期：2026-07-24
+> 维护日期：2026-07-28
 
 `know_rag` 是本地优先的 RAG 知识库构建、解析、切分、索引和检索系统。
 
@@ -66,6 +66,14 @@ section scope：只接受本页顶部、短文本形态可靠的作品标题；�
 “先判父块、后展开”而整体落入孤立区。若单个未挂载 source child 与已保留的相邻父窗口
 存在至少 25%（上限 64 字符）的明确区间重叠，则归入重叠度最高的父窗口；该规则只修复
 父窗口边界遗漏，不为真正独立的单子块创建内容重复的父块。
+跨图片、表格、caption 或页眉页脚的正文续接由 `_detect_floating_content_continuations()`
+检测：扫描未以句末标点结尾的 text child，向前跨越浮动块（图片、表格、caption、页码噪声），
+在满足同章节且页码距离 ≤6 的条件下匹配续写文本。检测成功后：
+1) 恢复 child_b 的 `context_header`（修复如"续表 2"伪标题污染）；
+2) 调用 `_adjust_continuation_boundary()` 将切分点对齐到 child_a 最后一个自然句末标点，
+   尾部不完整文本移入 child_b 头部，同时剥离 MinerU 泄露的伪 caption 前缀（如"表格"）；
+3) 将两个 child 归入共享 Parent（或 re-home 到现有 Parent）。无法安全归并的候选标记为
+   `standalone_root_child`，不创建 1:1 合成父块。
 当 `page_primary_visual` 至少覆盖 3 页且占已知页面 60% 以上时，文档进入视觉页主导切分：
 先按 Canonical provenance 的权威页边界分段，再在页内生成检索子块，最终将同页 text/image
 统一挂到唯一的 page-scoped context parent。该策略不跨页合并作品；纯图片页的父块使用图片

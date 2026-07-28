@@ -435,3 +435,396 @@ def test_large_markdown_table_is_split_without_heading_scatter():
     assert all("| name | value | note |" in child.content for child in tables)
     assert not any(is_structural_only(child.content) for child in plan.children)
     assert all("## 大表格" in child.context_header for child in tables)
+
+
+# ── Standalone root child (replaces 1:1 orphan promotion) ──
+
+
+def test_standalone_chapter_marked_as_root_child():
+    """A single chapter text that has no parent is marked as standalone_root_child
+    rather than given a 1:1 synthetic parent."""
+    markdown = (
+        "## 2 药理作用\n\n茯苓多糖具有免疫调节作用。研究表明，茯苓多糖能显著增强巨噬细胞的吞噬功能。\n\n"
+        "## 3 结语与展望\n\n茯苓作为传统中药，应用历史悠久。未来研究应关注其作用机制。"
+    )
+    canonical = build_canonical_document(ParsedDocument.from_text(markdown), file_type="md")
+    plan = build_canonical_parent_child_plan(canonical, _cfg())
+
+    text_children = [c for c in plan.children if c.chunk_type == "text"]
+    # Children with no parent must be explicitly marked as standalone
+    for child in text_children:
+        if child.parent_index is None:
+            assert child.metadata.get("standalone_root_child") is True, (
+                f"Orphan without standalone_root_child marker: {child.context_header[:80]}"
+            )
+            assert child.metadata.get("parent_assignment_state") == "standalone_root_child"
+
+    # No 1:1 synthetic parent should exist
+    synthetic_11_parents = [
+        p for p in plan.parents
+        if p.metadata.get("parent_materialization_rule") == "single_orphan_promoted_to_parent"
+    ]
+    assert len(synthetic_11_parents) == 0, (
+        "No 1:1 synthetic parents should exist"
+    )
+
+
+def test_text_child_without_parent_is_standalone_root_not_one_to_one_parent():
+    """Orphan resolution does not create 1:1 parents — marks as standalone_root_child."""
+    markdown = "## 章节一\n\n正文内容段落。\n\n![图1](asset://image-1)\n\n## 章节二\n\n第二段正文。"
+    canonical = build_canonical_document(
+        ParsedDocument(
+            content=markdown,
+            blocks=[
+                ParsedBlock(block_type="text", text=markdown),
+                ParsedBlock(
+                    block_type="image", text="图1",
+                    metadata={"visual_role": "page_primary_visual"},
+                ),
+            ],
+        ),
+        file_type="md",
+    )
+    plan = build_canonical_parent_child_plan(canonical, _cfg())
+
+    # Image children should have a valid parent_index
+    image_children = [c for c in plan.children if c.chunk_type == "image"]
+    for img in image_children:
+        assert img.parent_index is not None, (
+            f"Image child has no parent: context_header={img.context_header}"
+        )
+
+    # Text orphans must be marked as standalone_root_child, not parentless
+    for child in plan.children:
+        if child.chunk_type == "text" and child.parent_index is None:
+            assert child.metadata.get("standalone_root_child"), (
+                "Text child without parent and without standalone_root_child marker"
+            )
+
+    # No 1:1 parents
+    for p in plan.parents:
+        if p.metadata.get("children_count_planned") == 1:
+            is_visual = (
+                p.metadata.get("singleton_primary_visual_parent")
+                or p.metadata.get("synthetic_visual_page_parent")
+            )
+            assert is_visual, (
+                f"Non-visual 1:1 parent found: {p.metadata}"
+            )
+
+
+def test_two_chapters_not_merged_under_same_parent():
+    """Two independent chapters do not share a parent."""
+    markdown = (
+        "## 2 药理作用\n\n茯苓多糖具有免疫调节作用。\n\n"
+        "## 3 结语与展望\n\n未来研究方向包括机制研究和临床应用。"
+    )
+    canonical = build_canonical_document(ParsedDocument.from_text(markdown), file_type="md")
+    plan = build_canonical_parent_child_plan(canonical, _cfg())
+
+    chapter2_children = [
+        c for c in plan.children
+        if c.chunk_type == "text" and "2 药理作用" in (c.context_header or "")
+    ]
+    chapter3_children = [
+        c for c in plan.children
+        if c.chunk_type == "text" and "3 结语与展望" in (c.context_header or "")
+    ]
+
+    if chapter2_children and chapter3_children:
+        p2 = {c.parent_index for c in chapter2_children if c.parent_index is not None}
+        p3 = {c.parent_index for c in chapter3_children if c.parent_index is not None}
+        if p2 and p3:
+            assert not p2.intersection(p3), (
+                f"Chapters 2 and 3 share parents: {p2 & p3}"
+            )
+
+
+def test_standalone_root_child_has_correct_metadata():
+    """Standalone root children carry parent_assignment_state=standalone_root_child."""
+    markdown = "## 独立章节\n\n这是独立章节的正文内容。没有其他章节与之合并。"
+    canonical = build_canonical_document(ParsedDocument.from_text(markdown), file_type="md")
+    plan = build_canonical_parent_child_plan(canonical, _cfg())
+
+    standalones = [
+        c for c in plan.children
+        if c.metadata.get("standalone_root_child")
+    ]
+
+    for child in standalones:
+        assert child.metadata.get("parent_assignment_state") == "standalone_root_child"
+        # standalone_root_child should NOT have parent_materialized=True
+        assert child.metadata.get("parent_materialized") is False
+
+    # Every text child is either parented or standalone_root_child
+    for child in plan.children:
+        if child.chunk_type == "image":
+            continue
+        has_parent = child.parent_index is not None
+        is_root = child.metadata.get("standalone_root_child")
+        assert has_parent or is_root, (
+            f"Text child neither parented nor standalone: {child.context_header[:80]}"
+        )
+
+
+# ── Cross-floating-content continuation detection ──
+
+
+def test_cross_floating_continuation_detected_and_grouped():
+    """Test 2: Text split by floating content (image, table, caption, header)
+    is detected as a continuation and placed under the same parent."""
+    from app.services.chunker.canonical_parent_child import (
+        _detect_floating_content_continuations,
+    )
+
+    # Build children directly to test continuation detection
+    children = [
+        CanonicalChildDraft(
+            content="通过制作肝纤维化模型进行羧甲基茯苓多糖抗肝纤维",
+            chunk_type="text", parent_index=None,
+            context_header="## 2 药理作用", start=0, end=24,
+            source_child_seq=0, metadata={"chunk_policy_page_no": 1},
+        ),
+        CanonicalChildDraft(
+            content="第 46 卷 第 4 期",
+            chunk_type="text", parent_index=None,
+            context_header="## 2 药理作用", start=25, end=35,
+            source_child_seq=1, metadata={"page_noise": True},
+            flags={"page_noise": True},
+        ),
+        CanonicalChildDraft(
+            content="图 1 化学结构式",
+            chunk_type="image", parent_index=None,
+            context_header="## 2 药理作用", start=36, end=46,
+            source_child_seq=2,
+        ),
+        CanonicalChildDraft(
+            content="| 编号 | 名称 |",
+            chunk_type="table", parent_index=None,
+            context_header="## 2 药理作用", start=47, end=57,
+            source_child_seq=3,
+        ),
+        CanonicalChildDraft(
+            content="化的研究，结果显示羧甲基茯苓多糖降低TGF-β表达。",
+            chunk_type="text", parent_index=None,
+            context_header="## 2 药理作用", start=58, end=80,
+            source_child_seq=4, metadata={"chunk_policy_page_no": 1},
+        ),
+    ]
+
+    detected = _detect_floating_content_continuations(children)
+
+    # Must find exactly one continuation pair
+    assert len(detected) == 1, f"Expected 1 continuation, got {len(detected)}"
+    desc = detected[0]
+    assert desc["child_a_index"] == 0, f"Child A should be index 0, got {desc['child_a_index']}"
+    assert desc["child_b_index"] == 4, f"Child B should be index 4, got {desc['child_b_index']}"
+    assert "image" in desc["gap_block_types"]
+    assert "table" in desc["gap_block_types"]
+
+
+def test_adjacent_text_without_floating_content_is_not_continuation():
+    """Ordinary adjacent chunks stay under the normal splitter contract."""
+    from app.services.chunker.canonical_parent_child import (
+        _detect_floating_content_continuations,
+    )
+
+    children = [
+        CanonicalChildDraft(
+            content="第一段在切片边界处没有句号",
+            chunk_type="text",
+            parent_index=None,
+            context_header="## 同一章节",
+            start=0,
+            end=14,
+            source_child_seq=0,
+        ),
+        CanonicalChildDraft(
+            content="下一段是独立正文内容。",
+            chunk_type="text",
+            parent_index=None,
+            context_header="## 同一章节",
+            start=14,
+            end=25,
+            source_child_seq=1,
+        ),
+    ]
+
+    assert _detect_floating_content_continuations(children) == []
+
+
+def test_floating_content_does_not_bridge_different_sections_or_parents():
+    """Continuation recovery fails closed across stable ownership boundaries."""
+    from app.services.chunker.canonical_parent_child import (
+        _detect_floating_content_continuations,
+    )
+
+    def make_children(*, context_b: str, parent_b: int | None):
+        return [
+            CanonicalChildDraft(
+                content="前一章节正文在这里没有结束",
+                chunk_type="text",
+                parent_index=1,
+                context_header="## 第一章节",
+                start=0,
+                end=14,
+                source_child_seq=0,
+            ),
+            CanonicalChildDraft(
+                content="图 1",
+                chunk_type="image",
+                parent_index=None,
+                context_header="## 第一章节",
+                start=15,
+                end=18,
+                source_child_seq=1,
+            ),
+            CanonicalChildDraft(
+                content="后续正文内容。",
+                chunk_type="text",
+                parent_index=parent_b,
+                context_header=context_b,
+                start=19,
+                end=26,
+                source_child_seq=2,
+            ),
+        ]
+
+    different_sections = make_children(
+        context_b="## 第二章节",
+        parent_b=None,
+    )
+    assert _detect_floating_content_continuations(different_sections) == []
+
+    different_parents = make_children(
+        context_b="## 第一章节",
+        parent_b=2,
+    )
+    before = [
+        (child.content, child.start, child.end, child.parent_index)
+        for child in different_parents
+    ]
+    assert _detect_floating_content_continuations(different_parents) == []
+    assert [
+        (child.content, child.start, child.end, child.parent_index)
+        for child in different_parents
+    ] == before
+
+
+def test_chapter_boundary_not_bridged():
+    """Test 3: A new chapter heading prevents continuation bridging."""
+    from app.services.chunker.canonical_parent_child import (
+        _detect_floating_content_continuations,
+    )
+
+    # Child A: text before chapter boundary, ends incomplete
+    # Floating: image between them
+    # Child B: starts with "## 3" — this is a SECTION START, not a continuation
+    children = [
+        CanonicalChildDraft(
+            content="正文未以句号结束",
+            chunk_type="text", parent_index=None,
+            context_header="## 2 药理作用", start=0, end=10,
+            source_child_seq=0,
+        ),
+        CanonicalChildDraft(
+            content="图 1",
+            chunk_type="image", parent_index=None,
+            context_header="## 2 药理作用", start=11, end=15,
+            source_child_seq=1,
+        ),
+        CanonicalChildDraft(
+            content="## 3 结语与展望",
+            chunk_type="text", parent_index=None,
+            context_header="## 3 结语与展望", start=16, end=26,
+            source_child_seq=2,
+        ),
+        CanonicalChildDraft(
+            content="这是新章节的正文内容。",
+            chunk_type="text", parent_index=None,
+            context_header="## 3 结语与展望", start=27, end=40,
+            source_child_seq=2,
+        ),
+    ]
+
+    detected = _detect_floating_content_continuations(children)
+
+    # Child A (index 0) should NOT be bridged to any child after "## 3"
+    # because "## 3" is a section start (_looks_like_section_start returns True)
+    for desc in detected:
+        idx_a = desc["child_a_index"]
+        idx_b = desc["child_b_index"]
+        assert idx_a != 0, (
+            f"Child A (index 0) should not be bridged across chapter boundary. "
+            f"Got continuation from {idx_a} to {idx_b}"
+        )
+
+    # Child B (the "## 3" section heading child at index 2) should be detected
+    # as a section start and should NOT be bridged to child at index 3
+    assert not any(d["child_a_index"] == 2 for d in detected), (
+        "Section heading should not be bridged as continuation source"
+    )
+
+
+def test_complete_sentence_not_bridged():
+    """Test 4: A text block ending with a sentence terminator is NOT bridged."""
+    from app.services.chunker.canonical_parent_child import (
+        _detect_floating_content_continuations,
+    )
+
+    children = [
+        CanonicalChildDraft(
+            content="第一段正文已经完整结束。",
+            chunk_type="text", parent_index=None,
+            context_header="## 2 药理作用", start=0, end=12,
+            source_child_seq=0,
+        ),
+        CanonicalChildDraft(
+            content="图 1",
+            chunk_type="image", parent_index=None,
+            context_header="## 2 药理作用", start=13, end=17,
+            source_child_seq=1,
+        ),
+        CanonicalChildDraft(
+            content="第二段正文是新内容的开始。",
+            chunk_type="text", parent_index=None,
+            context_header="## 2 药理作用", start=18, end=30,
+            source_child_seq=2,
+        ),
+    ]
+
+    detected = _detect_floating_content_continuations(children)
+
+    # Child A (index 0) ends with "。", which is a sentence terminator.
+    # It should NOT be bridged to child at index 2.
+    for desc in detected:
+        assert desc["child_a_index"] != 0, (
+            f"Complete sentence should not be bridged: {desc}"
+        )
+
+
+# ── Continuation detection helpers ──
+
+
+def test_text_ends_incomplete():
+    """_text_ends_incomplete correctly identifies sentences without terminators."""
+    from app.services.chunker.canonical_parent_child import _text_ends_incomplete
+
+    assert _text_ends_incomplete("羧甲基茯苓多糖抗肝纤维") is True
+    assert _text_ends_incomplete("这是完整的句子。") is False
+    assert _text_ends_incomplete("这是完整的句子！") is False
+    assert _text_ends_incomplete("这是完整的句子？") is False
+    assert _text_ends_incomplete("Ends with period.") is False
+    assert _text_ends_incomplete("No terminator") is True
+    assert _text_ends_incomplete("") is False
+
+
+def test_looks_like_section_start():
+    """_looks_like_section_start correctly identifies section headings."""
+    from app.services.chunker.canonical_parent_child import _looks_like_section_start
+
+    assert _looks_like_section_start("## 3 结语与展望") is True
+    assert _looks_like_section_start("3 结语与展望") is True
+    assert _looks_like_section_start("化的研究，结果显示") is False
+    assert _looks_like_section_start("正文内容") is False
+    assert _looks_like_section_start("") is False

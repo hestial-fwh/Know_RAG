@@ -563,3 +563,73 @@ class TestDebugRunEdgeCases:
         assert manifest["relation_graph"]["status"] == "disabled"
 
         finalize_debug_run()
+
+
+# ── Base64 / large string stripping ────────────────────────────────────────
+
+
+class TestLargeStringStripping:
+    """Verify that base64 and data-URL strings are stripped from debug JSON."""
+
+    def test_short_strings_preserved(self):
+        """Short strings pass through unchanged."""
+        assert safe_serialize("hello") == "hello"
+        assert safe_serialize("a" * 5000) == "a" * 5000
+
+    def test_base64_blob_replaced_with_metadata(self):
+        """Long base64-like strings are replaced with a metadata dict."""
+        fake_base64 = ("/9j/4AAQSkZJRgABAQAAAQABAAD" + "A" * 20000)
+        result = safe_serialize(fake_base64)
+        assert isinstance(result, dict)
+        assert "__base64_blob_length__" in result
+        assert "__sha256__" in result
+        assert result["__base64_blob_length__"] == len(fake_base64)
+
+    def test_data_url_replaced_with_metadata(self):
+        """Data URLs are replaced with a metadata dict."""
+        data_url = "data:image/jpeg;base64," + ("A" * 15000)
+        result = safe_serialize(data_url)
+        assert isinstance(result, dict)
+        assert "__data_url_length__" in result
+        assert "__sha256__" in result
+
+    def test_base64_inside_dict_value_is_stripped(self):
+        """Base64 values inside nested dicts are stripped."""
+        fake_base64 = "iVBORw0KGgo" + "B" * 15000
+        obj = {"title": "test", "image_data": fake_base64}
+        result = safe_serialize(obj)
+        assert result["title"] == "test"
+        assert isinstance(result["image_data"], dict)
+        assert "__base64_blob_length__" in result["image_data"]
+
+    def test_base64_inside_list_is_stripped(self):
+        """Base64 values inside lists are stripped."""
+        fake_base64 = "/9j/" + "C" * 15000
+        obj = [fake_base64]
+        result = safe_serialize(obj)
+        assert isinstance(result[0], dict)
+        assert "__base64_blob_length__" in result[0]
+
+    def test_production_object_not_modified(self):
+        """Original dict values are not mutated by serialization."""
+        fake_base64 = "/9j/" + "D" * 15000
+        obj = {"image_base64": fake_base64}
+        _ = safe_serialize(obj)
+        # Original object must remain unchanged
+        assert obj["image_base64"] == fake_base64
+        assert isinstance(obj["image_base64"], str)
+
+    def test_very_long_non_base64_text_preserved(self):
+        """Very long non-base64 text is noted but content is replaced."""
+        long_text = "这是正常文本内容。" * 6000  # ~42KB
+        result = safe_serialize(long_text)
+        assert isinstance(result, dict)
+        assert "__long_text_length__" in result
+        assert "__sha256__" in result
+        assert "__text_prefix__" in result
+
+    def test_bytes_unchanged(self):
+        """Bytes continue to be handled as before (never base64)."""
+        result = safe_serialize(b"hello world")
+        assert isinstance(result, dict)
+        assert result == {"__bytes_length__": 11}

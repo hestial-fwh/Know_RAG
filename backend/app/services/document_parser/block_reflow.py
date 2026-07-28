@@ -532,7 +532,10 @@ def reflow_blocks(
                 {**(block.metadata or {}), "caption": block.text, "is_caption": True}
             )
         level = _heading_level(block)
-        if level is not None and block.text:
+        # Caption blocks inherit their context from the current heading stack
+        # but must NOT push their own text as a new heading — table continuation
+        # captions (续表2, etc.) are often mis-tagged as headings by parsers.
+        if level is not None and block.text and not _is_caption_block(block, block.text):
             heading_stack = [(lvl, txt) for lvl, txt in heading_stack if lvl < level]
             heading_stack.append((level, block.text.strip()))
             block.context_header = _heading_path_text(heading_stack)

@@ -19,7 +19,7 @@ import re
 from typing import Any
 
 from app.core.config import settings
-from app.services.chunker.heading_utils import is_page_noise_text
+from app.services.chunker.heading_utils import is_caption_text, is_page_noise_text
 from app.services.chunker.chunk_policy_resolver import ResolvedChunkPolicy
 from app.services.chunker.models import ChunkerConfig, ParsedChunk
 from app.services.content_cleaning import METADATA_KEY_IMAGE_OCR_MODE
@@ -2585,6 +2585,229 @@ def _build_visual_section_parents(
 
 
 # ---------------------------------------------------------------------------
+# Cross-floating-content continuation recovery
+# ---------------------------------------------------------------------------
+
+_SENTENCE_TERMINATOR_RE = re.compile(r"[。！？!?；;.]$")
+_FLOATING_CHILD_TYPES = {"image", "table"}
+_HEADING_LIKE_RE = re.compile(
+    r"^\s*(#{1,6}\s|\d+(?:\.\d+)+\s|\d+\s+\S|第[一二三四五六七八九十百千万0-9]+[章节篇]|[一二三四五六七八九十]+[、.．])"
+)
+
+
+def _text_ends_incomplete(text: str) -> bool:
+    """Return True if *text* does not end with a sentence terminator."""
+    clean = (text or "").strip()
+    if not clean:
+        return False
+    return not _SENTENCE_TERMINATOR_RE.search(clean[-1:])
+
+
+def _looks_like_section_start(text: str) -> bool:
+    """Return True if *text* appears to start a new section/chapter heading."""
+    clean = (text or "").strip()
+    if not clean or len(clean) > 160:
+        return False
+    return bool(_HEADING_LIKE_RE.search(clean))
+
+
+def _looks_like_continuation_start(text: str) -> bool:
+    """Return True if *text* looks like it continues a prior sentence.
+
+    A continuation typically starts with a lowercase / mid-sentence word
+    rather than a capital letter, number, or structural marker.
+    """
+    clean = (text or "").strip()
+    if not clean:
+        return False
+    # If the first line is a short caption-like prefix (e.g. "表格"),
+    # check the second line instead — the real content may start there.
+    lines = clean.splitlines()
+    check_text = clean
+    if len(lines) >= 2 and len(lines[0].strip()) <= 20:
+        first_line = lines[0].strip()
+        # Caption-like short prefixes: "表格", "表1", "续表2", etc.
+        if first_line in ("表格", "图表") or first_line.endswith("（续）"):
+            check_text = "\n".join(lines[1:]).strip()
+    if not check_text:
+        return False
+    # If the text is a caption (table/figure/continuation caption), it is
+    # not a genuine text continuation — skip it so the forward scan can
+    # look past it to the real continuation text.
+    if is_caption_text(check_text):
+        return False
+    if is_caption_text(clean):
+        return False
+    # Structural starters that indicate a new independent block
+    structural_starters = (
+        "#", "|", "![", "<table", "<tr", "<td", "<th",
+        "图", "表", "第", "参考文献", "摘要", "关键词",
+        "Abstract", "Keywords", "Table", "Figure",
+        "收稿日期", "作者简介", "通信作者", "基金项目",
+    )
+    for starter in structural_starters:
+        if check_text.startswith(starter):
+            return False
+    return True
+
+
+def _detect_floating_content_continuations(
+    children: list[CanonicalChildDraft],
+    *,
+    max_gap_children: int = 30,
+    max_page_distance: int = 6,
+) -> list[dict[str, Any]]:
+    """Detect text children split by floating content (images, tables, captions).
+
+    Returns a list of continuation-group descriptors.  Each descriptor
+    includes the indices of the two children and the floating-block types
+    that separate them.  The caller is responsible for building parents.
+    """
+    continuations: list[dict[str, Any]] = []
+    n = len(children)
+
+    for i, child_a in enumerate(children):
+        if child_a.chunk_type != "text":
+            continue
+        if child_a.parent_index is not None:
+            # Child already has a valid parent — may still be a continuation
+            # candidate if we later decide to merge two parents, but for now
+            # only recover orphaned or mis-parented continuations.
+            pass
+        if not _text_ends_incomplete(child_a.content):
+            continue
+        # Only skip pure section-start children (short heading-only text).
+        # A child like "2. 2 保肝 ...长正文..." starts with a sub-section
+        # marker but has substantial body text after it — it should NOT be
+        # skipped because the body text is a valid continuation source.
+        is_section_start = _looks_like_section_start(child_a.content)
+        if is_section_start and len(child_a.content) <= 80:
+            continue
+        # Skip page noise, header/footer, and caption children — they are
+        # structural artefacts, not genuine text that can start a continuation.
+        meta_a = child_a.metadata or {}
+        flags_a = child_a.flags or {}
+        if (
+            meta_a.get("page_noise")
+            or flags_a.get("page_noise")
+            or is_page_noise_text(child_a.content)
+        ):
+            continue
+        if meta_a.get("is_caption") or flags_a.get("is_caption"):
+            continue
+
+        # Look ahead for the next text child after floating content
+        gap_block_types: list[str] = []
+        found_section_boundary = False
+        for j in range(i + 1, min(n, i + 1 + max_gap_children)):
+            child_b = children[j]
+
+            if child_b.chunk_type in _FLOATING_CHILD_TYPES:
+                gap_block_types.append(child_b.chunk_type)
+                continue
+
+            if child_b.chunk_type == "text":
+                meta = child_b.metadata or {}
+                flags = child_b.flags or {}
+                # Page headers, footers, page numbers — treat as floating.
+                # Also check is_page_noise_text() as a fallback for text not
+                # marked by earlier stages (e.g. journal volume/issue headers).
+                if (
+                    meta.get("page_noise")
+                    or flags.get("page_noise")
+                    or is_page_noise_text(child_b.content)
+                ):
+                    gap_block_types.append("page_noise")
+                    continue
+                # Caption text — treat as floating.
+                # Also check is_caption_text() as a fallback for text not
+                # marked by earlier stages (e.g. "续表 2" with HTML tags).
+                if (
+                    meta.get("is_caption")
+                    or flags.get("is_caption")
+                    or is_caption_text(child_b.content)
+                ):
+                    gap_block_types.append("caption")
+                    continue
+                # Stop at real chapter/section boundaries.
+                # Must run AFTER page_noise/caption checks so that journal
+                # boilerplate and table continuation captions are not mistaken
+                # for section headings.
+                if _looks_like_section_start(child_b.content):
+                    found_section_boundary = True
+                    break
+
+            # Found the next real text child
+            if child_b.chunk_type != "text":
+                # Non-text child that isn't floating — stop looking
+                break
+
+            # ── Validate continuation conditions ──
+
+            # A continuation recovery must actually cross parser-emitted
+            # floating content. Adjacent text chunks belong to the ordinary
+            # splitter and must never be reclassified here.
+            if not gap_block_types:
+                break
+
+            # Condition: child_b is not itself a heading or section start
+            # (Re-checked here as a safety net for long text that
+            # _looks_like_section_start truncates at 160 chars.)
+            if _looks_like_section_start(child_b.content):
+                found_section_boundary = True
+                break
+
+            # Condition: child_b starts like a continuation
+            if not _looks_like_continuation_start(child_b.content):
+                break
+
+            # Condition: page distance is conservative
+            page_a = child_a.metadata.get("chunk_policy_page_no") if child_a.metadata else None
+            page_b = child_b.metadata.get("chunk_policy_page_no") if child_b.metadata else None
+            if (
+                page_a is not None
+                and page_b is not None
+                and abs(int(page_b) - int(page_a)) > max_page_distance
+            ):
+                break
+
+            # Condition: same stable section (context_header matches or
+            # child_b's context_header was not set independently)
+            ctx_a = (child_a.context_header or "").strip()
+            ctx_b = (child_b.context_header or "").strip()
+            if ctx_a and ctx_b and ctx_a != ctx_b:
+                break
+
+            # Re-homing two already-materialized, distinct parent groups would
+            # require rebuilding both parent windows. Keep the operation
+            # fail-closed instead of mutating only the children.
+            if (
+                child_a.parent_index is not None
+                and child_b.parent_index is not None
+                and child_a.parent_index != child_b.parent_index
+            ):
+                break
+
+            # ── Match found ──
+            continuations.append(
+                {
+                    "child_a_index": i,
+                    "child_b_index": j,
+                    "gap_block_types": gap_block_types,
+                    "context_header_a": child_a.context_header,
+                    "context_header_b": child_b.context_header,
+                }
+            )
+            break  # Each child_a pairs with at most one child_b
+
+        # Don't bridge across section boundaries
+        if found_section_boundary:
+            continue
+
+    return continuations
+
+
+# ---------------------------------------------------------------------------
 # Public plan builder
 # ---------------------------------------------------------------------------
 
@@ -2806,6 +3029,144 @@ def build_canonical_parent_child_plan(
                 )
             )
             next_parent_index += 1
+
+        # ── Cross-floating-content continuation recovery ────────────────
+        # Detect text children that were split by floating content (images,
+        # tables, captions, page headers) and re-home them under a shared
+        # parent.  This must run BEFORE the stand-alone orphan fallback so
+        # that genuine continuations are recovered together.
+        if getattr(cfg, "enable_parent_child", False):
+            detected = _detect_floating_content_continuations(children)
+            for desc in detected:
+                idx_a = desc["child_a_index"]
+                idx_b = desc["child_b_index"]
+                child_a = children[idx_a]
+                child_b = children[idx_b]
+                if (
+                    child_a.parent_index is not None
+                    and child_b.parent_index is not None
+                    and child_a.parent_index != child_b.parent_index
+                ):
+                    continue
+                # Assign a stable continuation group id
+                gid = child_a.metadata.get("continuation_group_id")
+                if not gid:
+                    gid = f"cont-{idx_a:04d}"
+                child_a.metadata["continuation_group_id"] = gid
+                child_b.metadata["continuation_group_id"] = gid
+                child_a.metadata["continues_to_child_index"] = idx_b
+                child_b.metadata["continues_from_child_index"] = idx_a
+                child_a.metadata["continuation_across_floating_blocks"] = True
+                child_b.metadata["continuation_across_floating_blocks"] = True
+                child_b.metadata["continuation_gap_block_types"] = desc[
+                    "gap_block_types"
+                ]
+                child_a.flags["continuation_across_floating_blocks"] = True
+                child_b.flags["continuation_across_floating_blocks"] = True
+                # Restore child_b's context_header from child_a if child_a
+                # has a more stable / non-caption section heading.
+                ctx_a = (child_a.context_header or "").strip()
+                ctx_b = (child_b.context_header or "").strip()
+                if ctx_a and (not ctx_b or ctx_b != ctx_a):
+                    child_b.context_header = child_a.context_header
+
+                # Build parent for the continuation group
+                existing_parent = child_a.parent_index
+                if existing_parent is not None and child_b.parent_index is None:
+                    child_b.parent_index = existing_parent
+                    child_b.metadata["parent_materialized"] = True
+                    child_b.metadata["parent_materialization_rule"] = (
+                        "continuation_rehomed_to_existing_parent"
+                    )
+                    child_b.flags["parent_materialized"] = True
+                    # Update child counts on the existing parent
+                    for parent in parents:
+                        if parent.parent_index == existing_parent:
+                            prev_count = parent.metadata.get(
+                                "children_count_planned", 0
+                            )
+                            parent.metadata["children_count_planned"] = (
+                                prev_count + 1
+                            )
+                            parent.metadata["continuation_group_id"] = gid
+                            break
+                elif existing_parent is None and child_b.parent_index is not None:
+                    child_a.parent_index = child_b.parent_index
+                    child_a.metadata["parent_materialized"] = True
+                    child_a.metadata["parent_materialization_rule"] = (
+                        "continuation_rehomed_to_existing_parent"
+                    )
+                    child_a.flags["parent_materialized"] = True
+                    for parent in parents:
+                        if parent.parent_index == child_b.parent_index:
+                            prev_count = parent.metadata.get(
+                                "children_count_planned", 0
+                            )
+                            parent.metadata["children_count_planned"] = (
+                                prev_count + 1
+                            )
+                            parent.metadata["continuation_group_id"] = gid
+                            break
+                elif existing_parent is None and child_b.parent_index is None:
+                    # Both are orphaned — create a synthetic parent with
+                    # at least two text children (not 1:1).
+                    child_a.parent_index = next_parent_index
+                    child_b.parent_index = next_parent_index
+                    for c in (child_a, child_b):
+                        c.metadata["parent_materialized"] = True
+                        c.metadata["parent_materialization_rule"] = (
+                            "floating_content_continuation_parent"
+                        )
+                        c.flags["parent_materialized"] = True
+                        c.flags["continuation_group_parent"] = True
+                    # Build parent content with both children's text
+                    combined = _preserve(
+                        child_a.content + "\n\n" + child_b.content
+                    )
+                    ctx = child_a.context_header or child_b.context_header or ""
+                    parents.append(
+                        CanonicalParentDraft(
+                            parent_index=next_parent_index,
+                            content=combined,
+                            context_header=ctx,
+                            start=child_a.start,
+                            end=child_b.end,
+                            metadata={
+                                "canonical_markdown": True,
+                                "chunk_role": "parent",
+                                "children_count_planned": 2,
+                                "synthetic_continuation_parent": True,
+                                "parent_materialization_rule": (
+                                    "floating_content_continuation_parent"
+                                ),
+                                "continuation_group_id": gid,
+                                "continuation_gap_block_types": desc[
+                                    "gap_block_types"
+                                ],
+                                "runtime_postprocess_policy": "structure_first",
+                            },
+                        )
+                    )
+                    next_parent_index += 1
+
+        # ── Targeted stand-alone orphan resolution ──────────────────────
+        # Only reachable AFTER continuation recovery and expanded-orphan
+        # handling.  Remaining truly standalone text children are explicitly
+        # marked as standalone_root_child rather than given a 1:1 synthetic
+        # parent — a 1:1 parent provides no additional retrieval context.
+        if getattr(cfg, "enable_parent_child", False):
+            for child in children:
+                if child.parent_index is not None:
+                    continue
+                if child.chunk_type not in ("text", "table"):
+                    continue
+                if _is_page_primary_visual_asset(child):
+                    continue
+                # Mark as genuine stand-alone root — not a lost orphan
+                child.metadata["standalone_root_child"] = True
+                child.metadata["parent_materialized"] = False
+                child.metadata["parent_assignment_state"] = "standalone_root_child"
+                child.flags["standalone_root_child"] = True
 
         for child in children:
             if (
