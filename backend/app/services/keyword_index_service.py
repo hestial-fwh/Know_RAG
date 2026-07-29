@@ -20,30 +20,25 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.models import Chunk, Document
 from app.utils.text import sanitize_text_for_postgres
-from app.services.content_cleaning import clean_text_for_embedding, is_visual_ocr_quarantined, should_skip_text_chunk
+from app.services.content_cleaning import clean_text_for_embedding
+from app.services.embedding.embedding_content_builder import build_content_admission
 
 logger = logging.getLogger(__name__)
 
-INDEXABLE_CHUNK_TYPES = {"text", "table", "image"}
+INDEXABLE_CHUNK_TYPES = {"text", "table", "image", "image_ocr_text", "equation"}
 NON_INDEXABLE_CHUNK_TYPES = {"parent_text"}
 
 
-def _is_indexable_chunk(chunk: Chunk | None) -> bool:
+def _is_indexable_chunk(
+    chunk: Chunk | None,
+    document: Document | None = None,
+) -> bool:
     if chunk is None:
         return False
     chunk_type = (chunk.chunk_type or "text").lower()
     if chunk_type not in INDEXABLE_CHUNK_TYPES:
         return False
-    if is_visual_ocr_quarantined(chunk.metadata_json or {}):
-        return False
-    if should_skip_text_chunk(
-        chunk.content or "",
-        chunk_type=chunk_type,
-        flags=chunk.flags or {},
-        metadata=chunk.metadata_json or {},
-    ):
-        return False
-    return True
+    return bool(build_content_admission(chunk, document).content)
 
 
 @dataclass
@@ -508,12 +503,17 @@ def extract_basic_keywords(*texts: str, limit: int = 20) -> list[str]:
 
 def chunk_to_es_doc(chunk: Chunk, document: Document) -> dict:
     metadata = chunk.metadata_json or {}
-    image_info = chunk.image_info or {}
-    ocr_text = clean_text_for_embedding(_metadata_text(metadata, ["ocr_cleaned_text", "ocr_raw_text", "ocr_text"]))
-    vlm_description = clean_text_for_embedding(_metadata_text(metadata, ["vlm_description", "description", "image_description"]))
-    table_text = clean_text_for_embedding(_metadata_text(metadata, ["table_body", "table_html", "table_text"]))
-    caption = clean_text_for_embedding(_metadata_text(metadata, ["caption", "figure_caption", "image_caption", "table_caption", "title"]))
-    index_content = clean_text_for_embedding("\n".join(part for part in [chunk.content, caption] if part).strip())
+    admission = build_content_admission(chunk, document)
+    ocr_text = (
+        clean_text_for_embedding(admission.channel_text("visual_ocr"))
+        if "visual_ocr" in admission.index_sources
+        else ""
+    )
+    vlm_description = clean_text_for_embedding(
+        admission.channel_text("vlm_description")
+    )
+    table_text = clean_text_for_embedding(admission.channel_text("table_text"))
+    index_content = admission.content
     keywords = extract_basic_keywords(
         document.title or "",
         document.file_name or "",
@@ -559,7 +559,14 @@ def index_document_chunks(
     """
     if not keyword_search_enabled():
         return 0
-    chunks = [chunk for chunk in chunks if chunk and chunk.status == "ready" and chunk.is_enabled and _is_indexable_chunk(chunk)]
+    chunks = [
+        chunk
+        for chunk in chunks
+        if chunk
+        and chunk.status == "ready"
+        and chunk.is_enabled
+        and _is_indexable_chunk(chunk, document)
+    ]
     if not chunks:
         return 0
     try:
@@ -629,7 +636,9 @@ def sync_document_index(db: Session, document: Document) -> int:
         .order_by(Chunk.chunk_index.asc())
         .all()
     )
-    indexable_chunks = [chunk for chunk in chunks if _is_indexable_chunk(chunk)]
+    indexable_chunks = [
+        chunk for chunk in chunks if _is_indexable_chunk(chunk, document)
+    ]
     # Index the committed replacement first.  If this fails, the old index is
     # untouched.  Only after every new chunk is accepted do we remove stale
     # chunk ids from the previous generation.
@@ -775,7 +784,9 @@ def rebuild_index_for_knowledge_base(db: Session, knowledge_base_id: str) -> int
         by_doc[document.id][1].append(chunk)
     total = 0
     for document, chunks in by_doc.values():
-        indexable_chunks = [chunk for chunk in chunks if _is_indexable_chunk(chunk)]
+        indexable_chunks = [
+            chunk for chunk in chunks if _is_indexable_chunk(chunk, document)
+        ]
         index_document_chunks(db, document, indexable_chunks)
         total += len(indexable_chunks)
     return total

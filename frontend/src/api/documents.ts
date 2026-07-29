@@ -178,6 +178,15 @@ export interface EmbeddingStatus {
   failed_chunks?: number
   has_context_header_count?: number
   indexed_content_count?: number
+  content_admission_summary?: {
+    chunks_with_decision: number
+    chunks_without_decision: number
+    channel_status_counts: Record<string, number>
+    source_counts: Record<string, number>
+    recovered_legacy_skip_chunks: number
+    stale_legacy_skip_chunks: number
+    skip_reason_counts: Record<string, number>
+  }
   model: string
   dimension: number
   provider?: string
@@ -198,6 +207,7 @@ export interface EmbeddingResult {
   failed_chunks?: number
   has_context_header_count?: number
   indexed_content_count?: number
+  content_admission_summary?: EmbeddingStatus['content_admission_summary']
   model: string
   dimension: number
   provider?: string

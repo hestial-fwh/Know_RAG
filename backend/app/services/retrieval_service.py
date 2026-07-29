@@ -411,7 +411,7 @@ async def vector_search(db, kb_id: str, query: str, top_k: int, vector_threshold
             chunk_ids = list(score_map.keys())
             sql = _base_select_sql(
                 ":zero_score AS vector_score",
-                "LEFT JOIN chunk_embeddings ce ON ce.chunk_id = c.id AND ce.is_enabled = true AND ce.source_type = 'chunk'",
+                "JOIN chunk_embeddings ce ON ce.chunk_id = c.id AND ce.is_enabled = true AND ce.source_type = 'chunk'",
                 "AND c.id = ANY(CAST(:chunk_ids AS text[]))",
             )
             rows = db.execute(text(sql), {"kb_id": kb_id, "chunk_ids": chunk_ids, "zero_score": 0.0}).all()

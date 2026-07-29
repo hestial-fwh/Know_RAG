@@ -96,6 +96,10 @@ class Settings(BaseSettings):
         False,
         alias="DOCUMENT_VISUAL_OCR_QUARANTINE_ENABLED",
     )
+    document_field_content_admission_enabled: bool = Field(
+        False,
+        alias="DOCUMENT_FIELD_CONTENT_ADMISSION_ENABLED",
+    )
     document_visual_section_parent_enabled: bool = Field(
         False,
         alias="DOCUMENT_VISUAL_SECTION_PARENT_ENABLED",

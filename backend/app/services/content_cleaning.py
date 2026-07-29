@@ -406,6 +406,8 @@ _STALE_SKIP_REASONS = {
     "embedding_content_empty",
 }
 
+_LEGACY_VISUAL_OCR_SKIP_REASON = SKIP_REASON_VISUAL_OCR_QUARANTINE
+
 
 def clear_embedding_skip_metadata(mapping: dict | None) -> dict:
     """Return a copy of metadata/flags without embedding-skip decisions.
@@ -493,6 +495,42 @@ def clear_stale_embedding_skip_flags(
         new_meta = clear_embedding_skip_metadata(new_meta)
     return new_flags, new_meta
 
+
+def clear_legacy_visual_ocr_skip_flags(
+    *,
+    flags: dict | None = None,
+    metadata: dict | None = None,
+) -> tuple[dict, dict, bool]:
+    """Remove DCP-4's obsolete whole-chunk visual OCR skip decision.
+
+    DCP-4R quarantines only the explicit ``visual_ocr`` content channel.  Old
+    rows may still carry ``skip_reason=visual_ocr_quarantine`` in metadata,
+    flags, or both.  Keeping that trusted whole-chunk marker would make a safe
+    field-level composer return no content on every re-embedding attempt.
+    """
+
+    recovered = False
+
+    def clean(mapping: dict | None) -> dict:
+        nonlocal recovered
+        result = dict(mapping or {})
+        reason = str(
+            result.get("skip_reason") or result.get("embedding_skip_reason") or ""
+        ).strip()
+        if reason != _LEGACY_VISUAL_OCR_SKIP_REASON:
+            return result
+        recovered = True
+        for key in (
+            "skip_embedding_recommended",
+            "embedding_skip_recommended",
+            "skip_reason",
+            "embedding_skip_reason",
+        ):
+            result.pop(key, None)
+        return result
+
+    return clean(flags), clean(metadata), recovered
+
 _TRUSTED_SKIP_REASONS = {
     "placeholder_table",
     "placeholder_image",
@@ -505,8 +543,21 @@ _TRUSTED_SKIP_REASONS = {
     "page_noise",
     "header_footer_noise",
     "pure_url_or_path",
-    SKIP_REASON_VISUAL_OCR_QUARANTINE,
 }
+
+
+def field_content_admission_enabled() -> bool:
+    """Return whether DCP-4R field-level admission is enabled.
+
+    The legacy quarantine flag is accepted as a compatibility trigger, but its
+    semantics are deliberately narrowed to the OCR field.  This makes existing
+    deployments safe immediately instead of retaining the old whole-chunk skip.
+    """
+
+    return bool(
+        getattr(settings, "document_field_content_admission_enabled", False)
+        or settings.document_visual_ocr_quarantine_enabled
+    )
 
 
 def is_visual_ocr_quarantined(
@@ -520,7 +571,7 @@ def is_visual_ocr_quarantined(
     because their ``image_ocr_mode`` remains ``"normal"``.
     """
     if enabled is None:
-        enabled = bool(settings.document_visual_ocr_quarantine_enabled)
+        enabled = field_content_admission_enabled()
     if not enabled:
         return False
     metadata = metadata or {}

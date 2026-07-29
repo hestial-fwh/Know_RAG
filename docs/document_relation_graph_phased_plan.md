@@ -1,6 +1,6 @@
 # 通用文档关系图分阶段实施计划
 
-> 状态：Phase 3 PASS，Phase 4 可开始
+> 状态：Phase 3 PASS；Phase 4 自身依赖已满足，但按多模态融合 DCP-7 门禁暂缓
 > 审查日期：2026-07-23  
 > 依赖审查：`docs/document_relation_graph_feasibility.md`  
 > Phase 0 已完成确定性生成语料与基线；Phase 1 已完成显式关系安全物化、scoped expansion、
@@ -247,5 +247,8 @@ partition 保持 ambiguous，跨 section 与独立 caption 分别 rejected。默
 
 ## 10. 阶段推进决策
 
-Phase 0、Phase 1、Phase 2 与 Phase 3 已 PASS。下一编码阶段是 **Phase 4：隐式方向引用**；
+Phase 0、Phase 1、Phase 2 与 Phase 3 已 PASS。就关系图自身依赖而言，下一编码阶段是
+**Phase 4：隐式方向引用**；但当前整体开发顺序受
+`document_profile_parse_chunk_plan.md` 的 DCP-7 门禁约束，在字段级索引准入、页内 Visual Item、
+多轴画像和差异化边界稳定前暂缓，避免关系规则建立在不稳定的 asset/Chunk 上。
 仍不得把通用“该图”或跨页指代强制绑定。

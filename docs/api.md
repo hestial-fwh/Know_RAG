@@ -192,6 +192,20 @@ chunk 返回新增或补齐：
 
 `POST /api/v1/knowledge-bases/{kb_id}/hybrid-search` 继续保持当前加权融合策略，但结果会补充 `knowledge_id`、`start_at`、`end_at`、`context_header`、`chunk_type`、`parent_chunk_id`、`metadata`、`metadata_json` 等字段。
 
+### 文档向量状态的字段级准入统计
+
+`GET /api/v1/documents/{id}/embedding/status` 在原向量统计外返回
+`content_admission_summary`：
+
+- `chunks_with_decision / chunks_without_decision`
+- `channel_status_counts`
+- `source_counts`
+- `recovered_legacy_skip_chunks / stale_legacy_skip_chunks`
+- `skip_reason_counts`
+
+切片详情的 `metadata_json.content_admission` 返回 version、最终 decision、`index_sources`、
+`shadow_sources`、排除原因及通道预览。该诊断不返回完整 embedding 向量。
+
 重新解析接口会删除旧 chunks 和旧 embeddings；新返回的 chunks 使用结构感知切分策略。
 ## WeKnora 对齐 Phase C API 更新
 

@@ -271,7 +271,8 @@ Page 1-50: 全是文本+少量小图
 | `DOCUMENT_PAGE_VISUAL_PRESERVATION_ENABLED` | `false` | 控制阶段②：是否分析 PDF 并注入 page_primary_visual |
 | `DOCUMENT_ADAPTIVE_CHUNK_POLICY_ENABLED` | `false` | 控制阶段⑤：是否启用 DCP 策略映射 |
 | `DOCUMENT_VISUAL_SECTION_PARENT_ENABLED` | `false` | 控制阶段⑥路径B：段落级父块 vs 页面级父块 |
-| `DOCUMENT_VISUAL_OCR_QUARANTINE_ENABLED` | `false` | 控制视觉页 OCR 文本是否隔离（不参与 embedding） |
+| `DOCUMENT_VISUAL_OCR_QUARANTINE_ENABLED` | `false` | DCP-4R 兼容开关；只让明确的 visual OCR 字段退出 embedding/BM25，不跳过整块 |
+| `DOCUMENT_FIELD_CONTENT_ADMISSION_ENABLED` | `false` | DCP-4R 推荐开关；启用字段级内容来源准入和诊断 |
 
 ## 相关文件索引
 

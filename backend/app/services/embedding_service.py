@@ -14,11 +14,17 @@ from app.db.models import Chunk, ChunkEmbedding, Document, KnowledgeBase, ModelC
 from app.services.audit_service import record_audit
 from app.services.content_cleaning import (
     clean_text_for_embedding,
-    is_visual_ocr_quarantined,
-    SKIP_REASON_VISUAL_OCR_QUARANTINE,
+    clear_legacy_visual_ocr_skip_flags,
 )
-from app.services.embedding.embedding_content_builder import build_embedding_content
-from app.services.vector_store_adapters import upsert_external_vector
+from app.services.embedding.embedding_content_builder import (
+    ContentAdmissionResult,
+    build_content_admission,
+    build_embedding_content,
+)
+from app.services.vector_store_adapters import (
+    delete_external_vector,
+    upsert_external_vector,
+)
 from app.utils.ids import new_id
 
 
@@ -94,34 +100,47 @@ def _stamp_skip_reason(chunk: Chunk, reason: str) -> None:
     chunk.flags = flags
 
 
-def _apply_visual_ocr_quarantine(chunk: Chunk) -> bool:
-    """Stamp quarantine flags and return True if chunk should be skipped.
+def _apply_content_admission(
+    chunk: Chunk,
+    document: Document | None,
+) -> ContentAdmissionResult:
+    """Compose field-level index text and persist a compact audit decision."""
 
-    Reads ``chunk_policy_image_ocr_mode`` from metadata.  When active, writes
-    ``skip_embedding_recommended`` / ``skip_reason`` into both ``metadata_json``
-    and ``flags`` so downstream consumers (keyword index, content builder, audit
-    queries) see a consistent signal.
+    result = build_content_admission(chunk, document)
+    new_flags, new_meta, recovered = clear_legacy_visual_ocr_skip_flags(
+        flags=chunk.flags or {},
+        metadata=chunk.metadata_json or {},
+    )
+    diagnostic = result.to_metadata()
+    if recovered:
+        new_meta["legacy_visual_ocr_skip_recovered"] = True
+    new_meta["content_admission"] = diagnostic
+    if new_flags != (chunk.flags or {}):
+        chunk.flags = new_flags
+    if new_meta != (chunk.metadata_json or {}):
+        chunk.metadata_json = new_meta
+    return result
 
-    Avoids overwriting already-stamped quarantine keys so re-embedding (retry,
-    model change) does not trigger spurious SQLAlchemy UPDATEs for JSON columns.
-    """
-    meta = chunk.metadata_json or {}
-    if not is_visual_ocr_quarantined(meta):
-        return False
 
-    flags = chunk.flags or {}
-    # If both metadata and flags already carry the quarantine signal,
-    # return early without mutating — avoids dirty-tracking on re-embed.
-    if (
-        meta.get("skip_embedding_recommended") is True
-        and meta.get("skip_reason") == SKIP_REASON_VISUAL_OCR_QUARANTINE
-        and flags.get("skip_embedding_recommended") is True
-        and flags.get("skip_reason") == SKIP_REASON_VISUAL_OCR_QUARANTINE
-    ):
-        return True
+def _sync_keyword_documents_after_commit(
+    db: Session,
+    documents: list[Document],
+) -> int:
+    """Best-effort BM25 refresh after DCP-4R repairs persisted decisions."""
 
-    _stamp_skip_reason(chunk, SKIP_REASON_VISUAL_OCR_QUARANTINE)
-    return True
+    from app.services.keyword_index_service import sync_document_index
+
+    synced = 0
+    for document in documents:
+        try:
+            sync_document_index(db, document)
+            synced += 1
+        except Exception:
+            logger.exception(
+                "DCP-4R keyword refresh failed: document_id=%s",
+                document.id,
+            )
+    return synced
 
 
 async def _ollama_models(base_url: str) -> list[str]:
@@ -351,6 +370,25 @@ def _upsert_embedding(db: Session, chunk: Chunk, document: Document, vector: lis
     upsert_external_vector(db, chunk, vector, index_content)
 
 
+def _revoke_chunk_embedding(db: Session, chunk: Chunk) -> int:
+    """Disable a stale local embedding and remove its external vector point."""
+
+    updated = (
+        db.query(ChunkEmbedding)
+        .filter(
+            ChunkEmbedding.chunk_id == chunk.id,
+            ChunkEmbedding.source_type == "chunk",
+            ChunkEmbedding.is_enabled.is_(True),
+        )
+        .update(
+            {"is_enabled": False, "content": ""},
+            synchronize_session=False,
+        )
+    )
+    delete_external_vector(db, chunk.id)
+    return int(updated or 0)
+
+
 def _result_payload(
     *,
     runtime: EmbeddingRuntime,
@@ -412,19 +450,22 @@ async def embed_chunks(db: Session, actor: User | None, chunk_ids: list[str]):
         skipped = 0
         for chunk in chunks:
             document = documents.get(chunk.document_id)
-            if _apply_visual_ocr_quarantine(chunk):
-                skipped += 1
-                continue
-            index_content = build_embedding_content(chunk, document)
+            admission = _apply_content_admission(chunk, document)
+            index_content = admission.content
             if not index_content:
                 skipped += 1
                 _stamp_skip_reason(chunk, "embedding_content_empty")
+                _revoke_chunk_embedding(db, chunk)
                 continue
             vector = await embed_text(index_content, db=db, check_model=False)
             _upsert_embedding(db, chunk, document, vector, index_content, runtime)
             embedded += 1
         missing = _count_missing_embeddings(db, chunks)
         db.commit()
+        _sync_keyword_documents_after_commit(
+            db,
+            [document for document in documents.values() if document is not None],
+        )
         return success_response(
             _result_payload(runtime=runtime, total_chunks=len(chunks), embedded_chunks=embedded, skipped_chunks=skipped, missing_chunks=missing),
             "向量化完成",
@@ -466,22 +507,12 @@ async def embed_document(
     try:
         runtime = await ensure_embedding_ready(db)
         for chunk in chunks:
-            if _apply_visual_ocr_quarantine(chunk):
-                skipped += 1
-                if progress_callback:
-                    progress_callback({
-                        "document_id": document.id,
-                        "chunk_id": chunk.id,
-                        "embedded_chunks": embedded,
-                        "total_chunks": total,
-                        "skipped_chunks": skipped,
-                        "failed_chunks": failed,
-                    })
-                continue
-            index_content = build_embedding_content(chunk, document)
+            admission = _apply_content_admission(chunk, document)
+            index_content = admission.content
             if not index_content:
                 skipped += 1
                 _stamp_skip_reason(chunk, "embedding_content_empty")
+                _revoke_chunk_embedding(db, chunk)
                 if progress_callback:
                     progress_callback({
                         "document_id": document.id,
@@ -525,6 +556,7 @@ async def embed_document(
             },
         )
         db.commit()
+        _sync_keyword_documents_after_commit(db, [document])
         logger.info(
             "embed_document document_id=%s total_chunks=%s embedded_chunks=%s provider=%s model=%s dimension=%s",
             document.id,
@@ -584,13 +616,12 @@ async def embed_knowledge_base(db: Session, actor: User | None, kb_id: str):
         documents = {doc.id: doc for doc in db.query(Document).filter(Document.id.in_(document_ids)).all()}
         for chunk in chunks:
             document = documents.get(chunk.document_id)
-            if _apply_visual_ocr_quarantine(chunk):
-                skipped += 1
-                continue
-            index_content = build_embedding_content(chunk, document)
+            admission = _apply_content_admission(chunk, document)
+            index_content = admission.content
             if not index_content:
                 skipped += 1
                 _stamp_skip_reason(chunk, "embedding_content_empty")
+                _revoke_chunk_embedding(db, chunk)
                 continue
             vector = await embed_text(index_content, db=db, check_model=False)
             _upsert_embedding(db, chunk, document, vector, index_content, runtime)
@@ -611,6 +642,10 @@ async def embed_knowledge_base(db: Session, actor: User | None, kb_id: str):
             },
         )
         db.commit()
+        _sync_keyword_documents_after_commit(
+            db,
+            [document for document in documents.values() if document is not None],
+        )
         logger.info(
             "embed_knowledge_base knowledge_base_id=%s total_chunks=%s embedded_chunks=%s provider=%s model=%s dimension=%s",
             kb_id,
@@ -690,6 +725,48 @@ def _status_payload(db: Session, filters: list, identity: dict) -> dict:
             func.length(ChunkEmbedding.content) > 0,
         )
     ) or 0
+    admission_rows = (
+        db.query(Chunk.metadata_json, Chunk.flags)
+        .filter(*eligible_filters)
+        .all()
+    )
+    source_counts: dict[str, int] = {}
+    channel_status_counts: dict[str, int] = {}
+    skip_reason_counts: dict[str, int] = {}
+    chunks_with_decision = 0
+    recovered_legacy_skip = 0
+    stale_legacy_skip = 0
+    for metadata, flags in admission_rows:
+        metadata = metadata or {}
+        flags = flags or {}
+        admission = metadata.get("content_admission")
+        if isinstance(admission, dict):
+            chunks_with_decision += 1
+            channels = admission.get("channels")
+            if isinstance(channels, dict):
+                for source, detail in channels.items():
+                    source_counts[str(source)] = source_counts.get(str(source), 0) + 1
+                    status = (
+                        str(detail.get("status") or "unknown")
+                        if isinstance(detail, dict)
+                        else "unknown"
+                    )
+                    channel_status_counts[status] = (
+                        channel_status_counts.get(status, 0) + 1
+                    )
+        if metadata.get("legacy_visual_ocr_skip_recovered") is True:
+            recovered_legacy_skip += 1
+        reason = str(
+            flags.get("skip_reason")
+            or flags.get("embedding_skip_reason")
+            or metadata.get("skip_reason")
+            or metadata.get("embedding_skip_reason")
+            or ""
+        ).strip()
+        if reason:
+            skip_reason_counts[reason] = skip_reason_counts.get(reason, 0) + 1
+        if reason == "visual_ocr_quarantine":
+            stale_legacy_skip += 1
     missing = max(total - embedded, 0)
     return {
         **identity,
@@ -701,6 +778,15 @@ def _status_payload(db: Session, filters: list, identity: dict) -> dict:
         "real_missing_chunks": pending,
         "has_context_header_count": has_context_header_count,
         "indexed_content_count": indexed_content_count,
+        "content_admission_summary": {
+            "chunks_with_decision": chunks_with_decision,
+            "chunks_without_decision": max(total - chunks_with_decision, 0),
+            "channel_status_counts": channel_status_counts,
+            "source_counts": source_counts,
+            "recovered_legacy_skip_chunks": recovered_legacy_skip,
+            "stale_legacy_skip_chunks": stale_legacy_skip,
+            "skip_reason_counts": skip_reason_counts,
+        },
         "provider": runtime.provider,
         "model": runtime.model_name,
         "dimension": runtime.dimension or 0,

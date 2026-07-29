@@ -3,6 +3,10 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getChunk, type ChunkItem } from '../api/chunks'
 import { resolveImageUrl } from '../utils/media'
+import {
+  admissionChannelEntries,
+  formatSourceList
+} from '../utils/contentAdmission'
 
 const route = useRoute()
 const router = useRouter()
@@ -17,6 +21,15 @@ const statusText: Record<string, string> = {
 
 const vectorPreview = computed(() => chunk.value?.embedding_index_info?.vector_preview || [])
 const vectorText = computed(() => vectorPreview.value.map((v) => Number(v).toFixed(6)).join(', '))
+const contentAdmission = computed(() => {
+  const metadata = chunk.value?.metadata_json || chunk.value?.metadata || {}
+  const value = metadata.content_admission
+  return value && typeof value === 'object' ? value as Record<string, unknown> : null
+})
+const admissionChannels = computed(() => {
+  const channels = contentAdmission.value?.channels
+  return admissionChannelEntries(channels)
+})
 
 function imageUrl(info?: Record<string, unknown>) {
   return resolveImageUrl(info)
@@ -103,6 +116,21 @@ onMounted(async () => {
           </dl>
           <h3>索引文本</h3>
           <pre class="content-block">{{ chunk.embedding_index_info?.indexed_content_preview || '-' }}</pre>
+          <div v-if="contentAdmission" class="vector-panel">
+            <h3>字段级索引准入</h3>
+            <dl class="details compact-details">
+              <dt>决策版本</dt><dd>{{ contentAdmission.version || '-' }}</dd>
+              <dt>最终决策</dt><dd>{{ contentAdmission.decision === 'index' ? '参与索引' : '不参与索引' }}</dd>
+              <dt>索引来源</dt><dd>{{ formatSourceList(contentAdmission.index_sources) }}</dd>
+              <dt>辅助保留来源</dt><dd>{{ formatSourceList(contentAdmission.shadow_sources) }}</dd>
+              <dt>恢复旧隔离标记</dt><dd>{{ contentAdmission.legacy_visual_ocr_skip_recovered ? '是' : '否' }}</dd>
+            </dl>
+            <div v-for="[source, detail] in admissionChannels" :key="source" class="card subtle-card">
+              <strong>{{ source }} · {{ detail.status || 'unknown' }}</strong>
+              <p class="text-muted">{{ detail.char_count || 0 }} 字符</p>
+              <pre class="content-block">{{ detail.preview || '-' }}</pre>
+            </div>
+          </div>
           <div class="vector-panel">
             <div class="page-header small-header">
               <h3>向量预览</h3>

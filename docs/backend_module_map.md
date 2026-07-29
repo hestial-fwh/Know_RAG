@@ -66,21 +66,24 @@ rebuild_document_chunks (chunk_service.py)
 
 ```
 embed_document / embed_chunks (embedding_service.py)
-  ├─> build_embedding_content (embedding/embedding_content_builder.py) [NEW]
-  │     ├─> _semantic_body_from_chunk (text/image/table/equation/code)
+  ├─> build_content_admission (embedding/embedding_content_builder.py)
+  │     ├─> _content_channels_from_chunk (native/parser/caption/VLM/OCR/table)
+  │     ├─> field-level index_sources / shadow_sources
   │     ├─> _semantic_body_from_structure_text (directory tree)
-  │     └─> _truncate_embedding_content
+  │     └─> shared embedding/BM25 final content
   ├─> embed_text (embedding_service.py)
   │     ├─> _embed_text_ollama
   │     └─> _embed_text_openai_compatible
-  └─> _upsert_embedding (embedding_service.py → vector_store_adapters)
+  ├─> _upsert_embedding (embedding_service.py → vector_store_adapters)
+  └─> sync_document_index (keyword_index_service.py)
 ```
 
 **Modules:**
 | Module | File | Lines | Responsibilities |
 |--------|------|-------|-----------------|
 | Embedding facade | `embedding_service.py` | 609 | Runtime management, batch orchestration, DB |
-| Content builder | `embedding/embedding_content_builder.py` | 209 | chunk → embedding text (NEW, pure) |
+| Content admission | `embedding/embedding_content_builder.py` | — | Chunk 字段来源 → 统一 embedding/BM25 文本与可解释诊断（纯逻辑） |
+| Keyword index | `keyword_index_service.py` | — | 消费共享准入结果，写入 Elasticsearch 并刷新修复后的文档 |
 | Vector store | `vector_store_adapters.py` | — | pgvector / Qdrant / Milvus upsert |
 
 ## Retrieval Flow

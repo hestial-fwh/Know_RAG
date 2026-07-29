@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { normalizeFileUrl } from '../utils/media'
+import { formatCountMap } from '../utils/contentAdmission'
 import {
   embedDocument,
   getDocument,
@@ -37,6 +38,7 @@ statusText.chunk_failed = '解析完成，切片失败'
 
 const stats = computed(() => doc.value?.parse_statistics || {})
 const chunkTypeCounts = computed(() => stats.value.chunk_type_counts || {})
+const admissionSummary = computed(() => embeddingStatus.value?.content_admission_summary)
 const actualParser = computed(() => stats.value.parser_actual || stats.value.parser || '-')
 const parserNotice = computed(() => {
   if (stats.value.fallback_used) {
@@ -243,6 +245,27 @@ onMounted(async () => {
         <dt>创建时间</dt><dd>{{ doc.created_at }}</dd>
         <dt>更新时间</dt><dd>{{ doc.updated_at }}</dd>
       </dl>
+      <div v-if="admissionSummary" class="card subtle-card">
+        <h3>索引准入（DCP-4R）</h3>
+        <dl class="details">
+          <dt>已有准入决策</dt>
+          <dd>{{ admissionSummary.chunks_with_decision }}/{{ embeddingStatus?.total_chunks || 0 }}</dd>
+          <dt>内容来源</dt>
+          <dd>{{ formatCountMap(admissionSummary.source_counts) }}</dd>
+          <dt>通道状态</dt>
+          <dd>{{ formatCountMap(admissionSummary.channel_status_counts) }}</dd>
+          <dt>已恢复旧隔离标记</dt>
+          <dd>{{ admissionSummary.recovered_legacy_skip_chunks || 0 }}</dd>
+          <dt>仍残留旧隔离标记</dt>
+          <dd>
+            <span :class="['tag', admissionSummary.stale_legacy_skip_chunks ? 'tag-warn' : 'tag-ok']">
+              {{ admissionSummary.stale_legacy_skip_chunks || 0 }}
+            </span>
+          </dd>
+          <dt>当前跳过原因</dt>
+          <dd>{{ formatCountMap(admissionSummary.skip_reason_counts) }}</dd>
+        </dl>
+      </div>
       <p class="text-muted">重新解析后将使用新的文档处理链路；解析工作台默认不自动向量化，确认切片无误后可手动点击"生成向量"。如果切片入库失败，也可以进入解析工作台查看已识别的解析块。</p>
     </div>
   </section>

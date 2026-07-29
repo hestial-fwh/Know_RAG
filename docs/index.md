@@ -28,11 +28,14 @@
 - `minio_storage.md`：MinIO 对象存储边界。
 - `mineru_docker.md`：MinerU 容器部署说明。
 - `image_chunk_binding_plan.md`：MinerU 主链路显式图文绑定 Current 契约，包含 P4 occurrence metadata、P5 scoped expansion 与双开关。
-- `document_profile_parse_chunk_plan.md`：文档/页面/块三级画像、页面主视觉保护、差异化切分和 OCR 索引策略实施方案；DCP-3 已通过，DCP-4 已完成。
+- `document_profile_parse_chunk_plan.md`：多模态文档融合的权威路线图，覆盖页面主视觉、页内多作品
+  区域与文本归属、内容来源、多轴画像、差异化切分、字段级索引准入、前端验收和自动 replay；
+  DCP-0～3、DCP-4R 已通过，DCP-4 初版保留为 FAIL 记录，下一阶段为 DCP-0.1。
 - `pipeline_audit.md`：文档解析与切片流水线健壮性及可用性审计报告，包含 SPOF 分析、风险矩阵和优先修复建议。
 - `document_content_view_plan.md`：文档内容查看页面（DocumentContentView）规划，从 MinIO 直接展示原始文档（PDF/图片/文本内联渲染），支持下载。
 - `document_relation_graph_feasibility.md`：通用文档关系层的代码审查、问题清单、可行性评级、目标架构与统一数据模型（Draft）。
-- `document_relation_graph_phased_plan.md`：关系图 Phase 0-6 的依赖、开关、测试、迁移、回滚与 PASS/FAIL 计划；Phase 3 已通过，Phase 4 可开始。
+- `document_relation_graph_phased_plan.md`：关系图 Phase 0-6 的依赖、开关、测试、迁移、回滚与
+  PASS/FAIL 计划；Phase 3 已通过，Phase 4 的代码前置条件已满足，但按多模态融合 DCP-7 门禁暂缓。
 - `document_relation_graph_acceptance_tests.md`：18 类固定标注样例、关系状态/evidence 契约与分层验收矩阵；合成契约已冻结。
 - `document_relation_phase0_baseline.md`：160 页确定性生成语料、五层 replay 与覆盖率；现包含 Phase 3 group/shared 合成指标。
 - `backend/app/integrations/mcp/README.md`：MCP 工具与传输层契约。

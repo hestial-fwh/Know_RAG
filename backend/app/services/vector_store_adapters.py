@@ -111,6 +111,15 @@ def _qdrant_upsert(db: Session, config: VectorStoreConfig, chunk: Chunk, vector:
     client.upsert(collection_name=collection, points=[PointStruct(id=chunk.id, vector=vector, payload=payload)])
 
 
+def _qdrant_delete(config: VectorStoreConfig, chunk_id: str) -> None:
+    client = _qdrant_client(config)
+    client.delete(
+        collection_name=_collection_name(config),
+        points_selector=[chunk_id],
+        wait=True,
+    )
+
+
 def _qdrant_search(config: VectorStoreConfig, kb_id: str, query_vector: list[float], top_k: int) -> list[VectorHit]:
     from qdrant_client.models import FieldCondition, Filter, MatchValue
 
@@ -175,6 +184,14 @@ def _milvus_upsert(db: Session, config: VectorStoreConfig, chunk: Chunk, vector:
     client.upsert(collection_name=collection, data=data)
 
 
+def _milvus_delete(config: VectorStoreConfig, chunk_id: str) -> None:
+    client = _milvus_client(config)
+    client.delete(
+        collection_name=_collection_name(config),
+        ids=[chunk_id],
+    )
+
+
 def _milvus_search(config: VectorStoreConfig, kb_id: str, query_vector: list[float], top_k: int) -> list[VectorHit]:
     client = _milvus_client(config)
     collection = _collection_name(config)
@@ -210,6 +227,35 @@ def upsert_external_vector(db: Session, chunk: Chunk, vector: list[float], conte
             logger.info("Unsupported external vector provider=%s; skip upsert", provider)
     except Exception as exc:
         logger.warning("External vector upsert failed provider=%s chunk_id=%s: %s", provider, chunk.id, exc)
+        if strict:
+            raise
+
+
+def delete_external_vector(db: Session, chunk_id: str) -> None:
+    """Best-effort removal from the active external vector index."""
+
+    config = get_active_vector_config(db)
+    if not is_external_provider(config):
+        return
+    provider = (config.provider or "").lower()
+    strict = bool((config.config or {}).get("strict_external_index", False))
+    try:
+        if provider == "qdrant":
+            _qdrant_delete(config, chunk_id)
+        elif provider in {"milvus", "zilliz"}:
+            _milvus_delete(config, chunk_id)
+        else:
+            logger.info(
+                "Unsupported external vector provider=%s; skip delete",
+                provider,
+            )
+    except Exception as exc:
+        logger.warning(
+            "External vector delete failed provider=%s chunk_id=%s: %s",
+            provider,
+            chunk_id,
+            exc,
+        )
         if strict:
             raise
 

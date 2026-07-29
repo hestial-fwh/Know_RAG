@@ -138,6 +138,23 @@ DCP-3 由默认关闭的 `DOCUMENT_ADAPTIVE_CHUNK_POLICY_ENABLED` 控制。开�
 关闭开关时全部策略退回 shadow，切分保持原 Canonical 全局路径。DCP-3 不改变 OCR/BM25/
 embedding 准入，相关隔离仍属于 DCP-4。
 
+DCP-4 初版的整 Chunk OCR 隔离已由 DCP-4R 替换。当前 `ContentAdmissionResult` 按
+native/parser text、caption、VLM、image/table content 和 visual OCR 分通道合成内容；页面级
+`chunk_policy_image_ocr_mode=shadow_auxiliary` 只隔离明确的 `visual_ocr` 字段，不影响同页可靠
+文本、图片及描述。Canonical 图片 `content` 中的章节、脚注、上下文、描述和图片文字标签会先
+拆成独立通道，避免在隔离 OCR 时丢失可靠的关联文本。embedding 三个入口与 Elasticsearch BM25
+共用该合成器；当准入结果为空时会禁用旧 PostgreSQL embedding、删除外部向量点，外部向量命中
+也必须存在启用的本地 embedding 才能进入结果。重新向量化会清除
+历史 `skip_reason=visual_ocr_quarantine`，持久化 `metadata_json.content_admission` 诊断，并在
+提交后刷新该文档关键词索引。旧 `DOCUMENT_VISUAL_OCR_QUARANTINE_ENABLED` 作为兼容触发器保留，
+新部署使用 `DOCUMENT_FIELD_CONTENT_ADMISSION_ENABLED`；两者关闭时保持旧的全字段索引兼容行为。
+详细门禁和真实回放结果以 `document_profile_parse_chunk_plan.md` 为准。
+
+当前 Canonical 能保存同页多个图片 asset，但尚未实现通用的页内 `LayoutRegion / VisualItem`
+作品单元解析；`page_primary_visual` 仍只是整页漏图保护，不能代表一页只有一个作品。规划中的
+DCP-1.1 将基于 parser/PDF bbox、轻量 OpenCV 布局证据和保守关系状态建立多作品单元；在该阶段
+PASS 前，不应把同页全部图片和穿插文本确定性合并为一个作品 parent。
+
 ## 代码边界
 
 - `api/`：鉴权后的 HTTP 路由和参数绑定。

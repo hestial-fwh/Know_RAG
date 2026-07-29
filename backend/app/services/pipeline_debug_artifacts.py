@@ -340,6 +340,9 @@ class DebugRun:
                 "document_visual_ocr_quarantine_enabled": bool(
                     settings.document_visual_ocr_quarantine_enabled
                 ),
+                "document_field_content_admission_enabled": bool(
+                    settings.document_field_content_admission_enabled
+                ),
                 "document_visual_section_parent_enabled": bool(
                     settings.document_visual_section_parent_enabled
                 ),
