@@ -1,6 +1,6 @@
 # 多模态文档融合：画像、解析、切分与索引分阶段方案
 
-> 状态：DCP-0～DCP-3、DCP-4R、DCP-0.1 PASS；DCP-4 初版保留为 FAIL 记录，下一阶段为 DCP-1.1
+> 状态：DCP-0～DCP-3、DCP-4R、DCP-0.1、DCP-1.1 PASS；DCP-4 初版保留为 FAIL 记录，下一阶段为 DCP-2.1
 > 编写日期：2026-07-23  
 > 最近审查：2026-07-28
 > 适用范围：当前 `know_rag` 主分支  
@@ -807,11 +807,11 @@ artifact hash、画像、策略、Chunk 边界和准入结果确定。
 - `coverage.json` 与 `coverage.html` 同时输出 case/gold/actual/diff 和复现命令；
 - 解析评测插件新增 `/parse-eval/datasets/document-profile` 可视化页及只读 API；
 - 数据门禁、旧生产基线和确定性测试均通过；报告保持
-  `accuracy_claim_allowed=false`，布局 actual 明确显示“pending DCP-1.1”，不伪造能力。
+  `accuracy_claim_allowed=false`；DCP-1.1 完成后，布局 actual 已展示实际 region/item/relation。
 
 ### DCP-1.1：页内视觉区域与作品单元
 
-**依赖：DCP-0.1 PASS。状态：未开始。**
+**依赖：DCP-0.1 PASS。状态：PASS（2026-07-29）。**
 
 目标是将“一页多个书法、画作或其他图片”表达为多个可追踪作品单元，并把页内文本保守地关联到
 单个作品、多个作品或页面上下文。该阶段只建立区域、候选关系和证据，不执行高风险 OCR 删除，也
@@ -882,6 +882,39 @@ frontend/e2e/document-layout-acceptance.spec.ts
 3. 普通论文和单作品页面相对 DCP-1 的 asset 数、原生文本和索引候选不减少；
 4. 不可分割样例全部走保守 fallback，并提供非空 reason/evidence；
 5. 前端可逐页复核区域、分组、关系状态及下游 parent 候选。
+
+实际交付：
+
+- 新增确定性 `document_visual_item_resolver.py`，输出稳定 ID 的 `LayoutRegion`、
+  `VisualItem` 和 `VisualTextRelation`，坐标统一为 `normalized_page`；
+- 局部 asset 与整页 fallback 同时存在时，局部 asset 形成作品单元，整页区域保留
+  `duplicate_fallback` provenance；没有可靠内部分隔时只生成
+  `unsegmented_page_visual`；
+- 对同一整页栅格的多个候选作品，image chunk 保存 `visual_item_ids/statuses` 列表，
+  不伪造一对一归属；只有唯一作品时才写单值 `visual_item_id`；
+- 文本关系支持 `caption / inscription / shared_context / ambiguous / unbound`，长正文和
+  多个同等级候选均保守降级，不删除文本、图片或既有 Chunk；
+- Canonical artifact 的 `stats_json.document_visual_layout` 与
+  `GET /api/v1/documents/{id}/visual-layout` 提供同 revision 只读验收数据；
+- `DocumentContentView` 提供“布局验收”模式：逐页显示归一化 visual/text bbox、作品编号、
+  fallback、歧义/未绑定统计和关系明细；当前为坐标示意图，后续 DCP-5.1 再补原 PDF 页面底图
+  与关系连线；
+- `DOCUMENT_VISUAL_ITEM_RESOLUTION_ENABLED` 默认关闭；关闭时仍生成 shadow artifact 和验收
+  数据，但不改变准入、切分或检索；
+- `coverage.json/html` 新增 `document_visual_items_dcp11` 门禁，`VI-01`～`VI-10` 的作品数、
+  caption/作品目标、unbound/ambiguous、重复 fallback、分割候选、不可分割回退和正文守卫
+  全部逐条通过；
+- 多个重叠整页 fallback 合并为一个作品单元并保留全部 asset/source provenance；普通
+  `body_text` 不再仅凭字符数和几何位置被强绑为 caption/inscription；
+- 布局 API 使用轻量页面索引加 `page_no` 单页载荷，前端只在用户进入验收模式后请求；
+- 自动化验收覆盖同 seed 确定性、API 紧凑资产合同和一张栅格对应多个 VisualItem 的 chunk
+  元数据合同。
+
+阶段边界：
+
+- 本阶段只解决结构识别和保守归属，尚未解决“书法笔画被 OCR 成普通正文并进入索引”；
+- OCR 来源、质量分数、`trusted/auxiliary/shadow/rejected` 准入由 DCP-2.1 实现；
+- VisualItem 尚未改变 parent 边界，作品级差异切分由 DCP-3.1 接入。
 
 ### DCP-2.1：多轴画像与 OCR 可信度
 
@@ -1223,13 +1256,14 @@ artifact 和旧 chunk 混合。
 |---:|---|---|---|---|
 | 1 | DCP-4R | PASS | 字段级准入、存量恢复、首个前端准入卡 | 已满足 |
 | 2 | DCP-0.1 | PASS | 41 页数据集、MinerU replay、gold、JSON/HTML 和验收页 | 已满足 |
-| 3 | DCP-1.1 | 下一阶段 | 页内区域、Visual Item、文本归属和布局叠加图 | 多作品不重复、不混合、不强绑歧义 |
-| 4 | DCP-2.1 | 未开始 | 多轴画像、OCR 连续评分、uncertain | shadow replay 无可靠内容丢失 |
+| 3 | DCP-1.1 | PASS | 页内区域、Visual Item、文本归属和布局验收图 | 已满足 |
+| 4 | DCP-2.1 | 下一阶段 | 多轴画像、OCR 连续评分、uncertain | shadow replay 无可靠内容丢失 |
 | 5 | DCP-3.1 | 未开始 | 边界/parent/准入策略解耦 | 普通文本零差异、边界报告 PASS |
 | 6 | DCP-5.1 | 未开始 | 统一前端验收台、只读聚合 API | API/UI/E2E 闭环 PASS |
 | 7 | DCP-6 | 未开始 | 检索评估、知识库灰度和回滚 | 真实样本门槛与回滚演练 PASS |
 | 8 | DCP-7 | 门禁等待 | 恢复 relation graph Phase 4 | 上游四项稳定门禁全部满足 |
 
-下一工作项是 **DCP-1.1**：消费已经冻结的 `VI-01`～`VI-10` gold，开发页内区域、
-Visual Item、文本归属和保守降级。DCP-0.1 报告中现有 observed diff 是下一阶段输入，不代表
-真实准确率结论。
+下一工作项是 **DCP-2.1**：在 DCP-1.1 的作品单元和文本关系上，建立
+`layout_kind / semantic_hints / text_origins / ocr_trust` 多轴画像与连续 OCR 质量评分。
+先以 shadow 方式输出字段级准入建议，保证原生文本、caption 和 VLM 描述不会被视觉 OCR
+判断连带隔离。

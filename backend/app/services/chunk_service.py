@@ -66,6 +66,9 @@ from app.services.document_relation.shared_context_resolver import (
     resolve_shared_context_edges,
 )
 from app.services.document_relation_persistence_service import replace_canonical_artifact
+from app.services.document_visual_item_resolver import (
+    resolve_document_visual_layout,
+)
 from app.services.chunker_config_service import runtime_config_from_db
 from app.services.content_cleaning import (
     MIN_CHILD_TEXT_CHARS,
@@ -1184,6 +1187,48 @@ def _rebuild_canonical_weknora_parent_child(
         resolved_policies=resolved_policies,
     )
     save_debug_chunk_plan(plan)
+    page_layout_graph = build_page_layout_graph(
+        assets=plan.assets,
+        provenance_nodes=plan.provenance_nodes,
+    )
+    visual_layout = resolve_document_visual_layout(
+        page_layout_graph,
+        assets=plan.assets,
+        shadow_only=not bool(settings.document_visual_item_resolution_enabled),
+    )
+    visual_layout_payload = visual_layout.to_metadata()
+    asset_visual_items: dict[str, list[dict[str, Any]]] = {}
+    node_visual_relations: dict[str, list[dict[str, Any]]] = {}
+    for page_layout in visual_layout_payload.get("pages") or []:
+        for item in page_layout.get("visual_items") or []:
+            for asset_id in item.get("asset_ids") or []:
+                asset_visual_items.setdefault(str(asset_id), []).append(item)
+        for relation in page_layout.get("text_relations") or []:
+            node_id = str(relation.get("source_node_id") or "")
+            if node_id:
+                node_visual_relations.setdefault(node_id, []).append(relation)
+    for child in plan.children:
+        metadata = dict(child.metadata or {})
+        asset_id = str(metadata.get("asset_id") or "")
+        if asset_id and asset_id in asset_visual_items:
+            items = asset_visual_items[asset_id]
+            metadata["visual_item_ids"] = [
+                item.get("visual_item_id") for item in items
+            ]
+            metadata["visual_item_statuses"] = [
+                item.get("status") for item in items
+            ]
+            metadata["visual_item_page_no"] = items[0].get("page_no")
+            if len(items) == 1:
+                metadata["visual_item_id"] = items[0].get("visual_item_id")
+        relations = [
+            relation
+            for node_id in metadata.get("source_node_ids") or []
+            for relation in node_visual_relations.get(str(node_id), [])
+        ]
+        if relations:
+            metadata["visual_text_relations"] = relations
+        child.metadata = metadata
     relation_graph = None
     phase3_applied = False
     if settings.document_relation_graph_enabled:
@@ -1194,14 +1239,10 @@ def _rebuild_canonical_weknora_parent_child(
         )
         if settings.document_asset_group_enabled:
             try:
-                layout_graph = build_page_layout_graph(
-                    assets=plan.assets,
-                    provenance_nodes=plan.provenance_nodes,
-                )
-                asset_groups = resolve_asset_groups(layout_graph)
+                asset_groups = resolve_asset_groups(page_layout_graph)
                 member_edges = build_member_edges(asset_groups)
                 shared_edges = resolve_shared_context_edges(
-                    layout_graph,
+                    page_layout_graph,
                     asset_groups,
                     assets=plan.assets,
                 )
@@ -1278,6 +1319,7 @@ def _rebuild_canonical_weknora_parent_child(
                     "document_profile_version": document_profile.profile_version,
                     "document_primary_kind": document_profile.primary_kind,
                     "document_profile": document_profile.to_metadata(),
+                    "document_visual_layout": visual_layout_payload,
                     "resolved_chunk_policies": [
                         policy.to_metadata() for policy in resolved_policies
                     ],

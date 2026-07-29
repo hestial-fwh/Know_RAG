@@ -1,7 +1,7 @@
 # Backend
 
 > 状态：Current（后续 Phase 小节为历史增量记录）
-> 维护日期：2026-07-15
+> 维护日期：2026-07-29
 
 后端使用 FastAPI、SQLAlchemy 2.x、Alembic、PostgreSQL、pgvector 和本地 Ollama。
 
@@ -118,6 +118,11 @@ protected patterns 当前保护 fenced code block、Markdown 表格、Markdown �
 parent-child chunking 已实现但默认关闭。开启 `ENABLE_PARENT_CHILD_CHUNKING=true` 后会生成 `parent_text` 和 `text` 两类 chunk；embedding 仍只处理 `chunk_type='text'` 的切片。
 
 所有格式现在统一经过 Canonical Markdown 切分链路；`enable_parent_child` 仅控制是否持久化父上下文，不再切换到另一套按 block 独立切分实现。切片元数据中的 `coordinate_space=normalized_canonical_markdown` 表示 `start_at/end_at` 属于规范化 Markdown 坐标，不等同于原文件字节或页内坐标。
+
+DCP-1.1 在 Canonical parent/child 计划上构建页内视觉布局：`PageLayoutGraph` 归一化 parser/PDF
+bbox，`document_visual_item_resolver` 生成 VisualItem 和保守文本关系。布局结果写入同 revision
+artifact；image child 始终携带 `visual_item_ids/statuses`，只有一对一时才额外携带
+`visual_item_id`。该结构当前不删除 OCR 文本，也不改变 parent 边界或索引准入。
 
 重解析会先在内存中完整构建并校验新切片，非空后才在数据库事务内替换旧切片。解析器失败、空切分或切片入库失败不会清空最后一版可用切片。关键词索引在数据库提交成功后执行“先写入新 chunk id、再清理旧 chunk id”的同步，失败会记录 `keyword_index_status=pending_retry`。
 

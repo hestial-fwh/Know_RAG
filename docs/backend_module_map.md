@@ -197,3 +197,13 @@ The following modules still need future responsibility slicing:
 - `replay.py`：执行 source PDF → MinerU adapter → page visual → Canonical → Chunk 六层回放。
 - `report.py`：保持旧 11 页生产门禁，另输出对抗 case/gold/actual/diff 的 JSON/HTML 报告。
 - `app/plugins/parse_eval/service.py`：只读暴露已生成报告，不在 API 请求中执行生成器。
+
+### DCP-1.1 页内视觉作品
+
+- `app/services/document_visual_item_resolver.py`：消费 `PageLayoutGraph` 和 Canonical assets，
+  生成确定性的 LayoutRegion、VisualItem 和 VisualTextRelation；只增加结构，不删除内容。
+- `app/services/chunk_service.py`：在 Canonical 生产入口生成同 revision 的 visual layout，
+  写入 artifact stats，并把一对一或一对多作品 ID 透传给 child metadata。
+- `app/services/document_service.py`：只读返回 visual layout 和紧凑 asset 映射。
+- `tests/test_document_visual_items_dcp11.py`：覆盖 VI-01～VI-10、保守关系、确定性、API 合同和
+  单栅格多作品 chunk 元数据。

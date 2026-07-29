@@ -9,7 +9,13 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.response import error_response, success_response
-from app.db.models import Chunk, Document, KnowledgeBase, User
+from app.db.models import (
+    Chunk,
+    Document,
+    DocumentCanonicalArtifact,
+    KnowledgeBase,
+    User,
+)
 from app.db.session import SessionLocal
 from app.services.audit_service import record_audit
 from app.services.chunk_service import rebuild_document_chunks, update_knowledge_base_chunk_count
@@ -356,6 +362,94 @@ def get_document(db: Session, doc_id: str):
     if document is None:
         return error_response(f"文档不存在：{doc_id}")
     return success_response(document_to_dict(db, document))
+
+
+def get_document_visual_layout(
+    db: Session,
+    doc_id: str,
+    *,
+    page_no: int | None = None,
+):
+    document = db.get(Document, doc_id)
+    if document is None:
+        return error_response("文档不存在")
+    artifact = db.get(DocumentCanonicalArtifact, doc_id)
+    if artifact is None:
+        return success_response(
+            {
+                "document_id": doc_id,
+                "available": False,
+                "reason": "canonical_artifact_missing",
+                "layout": None,
+            }
+        )
+    layout = (artifact.stats_json or {}).get("document_visual_layout")
+    if not isinstance(layout, dict):
+        return success_response(
+            {
+                "document_id": doc_id,
+                "available": False,
+                "reason": "visual_layout_not_generated",
+                "parse_revision": artifact.parse_revision,
+                "layout": None,
+            }
+        )
+    layout_pages = [
+        page
+        for page in layout.get("pages") or []
+        if isinstance(page, dict) and page.get("page_no") is not None
+    ]
+    available_pages = [
+        {
+            "page_no": page.get("page_no"),
+            "extent_source": page.get("extent_source"),
+            "fallback_reason": page.get("fallback_reason"),
+            "summary": page.get("summary") or {},
+        }
+        for page in layout_pages
+    ]
+    selected_pages = (
+        [
+            page
+            for page in layout_pages
+            if int(page.get("page_no")) == page_no
+        ]
+        if page_no is not None
+        else []
+    )
+    selected_asset_ids = {
+        str(asset_id)
+        for page in selected_pages
+        for item in page.get("visual_items") or []
+        for asset_id in item.get("asset_ids") or []
+    }
+    assets = {
+        str(item.get("asset_id") or ""): {
+            "asset_id": item.get("asset_id"),
+            "page_no": item.get("page_no"),
+            "caption": item.get("caption"),
+            "image_url": item.get("image_url"),
+            "image_path": item.get("image_path"),
+            "bbox": item.get("bbox"),
+            "visual_role": (item.get("metadata") or {}).get("visual_role"),
+        }
+        for item in (artifact.assets_json or {}).get("items") or []
+        if str(item.get("asset_id") or "") in selected_asset_ids
+    }
+    response_layout = {**layout, "pages": selected_pages}
+    return success_response(
+        {
+            "document_id": doc_id,
+            "available": True,
+            "parse_revision": artifact.parse_revision,
+            "algorithm_version": layout.get("algorithm_version"),
+            "shadow_only": layout.get("shadow_only", True),
+            "requested_page_no": page_no,
+            "available_pages": available_pages,
+            "layout": response_layout,
+            "assets": assets,
+        }
+    )
 
 
 def delete_document(db: Session, actor: User, doc_id: str):

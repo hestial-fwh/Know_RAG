@@ -324,3 +324,14 @@ chunk 返回新增或补齐：
   - 只读返回本地生成的 manifest、覆盖率报告、30 个对抗 case 的 gold/actual/diff 和产物路径；
   - 未生成数据集时返回 `available=false` 及复现命令，不触发后台生成；
   - 合成报告始终保留 `accuracy_claim_allowed=false`。
+
+### DCP-1.1 文档视觉布局验收
+
+- `GET /api/v1/documents/{document_id}/visual-layout`
+  - 需要登录，只读；
+  - Canonical artifact 尚未生成时返回 `available=false` 和原因，不触发重新解析；
+  - 不带 `page_no` 时只返回 `available_pages`、文档级 summary 和空的 `layout.pages`；
+  - `page_no` 为可选整数；指定后只返回该页的 `LayoutRegion`、`VisualItem`、
+    `VisualTextRelation` 和该页引用的紧凑 asset 映射；
+  - `shadow_only=true` 表示结果仅用于验收，不改变内容准入、切分或检索；
+  - asset 映射只包含页面、caption、图片地址、bbox 和 visual role，不返回 OCR 全文等无关字段。

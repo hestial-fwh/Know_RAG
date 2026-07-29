@@ -60,15 +60,16 @@ def _text(
     relation: str = "",
     ocr_quality: str = "",
 ) -> BlockSpec:
+    effective_role = "caption" if relation == "caption" and role == "body_text" else role
     return _block(
         case_id,
         suffix,
         "text",
         bbox,
         text=text,
-        role=role,
+        role=effective_role,
         native_pdf_text=native,
-        expected_semantic_role=role,
+        expected_semantic_role=effective_role,
         expected_visual_item_id=item,
         expected_relation=relation,
         ocr_quality=ocr_quality,
@@ -323,8 +324,16 @@ def _layout_pages() -> tuple[PageSpec, ...]:
         item: str,
         *,
         kind: str = "calligraphy",
+        caption: str = "",
     ):
-        return _image(case, suffix, bbox, item=item, kind=kind)
+        return _image(
+            case,
+            suffix,
+            bbox,
+            item=item,
+            kind=kind,
+            caption=caption,
+        )
 
     layouts: tuple[tuple[str, tuple[BlockSpec, ...], tuple[dict, ...]], ...] = (
         (
@@ -394,7 +403,13 @@ def _layout_pages() -> tuple[PageSpec, ...]:
         (
             "VI-06",
             (
-                visual("VI-06", "fallback", (10, 10, 602, 782), "fallback"),
+                visual(
+                    "VI-06",
+                    "fallback",
+                    (10, 10, 602, 782),
+                    "fallback",
+                    caption="Full page fallback",
+                ),
                 visual("VI-06", "local-1", (45, 60, 285, 700), "item-1"),
                 visual("VI-06", "local-2", (327, 60, 567, 700), "item-2"),
             ),
@@ -409,21 +424,44 @@ def _layout_pages() -> tuple[PageSpec, ...]:
                     (10, 10, 602, 782),
                     "fallback",
                     kind="split_album",
+                    caption="Two-panel raster page",
                 ),
             ),
             ({"id": "candidate-left"}, {"id": "candidate-right"}),
         ),
         (
             "VI-08",
-            (visual("VI-08", "page", (10, 10, 602, 782), "item-1"),),
+            (
+                visual(
+                    "VI-08",
+                    "page",
+                    (10, 10, 602, 782),
+                    "item-1",
+                    caption="Unsegmented full page artwork",
+                ),
+            ),
             ({"id": "item-1", "status": "unsegmented_page_visual"},),
         ),
         (
             "VI-09",
             (
                 visual("VI-09", "figure", (55, 210, 557, 610), "item-1"),
-                _text("VI-09", "body-1", (45, 35, 567, 190), "Academic body paragraph. " * 14, native=True),
-                _text("VI-09", "body-2", (45, 625, 567, 755), "Discussion continues after the figure. " * 10, native=True),
+                _text(
+                    "VI-09",
+                    "body-1",
+                    (45, 35, 567, 190),
+                    "Academic body paragraph. " * 14,
+                    native=True,
+                    relation="unbound",
+                ),
+                _text(
+                    "VI-09",
+                    "body-2",
+                    (45, 625, 567, 755),
+                    "Discussion continues after the figure. " * 10,
+                    native=True,
+                    relation="unbound",
+                ),
             ),
             ({"id": "item-1"},),
         ),

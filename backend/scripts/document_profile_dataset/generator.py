@@ -11,7 +11,7 @@ from scripts.document_relation_dataset.pdf_writer import (
     PdfText,
     write_pdf,
 )
-from scripts.document_relation_dataset.raster import make_asset, write_png
+from scripts.document_relation_dataset.raster import Raster, make_asset, write_png
 
 from .models import BlockSpec, DocumentSpec, PageSpec
 from .templates import (
@@ -31,7 +31,12 @@ def _json(path: Path, value: Any) -> None:
     )
 
 
-def _raw_item(block: BlockSpec, page: PageSpec) -> dict[str, Any]:
+def _raw_item(
+    block: BlockSpec,
+    page: PageSpec,
+    *,
+    derived_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     raw_type = block.block_type
     if block.role == "heading":
         raw_type = "title"
@@ -56,11 +61,48 @@ def _raw_item(block: BlockSpec, page: PageSpec) -> dict[str, Any]:
         item["text"] = block.text
         if block.role == "heading":
             item["text_level"] = 1
+    for key, value in {**block.metadata, **(derived_metadata or {})}.items():
+        item.setdefault(str(key), value)
     return item
 
 
 def _asset_seed(seed: int, document_index: int, page_no: int, block_index: int) -> int:
     return seed + document_index * 100_000 + page_no * 1_003 + block_index * 37
+
+
+def _vertical_whitespace_candidates(raster: Raster) -> list[list[float]]:
+    """Detect a strong internal vertical whitespace separator without OpenCV."""
+
+    white_columns: list[bool] = []
+    for x in range(raster.width):
+        white = 0
+        for y in range(raster.height):
+            offset = (y * raster.width + x) * 3
+            if min(raster.pixels[offset : offset + 3]) >= 248:
+                white += 1
+        white_columns.append(white / max(raster.height, 1) >= 0.96)
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    for index, is_white in enumerate([*white_columns, False]):
+        if is_white and start is None:
+            start = index
+        elif not is_white and start is not None:
+            runs.append((start, index))
+            start = None
+    internal = [
+        run
+        for run in runs
+        if run[1] - run[0] >= raster.width * 0.04
+        and run[0] >= raster.width * 0.2
+        and run[1] <= raster.width * 0.8
+    ]
+    if not internal:
+        return []
+    left, right = max(internal, key=lambda run: run[1] - run[0])
+    return [
+        [0.0, 0.0, round(left / raster.width, 6), 1.0],
+        [round(right / raster.width, 6), 0.0, 1.0, 1.0],
+    ]
 
 
 def _write_document(
@@ -78,6 +120,7 @@ def _write_document(
         texts: list[PdfText] = []
         images: list[PdfImage] = []
         for block_index, block in enumerate(page.blocks):
+            derived_metadata: dict[str, Any] = {}
             if block.block_type == "image":
                 raster = make_asset(
                     block.asset_kind or "album",
@@ -95,6 +138,18 @@ def _write_document(
                         "bbox": list(block.bbox),
                     }
                 )
+                whitespace_candidates = (
+                    _vertical_whitespace_candidates(raster)
+                    if block.asset_kind == "split_album"
+                    else []
+                )
+                if whitespace_candidates:
+                    derived_metadata = {
+                        "layout_region_candidates": whitespace_candidates,
+                        "layout_candidate_method": (
+                            "raster_vertical_whitespace_projection"
+                        ),
+                    }
             if block.native_pdf_text and block.text:
                 texts.append(
                     PdfText(
@@ -104,7 +159,13 @@ def _write_document(
                     )
                 )
             if block.parser_output:
-                raw_items.append(_raw_item(block, page))
+                raw_items.append(
+                    _raw_item(
+                        block,
+                        page,
+                        derived_metadata=derived_metadata,
+                    )
+                )
         pdf_pages.append(
             PdfPage(
                 width=PAGE_WIDTH,

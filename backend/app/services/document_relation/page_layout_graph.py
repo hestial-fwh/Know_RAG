@@ -92,6 +92,7 @@ class PageLayoutNode:
     normalized_bbox: BBox | None
     section_path: str = ""
     semantic_role: str = ""
+    source_block_id: str = ""
     text: str = ""
     asset_id: str = ""
     exclude_from_asset_group: bool = False
@@ -184,6 +185,9 @@ def build_page_layout_graph(
                         or asset_metadata.get("semantic_role")
                         or "figure"
                     ),
+                    source_block_id=str(
+                        asset_metadata.get("source_block_id") or ""
+                    ),
                     text=str(getattr(asset, "caption", "") or ""),
                     asset_id=str(asset.asset_id),
                     exclude_from_asset_group=bool(
@@ -207,6 +211,9 @@ def build_page_layout_graph(
                     normalized_bbox=normalize_layout_bbox(raw_bbox, extent),
                     section_path=str(getattr(node, "section_path", "") or ""),
                     semantic_role=str(getattr(node, "semantic_role", "") or ""),
+                    source_block_id=str(
+                        getattr(node, "source_block_id", "") or ""
+                    ),
                     text=str(getattr(node, "canonical_text", "") or ""),
                 )
             )

@@ -44,6 +44,95 @@ def _media_crop_closure() -> dict[str, Any]:
     }
 
 
+def _visual_relation_checks(
+    gold_page: dict[str, Any],
+    actual_layout: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    policies = gold_page.get("block_policies") or []
+    item_asset_blocks: dict[str, set[str]] = {}
+    for policy in policies:
+        item_id = str(policy.get("expected_visual_item_id") or "")
+        relation = str(policy.get("expected_relation") or "")
+        block_id = str(policy.get("block_id") or "")
+        if item_id and block_id and not relation:
+            item_asset_blocks.setdefault(item_id, set()).add(block_id)
+    actual_items = {
+        str(item.get("visual_item_id") or ""): set(
+            str(value)
+            for value in item.get("source_block_ids") or []
+            if str(value)
+        )
+        for item in actual_layout.get("visual_items") or []
+        if item.get("visual_item_id")
+    }
+    relations_by_block = {
+        str(relation.get("source_block_id") or ""): relation
+        for relation in actual_layout.get("text_relations") or []
+        if relation.get("source_block_id")
+    }
+    checks: list[dict[str, Any]] = []
+    diffs: list[str] = []
+    for policy in policies:
+        expected_relation = str(policy.get("expected_relation") or "")
+        if not expected_relation:
+            continue
+        block_id = str(policy.get("block_id") or "")
+        expected_item_id = str(policy.get("expected_visual_item_id") or "")
+        relation = relations_by_block.get(block_id)
+        passed = relation is not None
+        reason = ""
+        if relation is None:
+            reason = "missing_relation"
+        elif expected_relation == "unbound":
+            passed = (
+                relation.get("status") == "unbound"
+                and relation.get("relation_type") == "unbound"
+                and not (relation.get("visual_item_ids") or [])
+            )
+            reason = "" if passed else "expected_unbound"
+        elif expected_relation == "ambiguous":
+            passed = (
+                relation.get("status") == "ambiguous"
+                and relation.get("relation_type")
+                in {"ambiguous", "shared_context"}
+            )
+            reason = "" if passed else "expected_ambiguous"
+        else:
+            target_ids = [
+                str(value) for value in relation.get("visual_item_ids") or []
+            ]
+            actual_target_blocks = {
+                block
+                for target_id in target_ids
+                for block in actual_items.get(target_id, set())
+            }
+            expected_target_blocks = item_asset_blocks.get(
+                expected_item_id,
+                set(),
+            )
+            passed = (
+                relation.get("status") == "bound"
+                and relation.get("relation_type") == expected_relation
+                and bool(expected_target_blocks)
+                and actual_target_blocks == expected_target_blocks
+            )
+            reason = "" if passed else "relation_or_target_mismatch"
+        check = {
+            "block_id": block_id,
+            "expected_relation": expected_relation,
+            "expected_visual_item_id": expected_item_id,
+            "actual_relation": relation,
+            "passed": passed,
+            "reason": reason,
+        }
+        checks.append(check)
+        if not passed:
+            diffs.append(
+                f"visual_relation[{block_id}]: {reason or 'mismatch'}"
+            )
+    return checks, diffs
+
+
 def _adversarial_cases(
     *,
     document: dict[str, Any],
@@ -61,6 +150,11 @@ def _adversarial_cases(
     policies = {
         int(item["page_no"]): item
         for item in stats.get("resolved_chunk_policies") or []
+        if item.get("page_no") is not None
+    }
+    visual_layout_pages = {
+        int(item["page_no"]): item
+        for item in (stats.get("document_visual_layout") or {}).get("pages") or []
         if item.get("page_no") is not None
     }
     chunks_by_page: Counter[int] = Counter()
@@ -94,8 +188,19 @@ def _adversarial_cases(
                 f"{gold_page.get('chunk_policy_id') or 'missing'}"
             )
         expected_items = gold_page.get("expected_visual_items") or []
-        if expected_items:
-            diffs.append("visual_items: pending DCP-1.1 implementation")
+        actual_visual_layout = visual_layout_pages.get(page_no) or {}
+        actual_items = actual_visual_layout.get("visual_items")
+        if expected_items and not isinstance(actual_items, list):
+            diffs.append("visual_items: missing")
+        elif expected_items and len(actual_items) != len(expected_items):
+            diffs.append(
+                f"visual_items: {len(actual_items)} != {len(expected_items)}"
+            )
+        relation_checks, relation_diffs = _visual_relation_checks(
+            gold_page,
+            actual_visual_layout,
+        )
+        diffs.extend(relation_diffs)
         cases.append(
             {
                 "case_id": page["case_id"],
@@ -126,7 +231,11 @@ def _adversarial_cases(
                     "chunk_policy_id": policy.get("policy_id"),
                     "policy_evidence": policy.get("evidence") or {},
                     "chunk_count": chunks_by_page.get(page_no, 0),
-                    "visual_items": None,
+                    "visual_items": actual_items,
+                    "text_relations": actual_visual_layout.get("text_relations"),
+                    "layout_summary": actual_visual_layout.get("summary"),
+                    "fallback_reason": actual_visual_layout.get("fallback_reason"),
+                    "relation_checks": relation_checks,
                 },
                 "diffs": diffs,
                 "status": "observed_diff" if diffs else "matched",
@@ -176,6 +285,7 @@ def _write_html_report(path: Path, report: dict[str, Any]) -> None:
     <div class="metric">对抗场景：{report.get("adversarial_dataset", {}).get("case_count", 0)}</div>
     <div class="metric">混淆组：{report.get("adversarial_dataset", {}).get("confusion_group_count", 0)}</div>
     <div class="metric">数据门禁：{"PASS" if report.get("dcp01_dataset_gate_passed") else "FAIL"}</div>
+    <div class="metric">DCP-1.1 视觉项：{"PASS" if report.get("document_visual_items_dcp11", {}).get("gate_passed") else "FAIL"}</div>
   </div>
   <table>
     <thead><tr><th>Case</th><th>混淆组</th><th>变体</th><th>能力</th><th>Actual 类型</th><th>差异</th></tr></thead>
@@ -562,6 +672,69 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
         if "visual_item_layout" in set(case.get("capabilities") or [])
     }
     expected_visual_item_cases = {f"VI-{index:02d}" for index in range(1, 11)}
+    visual_item_case_map = {
+        case["case_id"]: case
+        for case in adversarial_cases
+        if case["case_id"] in expected_visual_item_cases
+    }
+    visual_item_count_gate = (
+        set(visual_item_case_map) == expected_visual_item_cases
+        and all(
+            len(case["actual"].get("visual_items") or [])
+            == len(case["gold"].get("visual_items") or [])
+            for case in visual_item_case_map.values()
+        )
+    )
+    visual_relation_checks = [
+        check
+        for case in visual_item_case_map.values()
+        for check in case["actual"].get("relation_checks") or []
+    ]
+    visual_relation_gate = (
+        bool(visual_relation_checks)
+        and all(check.get("passed") for check in visual_relation_checks)
+    )
+    vi02_relations = visual_item_case_map.get("VI-02", {}).get("actual", {}).get(
+        "text_relations"
+    ) or []
+    vi06_summary = visual_item_case_map.get("VI-06", {}).get("actual", {}).get(
+        "layout_summary"
+    ) or {}
+    vi07_actual = visual_item_case_map.get("VI-07", {}).get("actual", {})
+    vi08_actual = visual_item_case_map.get("VI-08", {}).get("actual", {})
+    vi09_relations = visual_item_case_map.get("VI-09", {}).get("actual", {}).get(
+        "text_relations"
+    ) or []
+    visual_item_guard_gate = all(
+        (
+            any(relation.get("status") == "ambiguous" for relation in vi02_relations),
+            vi06_summary.get("duplicate_fallback_count") == 1,
+            vi07_actual.get("fallback_reason")
+            == "full_page_raster_split_candidates",
+            {
+                item.get("status")
+                for item in vi07_actual.get("visual_items") or []
+            }
+            == {"candidate"},
+            vi08_actual.get("fallback_reason")
+            == "no_reliable_internal_partition",
+            {
+                item.get("status")
+                for item in vi08_actual.get("visual_items") or []
+            }
+            == {"unsegmented_page_visual"},
+            bool(vi09_relations)
+            and all(
+                relation.get("status") == "unbound"
+                for relation in vi09_relations
+            ),
+        )
+    )
+    visual_item_gate = (
+        visual_item_count_gate
+        and visual_item_guard_gate
+        and visual_relation_gate
+    )
     adversarial_gate = all(
         (
             int(manifest.get("page_count") or 0) >= 32,
@@ -657,6 +830,15 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
             "gate_passed": adaptive_policy_gate,
         },
         "configuration_closure": {"enable_media_crop": media_crop},
+        "document_visual_items_dcp11": {
+            "case_count": len(visual_item_case_map),
+            "expected_cases": sorted(expected_visual_item_cases),
+            "item_count_gate_passed": visual_item_count_gate,
+            "guard_gate_passed": visual_item_guard_gate,
+            "relation_check_count": len(visual_relation_checks),
+            "relation_gate_passed": visual_relation_gate,
+            "gate_passed": visual_item_gate,
+        },
         "adversarial_dataset": {
             "case_count": len(adversarial_cases),
             "capabilities": sorted(capabilities),
@@ -694,6 +876,7 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
             resolved_policy_gate,
             adaptive_policy_gate,
             adversarial_gate,
+            visual_item_gate,
             not failures,
             media_crop["option_recorded"],
             media_crop["runtime_consumer_detected"],

@@ -92,3 +92,16 @@ chunk 详情页继续展示：切片类型、起始位置、结束位置、前�
 `/parse-eval/datasets/document-profile`。页面展示总场景、对抗场景、混淆组和数据门禁，可按
 能力或关键词筛选 case，并展开查看 gold、当前 replay actual、差异与复现产物。该页面不允许把
 合成覆盖率解释为真实 MinerU 准确率。
+
+## DCP-1.1 文档布局验收
+
+PDF 的 `DocumentContentView` 在当前 Canonical artifact 存在视觉布局数据时显示“布局验收”
+开关。验收模式按页展示归一化 visual/text bbox、稳定 VisualItem 编号、作品数、歧义文本、
+未绑定文本、重复 fallback、保守降级原因和关系明细。视觉区域与文本区域可独立开关，点击作品
+可查看其 asset、状态和 evidence。
+
+普通 PDF 查看不预取布局账本；首次点击“布局验收”时先读取轻量页面索引，再按当前页请求完整
+区域和关系。切换页时仅替换单页数据，避免长文档一次返回全部文本节点。
+
+当前画布是归一化坐标示意图，不等同于 PDF 像素级渲染；原 PDF 页面底图、关系连线和来源图层
+筛选留到 DCP-5.1。页面明确展示 `Shadow/Active`，shadow 结果不能被解释为已改变切分或索引。

@@ -74,6 +74,7 @@ class CanonicalSourceNode:
     bbox: tuple[float, float, float, float] | None = None
     section_path: str = ""
     semantic_role: str = ""
+    source_block_id: str = ""
     asset_id: str = ""
     canonical_start: int | None = None
     canonical_end: int | None = None
@@ -91,6 +92,7 @@ class CanonicalSourceNode:
             "bbox": list(self.bbox) if self.bbox else None,
             "section_path": self.section_path,
             "semantic_role": self.semantic_role,
+            "source_block_id": self.source_block_id,
             "asset_id": self.asset_id,
             "canonical_start": self.canonical_start,
             "canonical_end": self.canonical_end,
@@ -765,6 +767,7 @@ def _make_source_node(
         bbox=valid_bbox(block.bbox),
         section_path=_node_section_path(block),
         semantic_role=semantic_role,
+        source_block_id=str(_block_meta(block).get("source_block_id") or ""),
         asset_id=asset_id,
     )
 

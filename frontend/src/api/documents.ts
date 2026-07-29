@@ -77,6 +77,72 @@ export interface DocumentList {
   total: number
 }
 
+export interface VisualLayoutRegion {
+  region_id: string
+  page_no: number
+  region_kind: string
+  normalized_bbox?: number[] | null
+  source: string
+  asset_ids: string[]
+  source_node_ids: string[]
+  status: string
+  evidence: string[]
+}
+
+export interface VisualItemLayout {
+  visual_item_id: string
+  page_no: number
+  normalized_bbox?: number[] | null
+  asset_ids: string[]
+  region_ids: string[]
+  status: string
+  evidence: string[]
+}
+
+export interface VisualTextRelation {
+  relation_id: string
+  page_no: number
+  source_node_id: string
+  visual_item_ids: string[]
+  relation_type: string
+  status: string
+  score: number
+  evidence: string[]
+}
+
+export interface DocumentVisualLayoutResponse {
+  document_id: string
+  available: boolean
+  reason?: string
+  parse_revision?: string
+  algorithm_version?: string
+  shadow_only?: boolean
+  requested_page_no?: number | null
+  available_pages?: Array<{
+    page_no: number
+    extent_source: string
+    fallback_reason: string
+    summary: Record<string, number>
+  }>
+  layout?: {
+    schema_version: number
+    algorithm_version: string
+    coordinate_space: string
+    shadow_only: boolean
+    pages: Array<{
+      page_no: number
+      extent_source: string
+      regions: VisualLayoutRegion[]
+      visual_items: VisualItemLayout[]
+      text_relations: VisualTextRelation[]
+      fallback_reason: string
+      summary: Record<string, number>
+    }>
+    summary: Record<string, number>
+  } | null
+  assets?: Record<string, Record<string, unknown>>
+}
+
 // ── Upload with progress ─────────────────────────────────────────────────────
 
 const API_BASE = import.meta.env.VITE_API_BASE || ''
@@ -147,6 +213,13 @@ export function listDocuments(knowledgeBaseId: string) {
 
 export function getDocument(id: string) {
   return api.get<DocumentItem>(`/api/v1/documents/${id}`)
+}
+
+export function getDocumentVisualLayout(id: string, pageNo?: number) {
+  const query = pageNo === undefined ? '' : `?page_no=${pageNo}`
+  return api.get<DocumentVisualLayoutResponse>(
+    `/api/v1/documents/${id}/visual-layout${query}`
+  )
 }
 
 export function deleteDocument(id: string) {

@@ -343,6 +343,9 @@ class DebugRun:
                 "document_field_content_admission_enabled": bool(
                     settings.document_field_content_admission_enabled
                 ),
+                "document_visual_item_resolution_enabled": bool(
+                    settings.document_visual_item_resolution_enabled
+                ),
                 "document_visual_section_parent_enabled": bool(
                     settings.document_visual_section_parent_enabled
                 ),

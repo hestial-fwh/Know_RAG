@@ -65,11 +65,16 @@ KEYWORD_SEARCH_BACKEND=elasticsearch
 ELASTICSEARCH_URL=http://elasticsearch:9200
 STORAGE_BACKEND=minio
 DOCUMENT_FIELD_CONTENT_ADMISSION_ENABLED=false
+DOCUMENT_VISUAL_ITEM_RESOLUTION_ENABLED=false
 ```
 
 `DOCUMENT_FIELD_CONTENT_ADMISSION_ENABLED=true` 启用 DCP-4R 字段级内容准入。旧
 `DOCUMENT_VISUAL_OCR_QUARANTINE_ENABLED=true` 也会兼容触发相同的字段级行为，不再跳过整个
 Chunk；新部署应使用前者。
+
+`DOCUMENT_VISUAL_ITEM_RESOLUTION_ENABLED` 是 DCP-1.1 状态标记，默认 `false`。无论开关值如何，
+当前版本都会生成只读 visual layout artifact 供验收；关闭时返回 `shadow_only=true`，且不会改变
+内容准入、切分或检索。进入 DCP-3.1 前不应把该开关理解为已启用作品级 parent 切分。
 
 ## 数据库
 

@@ -991,6 +991,7 @@ def _metadata_from_block(block: dict, parser: str) -> dict[str, Any]:
         "bbox",
         "page_width",
         "page_height",
+        "source_block_id",
         "section_path",
         "role",
         "text_level",
@@ -1007,6 +1008,8 @@ def _metadata_from_block(block: dict, parser: str) -> dict[str, Any]:
         "chart_footnote",
         "table_footnote",
         "score",
+        "layout_region_candidates",
+        "layout_candidate_method",
     ]
     meta = {key: block.get(key) for key in keys_to_keep if key in block}
     meta.update({

@@ -1,7 +1,7 @@
 # Know_RAG 项目目录结构与主链路维护手册（最新代码基线）
 
-> **代码基线**：当前工作区（最新提交 a582f73，含 heading 污染修复、跨浮动续写检测与边界调整）
-> **维护日期**：2026-07-28
+> **代码基线**：当前工作区（含 DCP-1.1 页内 VisualItem 与保守文本关系）
+> **维护日期**：2026-07-29
 > **用途**：用于后续项目维护、功能定位、主链路排查、代码重构和新人接手。  
 > **分析原则**：以本次上传代码的**真实调用关系**为准，不以历史设计文档或曾经存在的重构方案代替当前运行时事实。
 
@@ -290,6 +290,7 @@ backend/app/services/
 ├─ model_config_service.py                # 模型配置业务
 ├─ ollama_service.py                      # Ollama 连通/模型辅助
 ├─ content_cleaning.py                    # 文本清洗公共逻辑 + DCP-4 OCR 隔离
+├─ document_visual_item_resolver.py       # DCP-1.1 页内区域、作品单元与保守文本关系 [主链路，shadow]
 ├─ document_relation_persistence_service.py # 关系图 ORM 读写层（纯逻辑包禁止依赖 SQLAlchemy）
 └─ mcp_placeholder_service.py             # 旧占位服务 [预留/非真实 MCP]
 ```

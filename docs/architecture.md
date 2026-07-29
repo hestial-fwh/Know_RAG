@@ -155,10 +155,18 @@ DCP-0.1 的确定性工程数据集现包含 41 个页面场景：11 个旧生�
 JSON/HTML 覆盖率；对抗页的分类和策略差异作为后续 DCP-1.1/DCP-2.1 输入，不参与真实准确率
 声明。解析评测插件只读展示 case/gold/actual/diff，不写生产文档或评测表。
 
-当前 Canonical 能保存同页多个图片 asset，但尚未实现通用的页内 `LayoutRegion / VisualItem`
-作品单元解析；`page_primary_visual` 仍只是整页漏图保护，不能代表一页只有一个作品。规划中的
-DCP-1.1 将基于 parser/PDF bbox、轻量 OpenCV 布局证据和保守关系状态建立多作品单元；在该阶段
-PASS 前，不应把同页全部图片和穿插文本确定性合并为一个作品 parent。
+Canonical 主链路在 parent/child 计划生成后构建 `PageLayoutGraph`，再由
+`document_visual_item_resolver.py` 输出归一化 `LayoutRegion / VisualItem /
+VisualTextRelation`。局部图片优先形成作品单元；与其重复的整页 fallback 只保留
+`duplicate_fallback` provenance；单张整页栅格有可靠分隔候选时可形成多个 candidate，
+没有可靠分隔时只保留 `unsegmented_page_visual`。文本关系支持 caption、inscription、
+shared_context、ambiguous 和 unbound，长正文及等距候选不会被强绑。
+
+结果与 Canonical artifact 使用同一 parse revision，保存在
+`stats_json.document_visual_layout`，并透传到 image/text child metadata。开关
+`DOCUMENT_VISUAL_ITEM_RESOLUTION_ENABLED` 默认关闭；关闭时 resolver 仍输出 shadow
+验收数据，但不改变内容准入、切分或检索。DCP-1.1 已完成结构闭环；书法 OCR 可信度和字段级
+准入仍属于下一阶段 DCP-2.1。
 
 ## 代码边界
 
