@@ -82,6 +82,16 @@ async def get_document_visual_layout(
     return service.get_document_visual_layout(db, id, page_no=page_no)
 
 
+@router.get("/documents/{id}/processing-profile")
+async def get_document_processing_profile(
+    id: str,
+    page_no: int | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    return service.get_document_processing_profile(db, id, page_no=page_no)
+
+
 @router.delete("/documents/{id}")
 async def delete_document(
     id: str,

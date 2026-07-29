@@ -219,6 +219,17 @@ def _ocr_pages() -> tuple[PageSpec, ...]:
             False,
         ),
         (
+            "cjk_semantic_gibberish_ocr",
+            "ocr_quality",
+            "cjk_gibberish",
+            (
+                "皇清洞真道经紫素骑修空本华京板五吉横反胎七元庭玄解重结景祖绝锦青能四秀"
+                "大虚空元景超室九素合重虚帝君静幽谷八真合景君玄太雄雌运玉房九变逍得小形散"
+                "泥丸易分别碑神善光府神梁南事五符引刻金生华日发夜月沈板尸太极元景王三天称神"
+            ),
+            False,
+        ),
+        (
             "mixed_inscription_printed",
             "mixed_text_sources",
             "mixed",

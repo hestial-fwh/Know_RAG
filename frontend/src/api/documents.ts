@@ -222,6 +222,61 @@ export function getDocumentVisualLayout(id: string, pageNo?: number) {
   )
 }
 
+export interface DocumentPageProfileV2 {
+  page_no: number
+  layout_kind: string
+  semantic_hints: string[]
+  text_origins: string[]
+  origin_admission: Record<string, string>
+  ocr_trust_score?: number | null
+  ocr_trust_band: string
+  uncertain: boolean
+  uncertainty_reasons: string[]
+  visual_item_count: number
+  unsegmented_visual: boolean
+  ambiguous_text_count: number
+  native_text_chars: number
+  canonical_text_chars: number
+  parser_text_area_ratio: number
+  dominant_image_ratio: number
+  evidence: Array<Record<string, unknown>>
+}
+
+export interface DocumentProcessingProfileResponse {
+  document_id: string
+  available: boolean
+  reason?: string
+  parse_revision?: string
+  profile_version?: string
+  shadow_only?: boolean
+  requested_page_no?: number | null
+  summary?: {
+    page_count?: number
+    layout_distribution?: Record<string, number>
+    semantic_hints?: string[]
+    text_origin_distribution?: Record<string, number>
+    ocr_trust_distribution?: Record<string, number>
+    uncertain_page_count?: number
+  }
+  evidence?: Array<Record<string, unknown>>
+  available_pages?: Array<{
+    page_no: number
+    layout_kind: string
+    ocr_trust_band: string
+    uncertain: boolean
+    visual_item_count: number
+  }>
+  pages?: DocumentPageProfileV2[]
+  legacy_pages?: Array<Record<string, unknown>>
+}
+
+export function getDocumentProcessingProfile(id: string, pageNo?: number) {
+  const query = pageNo === undefined ? '' : `?page_no=${pageNo}`
+  return api.get<DocumentProcessingProfileResponse>(
+    `/api/v1/documents/${id}/processing-profile${query}`
+  )
+}
+
 export function deleteDocument(id: string) {
   return api.delete<{ id: string; deleted: boolean }>(`/api/v1/documents/${id}`)
 }

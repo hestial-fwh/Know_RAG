@@ -1,8 +1,8 @@
 # 多模态文档融合：画像、解析、切分与索引分阶段方案
 
-> 状态：DCP-0～DCP-3、DCP-4R、DCP-0.1、DCP-1.1 PASS；DCP-4 初版保留为 FAIL 记录，下一阶段为 DCP-2.1
+> 状态：DCP-0～DCP-3、DCP-4R、DCP-0.1、DCP-1.1、DCP-2.1 PASS；DCP-4 初版保留为 FAIL 记录，下一阶段为 DCP-3.1
 > 编写日期：2026-07-23  
-> 最近审查：2026-07-28
+> 最近审查：2026-07-29
 > 适用范围：当前 `know_rag` 主分支  
 > 本文性质：融合开发的权威路线图；“已完成”和“计划”能力必须按阶段状态区分
 
@@ -801,7 +801,7 @@ artifact hash、画像、策略、Chunk 边界和准入结果确定。
 
 实际交付：
 
-- 数据合同由 11 页扩展为 41 页：11 页旧生产回归基线、30 页对抗观测集；
+- 数据合同由 11 页扩展为 42 页：11 页旧生产回归基线、31 页对抗观测集；
 - 包含 11 个混淆组、15 类能力和 `VI-01`～`VI-10` 全部布局 gold；
 - 每页生成 PDF、PNG、MinerU-shaped raw、layout、gold 和六层 replay snapshot；
 - `coverage.json` 与 `coverage.html` 同时输出 case/gold/actual/diff 和复现命令；
@@ -918,7 +918,7 @@ frontend/e2e/document-layout-acceptance.spec.ts
 
 ### DCP-2.1：多轴画像与 OCR 可信度
 
-**依赖：DCP-1.1 PASS。状态：未开始。**
+**依赖：DCP-1.1 PASS。状态：PASS（2026-07-29）。**
 
 - 将单一页面类别拆为 `layout_kind / semantic_hints / text_origins / ocr_trust`；
 - 消费 DCP-1.1 的 `visual_item_count / unsegmented / ambiguous` 证据，区分单作品、多作品和不可分割页；
@@ -936,28 +936,149 @@ frontend/e2e/document-layout-acceptance.spec.ts
 
 退出条件：对抗集通过，旧固定集不退化，未知页安全降级，画像只在 shadow 模式运行一个真实回放周期。
 
+实际交付：
+
+- 新增确定性的 `document-profile-v2`，输出布局、语义提示、文本来源、OCR 连续评分/分档、
+  uncertain 原因及逐项 contribution evidence；
+- 画像消费 DCP-1.1 的 VisualItem 数量、不可分割状态和文本关系歧义，原生 PDF 文本、caption、
+  VLM 描述在 shadow 建议中始终为 `normal`；无原生文本但存在 VisualItem 的 parser text 必须
+  进入 `visual_ocr` 候选和质量分档，不能因 v1 错标为 native text 而漏判；
+- 对低字符多样性的重复噪声施加连续惩罚，29/30 与 400/401 字符等混淆组不得发生
+  `trusted ↔ shadow` 安全级翻转；相邻页只以 15% 弱先验平滑中间分数；
+- Canonical artifact 保存完整 v2 画像，页绑定 child 保存紧凑画像和
+  `content_admission_shadow_v2`；该字段不被当前 embedding/BM25 消费；
+- 新增 `GET /api/v1/documents/{id}/processing-profile`，文档详情页展示四轴分布、逐页评分、
+  准入建议、不确定原因和证据；页面详情按轻量索引懒加载，覆盖率 HTML 同时展示 v2 布局与
+  OCR 分档；
+- 31 个对抗页门禁校验 evidence、可靠通道、原生文本、VisualItem 数量、低质量 CJK OCR
+  降级和扰动配对的实际
+  `origin_admission` 稳定性，而非只比较两个极端 band。
+
+阶段边界：本阶段是只读 shadow 决策，不删除 MinerU OCR、不改变 Chunk 内容、parent 边界、
+embedding 或 BM25。作品级 parent 与准入执行由 DCP-3.1 解耦后接入。
+
 ### DCP-3.1：边界、父块和内容准入策略解耦
 
 **依赖：DCP-2.1 PASS。状态：未开始。**
 
-将 `ResolvedChunkPolicy` 拆为三个可组合决定：
+本阶段首先修复一个已经由真实书法 PDF replay 证实的前置缺口：MinerU 可能在同一页同时产出
+可靠的印刷说明和低质量书法 OCR，页面级 `native_text_chars > 0` 会把两类文本一起当成可靠
+parser text。DCP-3.1 不负责把错误释文纠正为准确书法文本，但必须保证低质量 OCR 不再参与
+reflow、正文切分、parent 构造、embedding 和 BM25。
+
+处理原则不是销毁 MinerU 原始结果，而是区分两份投影：
+
+- **解析事实层**：保留 MinerU raw、原始文字、bbox、来源、评分、判定原因和算法版本，用于审计、
+  重放和调整阈值；
+- **生产内容层**：只让通过准入的文字进入 reflow 和 Canonical 主 Markdown；低质量 OCR 作为
+  shadow sidecar 保留，不生成可检索 text child；
+- 原始 PDF、可靠原生文本、caption 和 VLM 描述不得因同页存在低质量 OCR 而被连带删除。
+
+#### DCP-3.1A：MinerU block 来源标记
+
+在 MinerU `content_list -> ParsedBlock` 之后，为每个 text block 建立来源，而不是从整页反推：
+
+- 使用 PDF 原生 words/bbox 与 MinerU block bbox 的重合率和文本相似度，区分
+  `native_text / mineru_ocr / mixed_or_ambiguous`；
+- `caption / vlm_description / table_text` 继续作为独立可靠通道；
+- 同一页允许“横排印刷说明为 native/normal、竖排书法为 mineru_ocr/shadow”；
+- 禁止使用“页面存在任意原生文本，因此全页 OCR 不适用”的捷径；
+- 无 bbox、坐标系不一致或来源冲突时进入 `mixed_or_ambiguous + observe`，不得直接删除。
+
+建议新增独立的 MinerU OCR admission 模块，由 `parser_service` 提供原 PDF 页面事实，在
+`document_service` 的 `03_enhanced_document` 和 `reflow_parsed_document` 之间执行。这样现有
+VLM 语义提示可以作为证据，同时坏 OCR 尚未污染 reflow。
+
+#### DCP-3.1B：block 级 OCR 质量与准入
+
+评分至少组合以下确定性证据，不能只看字符数或 CJK 比例：
+
+- 原生文本 bbox 重合率及内容相似度；
+- block 宽高比、横排/竖排方向、同页平行窄列数量和所属 VisualItem；
+- page primary visual、visual dominant、calligraphy/painting 等语义提示；
+- 标点率、虚词率、字符多样性、重复度、异常长无标点 CJK 片段；
+- 与相邻可靠印刷区域的空间关系；相邻页仍只能作为弱先验；
+- MinerU 自带 score 只作为一项证据，不作为单独的准入结论。
+
+输出固定三档：
+
+```json
+{
+  "text_origin": "mineru_ocr",
+  "ocr_quality_score": 0.18,
+  "ocr_admission": "shadow",
+  "ocr_admission_reasons": [
+    "calligraphy_semantic_hint",
+    "vertical_parallel_text_blocks",
+    "no_native_text_overlap",
+    "unpunctuated_cjk_fragmentation"
+  ],
+  "algorithm_version": "mineru-ocr-admission-v1"
+}
+```
+
+- `normal`：进入生产正文、embedding 和 BM25；
+- `auxiliary`：不作为独立正文切片，只能附着在对应 VisualItem/image 的审计或辅助通道；
+- `shadow`：保留原文和证据，但从生产内容投影排除。
+
+对无原生证据的书法区域采取安全优先：默认不允许仅凭“都是合法汉字”升级为 `normal`。印刷说明、
+扫描正文等区域必须通过 bbox/版式和质量证据单独判定，不能整页 shadow。
+
+#### DCP-3.1C：reflow 前过滤和三策略解耦
+
+准入过滤必须发生在 reflow 之前。只在 embedding 阶段调用现有 DCP-4R 会过晚，因为坏 OCR 已经
+影响段落合并、标题继承、parent 边界和图片上下文。生产投影要求：
+
+- `shadow` block 不进入 `ParsedDocument.content`、reflow、Canonical 主 Markdown、text child、
+  embedding 或 BM25；
+- `shadow` block 的原文、bbox、hash、score 和 reasons 保存在可重放 artifact/sidecar；
+- 对应页面图片、VisualItem、可靠标题、印刷说明和 VLM 描述继续生成 image child；
+- 重新调阈值后可从解析事实层重建生产投影，不要求重新调用 MinerU；
+- 开关关闭时恢复当前兼容链路，不能留下“新 artifact + 旧 chunk”的混合 revision。
+
+随后将 `ResolvedChunkPolicy` 拆为三个可组合决定：
 
 - `BoundaryPolicy`：标题、段落、条款、页面、表格行组、代码围栏；
 - `ParentPolicy`：章节、条款、页面作品、幻灯片或不建 parent；
-- `ContentAdmissionPolicy`：各内容来源是否进入 embedding/BM25。
+- `ContentAdmissionPolicy`：各 block/字段来源是否进入生产正文、embedding/BM25。
 
 同一文档按 page/section 使用不同策略。针对视觉作品页，作品图、标题、题跋和印刷说明不得被多个
 作品混入同一 parent；跨页续接必须有实际浮动内容和稳定上下文证据。普通结构化文档保持原 fallback。
 
-前端可视化验收：文档详情显示各策略产生的 Chunk 数量和长度 P50/P95；页面/section 时间线显示
-边界；切片详情显示 parent、兄弟块、来源页面和策略 reasons；异常短块、孤立块、跨页块和超长块
-以告警卡展示。
+#### DCP-3.1D：前端与自动验收
+
+前端可视化验收：
+
+- 页面原图叠加 MinerU text block bbox，分别显示 `native_text / mineru_ocr / ambiguous`；
+- 每个 block 展示 quality score、admission、reasons 和“查看原始 OCR”，shadow 使用“已隔离”
+  状态，不能显示为处理失败；
+- 同屏对比“解析事实文本”和“生产正文投影”，明确哪些内容未进入 Chunk；
+- 文档详情显示各策略产生的 Chunk 数量和长度 P50/P95；页面/section 时间线显示边界；
+- 切片详情显示 parent、兄弟块、来源页面和策略 reasons；异常短块、孤立块、跨页块和超长块
+  以告警卡展示；
+- 检索调试必须证明 shadow OCR 未命中 embedding/BM25，而图片标题、可靠说明和 VLM 描述仍可
+  召回对应作品。
 
 自动化验收：合同条款、作品页、表格续头、PPT、代码围栏、混合文档、孤立块及多个作品混合的回归
-样例；关闭 adaptive flag 时普通正文 content、range 和 parent 关系与基线完全一致。
+样例；新增“同页印刷说明 + 多列书法”“纯扫描正文”“海报短文本”“原生图文画册”“无 bbox
+视觉页”和“合法汉字组成的语义破碎 OCR”混淆组；关闭 adaptive/admission flag 时普通正文
+content、range 和 parent 关系与基线完全一致。
 
-退出条件：固定集无孤立 child、无无证据跨页、无作品跨 parent 混合；普通文本零差异；真实样本
-边界报告人工 PASS。
+真实 replay 固定使用
+`document_id=bd85707b-107a-4bf2-a661-724c3676ea71`、
+`run_id=80cb1ec1-e38e-4e70-ab7b-414f4c4e9d31` 作为首个书法门禁：
+
+- 第 7 页上方可靠印刷说明保留，下方书法窄列 OCR 全部 shadow；
+- 第 7 页不得再产生当前 6 个、合计约 2859 字的污染 text child；
+- 第 16、17、30 页低质量 OCR 不生成生产 text child；
+- 第 5、9、22 页不得因“合法 CJK 字符较多”被直接判为 trusted，无法确认时安全降级为
+  auxiliary/shadow；
+- 32 页对应页面图片和 VLM 描述全部保留，图片检索仍可命中；
+- 关闭新开关重放后与当前 baseline 完全一致。
+
+退出条件：可靠原生/印刷内容丢失 0；书法 replay 已知污染 OCR 进入生产 text child 为 0；
+固定集无孤立 child、无无证据跨页、无作品跨 parent 混合；普通文本零差异；前端 block 级
+准入证据和真实样本边界报告人工 PASS。
 
 ### DCP-5.1：统一前端验收台与受控覆盖
 
@@ -1217,7 +1338,7 @@ cd frontend && npm run check
 | DCP-0.1 | 不少于 32 个页面场景 | PDF/replay/gold hash、覆盖率 HTML | case/gold/actual 差异页 | 每项能力均有正例、负例、扰动例 |
 | DCP-1.1 | 10 个布局场景 | region/item/relation gold diff、确定性报告 | bbox 图层、作品高亮和关系连线 | 重复 item 0；歧义强绑 0；可靠内容丢失 0 |
 | DCP-2.1 | DCP-0.1 全量 | v1/v2 画像 diff、确定性报告 | 四轴画像和证据抽屉 | evidence 缺失 0；安全翻转 0 |
-| DCP-3.1 | DCP-0.1 全量 + 7 个边界回归 | Chunk range/parent diff | 策略时间线和边界告警 | 孤立 child 0；无证据跨页 0；普通文本差异 0 |
+| DCP-3.1 | DCP-0.1 全量 + 7 个边界回归 + 1 个真实书法 replay | block 来源/准入、生产投影和 Chunk range/parent diff | bbox 来源图层、原始/生产文本对比、策略时间线和边界告警 | 可靠内容丢失 0；已知坏 OCR 入生产 child 0；孤立 child 0；无证据跨页 0；普通文本差异 0 |
 | DCP-5.1 | 至少 3 个端到端文档 | API contract、Vue、E2E 报告 | 上传到检索的录屏或截图 | 主路径 E2E 全部 PASS |
 | DCP-6 | 固定集 + 授权真实校准集 | 检索指标、性能、回滚报告 | baseline/candidate 对比页 | 达到 DCP-6 冻结门槛 |
 
@@ -1233,10 +1354,13 @@ cd frontend && npm run check
 - `DOCUMENT_FIELD_CONTENT_ADMISSION_ENABLED`
 - `DOCUMENT_PROFILE_V2_ENABLED`
 - `DOCUMENT_ADAPTIVE_CHUNK_POLICY_V2_ENABLED`
+- `DOCUMENT_MINERU_OCR_BLOCK_ADMISSION_ENABLED`
 
 旧 `DOCUMENT_VISUAL_OCR_QUARANTINE_ENABLED` 现在只作为字段级准入的兼容触发器，不再隔离整个
 Chunk；新部署使用 `DOCUMENT_FIELD_CONTENT_ADMISSION_ENABLED`。两者关闭时 visual OCR 继续按
-兼容行为进入索引。v2 开关稳定后再制定旧开关移除计划。
+兼容行为进入索引。`DOCUMENT_MINERU_OCR_BLOCK_ADMISSION_ENABLED` 单独控制 reflow 前的
+MinerU block 生产投影；关闭时不得改变 ParsedDocument、Canonical 或 Chunk。v2 开关稳定后再
+制定旧开关移除计划。
 
 关闭全部新开关后，行为必须退回当前链路：
 
@@ -1255,15 +1379,16 @@ artifact 和旧 chunk 混合。
 | 顺序 | 阶段 | 当前状态 | 主要产物 | 进入下一阶段的硬门禁 |
 |---:|---|---|---|---|
 | 1 | DCP-4R | PASS | 字段级准入、存量恢复、首个前端准入卡 | 已满足 |
-| 2 | DCP-0.1 | PASS | 41 页数据集、MinerU replay、gold、JSON/HTML 和验收页 | 已满足 |
+| 2 | DCP-0.1 | PASS | 42 页数据集、MinerU replay、gold、JSON/HTML 和验收页 | 已满足 |
 | 3 | DCP-1.1 | PASS | 页内区域、Visual Item、文本归属和布局验收图 | 已满足 |
-| 4 | DCP-2.1 | 下一阶段 | 多轴画像、OCR 连续评分、uncertain | shadow replay 无可靠内容丢失 |
-| 5 | DCP-3.1 | 未开始 | 边界/parent/准入策略解耦 | 普通文本零差异、边界报告 PASS |
+| 4 | DCP-2.1 | PASS | 多轴画像、OCR 连续评分、uncertain | shadow replay 无可靠内容丢失 |
+| 5 | DCP-3.1 | 下一阶段 | MinerU block OCR 隔离、生产投影、边界/parent/准入策略解耦 | 可靠内容零丢失、坏 OCR 入生产 child 为 0、普通文本零差异、边界报告 PASS |
 | 6 | DCP-5.1 | 未开始 | 统一前端验收台、只读聚合 API | API/UI/E2E 闭环 PASS |
 | 7 | DCP-6 | 未开始 | 检索评估、知识库灰度和回滚 | 真实样本门槛与回滚演练 PASS |
 | 8 | DCP-7 | 门禁等待 | 恢复 relation graph Phase 4 | 上游四项稳定门禁全部满足 |
 
-下一工作项是 **DCP-2.1**：在 DCP-1.1 的作品单元和文本关系上，建立
-`layout_kind / semantic_hints / text_origins / ocr_trust` 多轴画像与连续 OCR 质量评分。
-先以 shadow 方式输出字段级准入建议，保证原生文本、caption 和 VLM 描述不会被视觉 OCR
-判断连带隔离。
+下一工作项是 **DCP-3.1**：在 DCP-1.1 的作品单元和 DCP-2.1 多轴画像上，建立
+block 级来源标记和 reflow 前 OCR 生产投影，再建立相互解耦的
+`BoundaryPolicy / ParentPolicy / ContentAdmissionPolicy`。先用真实书法 replay 证明可靠印刷
+说明不丢失、低质量书法 OCR 不进入生产 child，再以 shadow diff 验证普通正文零变化、作品不跨
+parent 混合、无孤立 child 和无证据跨页，最后接入现有 DCP-4R 字段级准入执行链路。

@@ -20,6 +20,12 @@ EXPECTED_LAYERS = {
     "canonical_artifact",
     "chunk_metadata",
 }
+OCR_ADMISSION_STABILITY_PAIRS = {
+    "poster-char-count": (("29", "30"), ("400", "401")),
+    "dominant-image-ratio": (("below", "above"),),
+    "parser-text-area": (("below", "above"),),
+    "vlm_resilience": (("missing", "failed"),),
+}
 
 
 def _read(path: Path) -> Any:
@@ -147,6 +153,11 @@ def _adversarial_cases(
         for item in (stats.get("document_profile") or {}).get("pages") or []
         if item.get("page_no") is not None
     }
+    profiles_v2 = {
+        int(item["page_no"]): item
+        for item in (stats.get("document_profile_v2") or {}).get("pages") or []
+        if item.get("page_no") is not None
+    }
     policies = {
         int(item["page_no"]): item
         for item in stats.get("resolved_chunk_policies") or []
@@ -173,6 +184,7 @@ def _adversarial_cases(
         page_no = int(page["page_no"])
         gold_page = gold_pages.get(page_no) or {}
         profile = profiles.get(page_no) or {}
+        profile_v2 = profiles_v2.get(page_no) or {}
         policy = policies.get(page_no) or {}
         diffs: list[str] = []
         if profile.get("page_kind") != gold_page.get("page_kind"):
@@ -228,6 +240,7 @@ def _adversarial_cases(
                 "actual": {
                     "page_kind": profile.get("page_kind"),
                     "profile_evidence": profile.get("evidence") or {},
+                    "page_profile_v2": profile_v2,
                     "chunk_policy_id": policy.get("policy_id"),
                     "policy_evidence": policy.get("evidence") or {},
                     "chunk_count": chunks_by_page.get(page_no, 0),
@@ -250,6 +263,7 @@ def _write_html_report(path: Path, report: dict[str, Any]) -> None:
     for case in report.get("adversarial_dataset", {}).get("cases", []):
         capabilities = ", ".join(case.get("capabilities") or [])
         diffs = "; ".join(case.get("diffs") or []) or "无差异"
+        profile_v2 = case.get("actual", {}).get("page_profile_v2") or {}
         rows.append(
             "<tr>"
             f"<td>{escape(str(case.get('case_id') or ''))}</td>"
@@ -257,6 +271,8 @@ def _write_html_report(path: Path, report: dict[str, Any]) -> None:
             f"<td>{escape(str(case.get('variant') or '-'))}</td>"
             f"<td>{escape(capabilities)}</td>"
             f"<td>{escape(str(case.get('actual', {}).get('page_kind') or '-'))}</td>"
+            f"<td>{escape(str(profile_v2.get('layout_kind') or '-'))}</td>"
+            f"<td>{escape(str(profile_v2.get('ocr_trust_band') or '-'))}</td>"
             f"<td>{escape(diffs)}</td>"
             "</tr>"
         )
@@ -286,9 +302,10 @@ def _write_html_report(path: Path, report: dict[str, Any]) -> None:
     <div class="metric">混淆组：{report.get("adversarial_dataset", {}).get("confusion_group_count", 0)}</div>
     <div class="metric">数据门禁：{"PASS" if report.get("dcp01_dataset_gate_passed") else "FAIL"}</div>
     <div class="metric">DCP-1.1 视觉项：{"PASS" if report.get("document_visual_items_dcp11", {}).get("gate_passed") else "FAIL"}</div>
+    <div class="metric">DCP-2.1 多轴画像：{"PASS" if report.get("document_profile_dcp21", {}).get("gate_passed") else "FAIL"}</div>
   </div>
   <table>
-    <thead><tr><th>Case</th><th>混淆组</th><th>变体</th><th>能力</th><th>Actual 类型</th><th>差异</th></tr></thead>
+    <thead><tr><th>Case</th><th>混淆组</th><th>变体</th><th>能力</th><th>v1 类型</th><th>v2 布局</th><th>OCR 可信度</th><th>差异</th></tr></thead>
     <tbody>{''.join(rows)}</tbody>
   </table>
   <details><summary>完整 JSON</summary><pre>{payload}</pre></details>
@@ -735,6 +752,117 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
         and visual_item_guard_gate
         and visual_relation_gate
     )
+    profile_v2_cases = {
+        case["case_id"]: case["actual"].get("page_profile_v2") or {}
+        for case in adversarial_cases
+    }
+    profile_v2_complete_gate = bool(profile_v2_cases) and all(
+        bool(profile.get("layout_kind")) and bool(profile.get("evidence"))
+        for profile in profile_v2_cases.values()
+    )
+    reliable_origins = {"native_text", "caption", "vlm_description"}
+    reliable_origin_gate = all(
+        all(
+            admission.get(origin) == "normal"
+            for origin in reliable_origins.intersection(
+                set(profile.get("text_origins") or [])
+            )
+        )
+        for profile in profile_v2_cases.values()
+        for admission in [profile.get("origin_admission") or {}]
+    )
+    native_text_gate = all(
+        (profile.get("origin_admission") or {}).get("native_text") == "normal"
+        and "visual_ocr" not in set(profile.get("text_origins") or [])
+        for profile in profile_v2_cases.values()
+        if int(profile.get("native_text_chars") or 0) > 0
+    )
+    visual_ocr_candidate_gate = all(
+        "visual_ocr" in set(profile.get("text_origins") or [])
+        and profile.get("ocr_trust_band") != "not_applicable"
+        for profile in profile_v2_cases.values()
+        if int(profile.get("native_text_chars") or 0) == 0
+        and int(profile.get("canonical_text_chars") or 0) > 0
+        and int(profile.get("visual_item_count") or 0) > 0
+    )
+    adversarial_case_map = {
+        case["case_id"]: case for case in adversarial_cases
+    }
+    gibberish_profile = (
+        adversarial_case_map.get("cjk_semantic_gibberish_ocr", {})
+        .get("actual", {})
+        .get("page_profile_v2", {})
+    )
+    cjk_gibberish_gate = (
+        gibberish_profile.get("ocr_trust_band") in {"uncertain", "shadow"}
+        and (gibberish_profile.get("origin_admission") or {}).get("visual_ocr")
+        == "shadow_auxiliary"
+        and any(
+            item.get("signal")
+            == "unpunctuated_cjk_fragmentation_penalty"
+            and float(item.get("contribution") or 0) < 0
+            for item in gibberish_profile.get("evidence") or []
+        )
+    )
+    profile_visual_count_gate = all(
+        int(profile.get("visual_item_count") or 0)
+        == len(
+            adversarial_case_map[case_id]["actual"].get("visual_items") or []
+        )
+        for case_id, profile in profile_v2_cases.items()
+    )
+    profile_band_groups: dict[str, set[str]] = {}
+    profile_variants: dict[str, dict[str, dict[str, Any]]] = {}
+    for case in adversarial_cases:
+        group = str(case.get("confusion_group") or "")
+        variant = str(case.get("variant") or "")
+        profile = case["actual"].get("page_profile_v2") or {}
+        band = str(profile.get("ocr_trust_band") or "")
+        if group and band:
+            profile_band_groups.setdefault(group, set()).add(band)
+        if group and variant:
+            profile_variants.setdefault(group, {})[variant] = profile
+    perturbation_checks: list[dict[str, Any]] = []
+    for group, pairs in OCR_ADMISSION_STABILITY_PAIRS.items():
+        variants = profile_variants.get(group) or {}
+        for left_variant, right_variant in pairs:
+            left_profile = variants.get(left_variant)
+            right_profile = variants.get(right_variant)
+            left_admission = (
+                (left_profile or {}).get("origin_admission") or {}
+            ).get("visual_ocr", "not_applicable")
+            right_admission = (
+                (right_profile or {}).get("origin_admission") or {}
+            ).get("visual_ocr", "not_applicable")
+            present = left_profile is not None and right_profile is not None
+            perturbation_checks.append(
+                {
+                    "confusion_group": group,
+                    "variants": [left_variant, right_variant],
+                    "available_variants": sorted(variants),
+                    "admission": [left_admission, right_admission],
+                    "passed": present and left_admission == right_admission,
+                    "reason": (
+                        ""
+                        if present and left_admission == right_admission
+                        else "missing_pair_or_admission_flip"
+                    ),
+                }
+            )
+    perturbation_stability_gate = bool(perturbation_checks) and all(
+        check["passed"] for check in perturbation_checks
+    )
+    document_profile_v2_gate = all(
+        (
+            profile_v2_complete_gate,
+            reliable_origin_gate,
+            native_text_gate,
+            visual_ocr_candidate_gate,
+            cjk_gibberish_gate,
+            profile_visual_count_gate,
+            perturbation_stability_gate,
+        )
+    )
     adversarial_gate = all(
         (
             int(manifest.get("page_count") or 0) >= 32,
@@ -839,6 +967,23 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
             "relation_gate_passed": visual_relation_gate,
             "gate_passed": visual_item_gate,
         },
+        "document_profile_dcp21": {
+            "profiled_adversarial_pages": len(profile_v2_cases),
+            "complete_evidence_gate_passed": profile_v2_complete_gate,
+            "reliable_origin_gate_passed": reliable_origin_gate,
+            "native_text_gate_passed": native_text_gate,
+            "visual_ocr_candidate_gate_passed": visual_ocr_candidate_gate,
+            "cjk_gibberish_gate_passed": cjk_gibberish_gate,
+            "visual_item_count_gate_passed": profile_visual_count_gate,
+            "perturbation_stability_gate_passed": perturbation_stability_gate,
+            "perturbation_band_groups": {
+                key: sorted(value)
+                for key, value in sorted(profile_band_groups.items())
+            },
+            "perturbation_checks": perturbation_checks,
+            "shadow_only": True,
+            "gate_passed": document_profile_v2_gate,
+        },
         "adversarial_dataset": {
             "case_count": len(adversarial_cases),
             "capabilities": sorted(capabilities),
@@ -877,6 +1022,7 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
             adaptive_policy_gate,
             adversarial_gate,
             visual_item_gate,
+            document_profile_v2_gate,
             not failures,
             media_crop["option_recorded"],
             media_crop["runtime_consumer_detected"],

@@ -452,6 +452,80 @@ def get_document_visual_layout(
     )
 
 
+def get_document_processing_profile(
+    db: Session,
+    doc_id: str,
+    *,
+    page_no: int | None = None,
+):
+    document = db.get(Document, doc_id)
+    if document is None:
+        return error_response("文档不存在")
+    artifact = db.get(DocumentCanonicalArtifact, doc_id)
+    if artifact is None:
+        return success_response(
+            {
+                "document_id": doc_id,
+                "available": False,
+                "reason": "canonical_artifact_missing",
+            }
+        )
+    stats = artifact.stats_json or {}
+    profile_v2 = stats.get("document_profile_v2")
+    if not isinstance(profile_v2, dict):
+        return success_response(
+            {
+                "document_id": doc_id,
+                "available": False,
+                "reason": "document_profile_v2_not_generated",
+                "parse_revision": artifact.parse_revision,
+            }
+        )
+    profile_v1 = stats.get("document_profile") or {}
+    all_pages_v2 = profile_v2.get("pages") or []
+    available_pages = [
+        {
+            "page_no": page.get("page_no"),
+            "layout_kind": page.get("layout_kind"),
+            "ocr_trust_band": page.get("ocr_trust_band"),
+            "uncertain": page.get("uncertain", False),
+            "visual_item_count": page.get("visual_item_count", 0),
+        }
+        for page in all_pages_v2
+    ]
+    pages_v2 = [
+        page
+        for page in all_pages_v2
+        if page_no is not None
+        and int(page.get("page_no") or 0) == page_no
+    ]
+    pages_v1 = [
+        page
+        for page in profile_v1.get("pages") or []
+        if page_no is not None
+        and int(page.get("page_no") or 0) == page_no
+    ]
+    return success_response(
+        {
+            "document_id": doc_id,
+            "available": True,
+            "parse_revision": artifact.parse_revision,
+            "profile_version": profile_v2.get("profile_version"),
+            "shadow_only": profile_v2.get("shadow_only", True),
+            "requested_page_no": page_no,
+            "available_pages": available_pages,
+            "summary": {
+                key: value
+                for key, value in profile_v2.items()
+                if key not in {"pages", "evidence"}
+            },
+            "evidence": profile_v2.get("evidence") or [],
+            "pages": pages_v2,
+            "legacy_pages": pages_v1,
+        }
+    )
+
+
 def delete_document(db: Session, actor: User, doc_id: str):
     document = db.get(Document, doc_id)
     if document is None:

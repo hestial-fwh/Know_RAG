@@ -105,3 +105,11 @@ PDF 的 `DocumentContentView` 在当前 Canonical artifact 存在视觉布局数
 
 当前画布是归一化坐标示意图，不等同于 PDF 像素级渲染；原 PDF 页面底图、关系连线和来源图层
 筛选留到 DCP-5.1。页面明确展示 `Shadow/Active`，shadow 结果不能被解释为已改变切分或索引。
+
+## DCP-2.1 多轴画像验收
+
+文档详情页在新解析产物存在时展示 DCP-2.1 只读卡片：文档级布局、文本来源、OCR 可信度分布
+和语义提示；逐页查看布局、来源、shadow 准入建议、OCR 分数/分档、VisualItem 数量、歧义文本、
+不确定原因和 contribution evidence。旧解析产物明确提示尚未生成并需重新解析。前端不执行
+OCR 质量判断，也不能把 shadow 建议写回生产。详情页首次只读取轻量页面索引，随后按当前页
+加载完整 evidence，避免长文档一次传输并渲染全部页面画像。

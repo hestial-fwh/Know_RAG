@@ -39,19 +39,19 @@ def test_dcp0_tracked_spec_matches_generator_contract():
     assert spec["document_types"] == list(DOCUMENT_TYPES)
     assert spec["scenarios"] == list(SCENARIOS)
     assert spec["document_count"] == 11
-    assert spec["page_count"] == 41
+    assert spec["page_count"] == 42
     assert spec["baseline_page_count"] == 11
-    assert spec["adversarial_page_count"] == 30
+    assert spec["adversarial_page_count"] == 31
 
 
 def test_dcp0_generator_creates_pdf_assets_raw_layout_and_gold(tmp_path):
     manifest = generate_dataset(tmp_path, seed=17)
 
     assert manifest["document_count"] == 11
-    assert manifest["page_count"] == 41
+    assert manifest["page_count"] == 42
     assert manifest["baseline_document_count"] == len(DOCUMENT_TYPES)
     assert manifest["baseline_page_count"] == 11
-    assert manifest["adversarial_page_count"] == 30
+    assert manifest["adversarial_page_count"] == 31
     assert manifest["provenance"]["external_assets"] is False
     assert manifest["provenance"]["external_model_calls"] is False
     observed_scenarios = set()
@@ -104,10 +104,10 @@ def test_dcp0_replay_and_report_close_five_layer_baseline(tmp_path):
     assert report["scenario_gate_passed"] is True
     assert report["five_layer_trace_gate_passed"] is True
     assert report["traced_page_count"] == 11
-    assert report["replayed_page_count"] == 41
+    assert report["replayed_page_count"] == 42
     assert report["dcp01_dataset_gate_passed"] is True
     adversarial = report["adversarial_dataset"]
-    assert adversarial["case_count"] == 30
+    assert adversarial["case_count"] == 31
     assert adversarial["gate_passed"] is True
     assert adversarial["artifact_hashes_complete"] is True
     assert adversarial["visual_item_cases"] == [
@@ -167,7 +167,7 @@ def test_dcp01_report_is_available_to_parse_eval_frontend(tmp_path):
 
     assert response["success"] is True
     assert response["data"]["available"] is True
-    assert response["data"]["manifest"]["page_count"] == 41
+    assert response["data"]["manifest"]["page_count"] == 42
     assert response["data"]["report"]["dcp01_dataset_gate_passed"] is True
 
 

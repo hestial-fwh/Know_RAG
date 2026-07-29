@@ -150,7 +150,7 @@ native/parser text、caption、VLM、image/table content 和 visual OCR 分通�
 新部署使用 `DOCUMENT_FIELD_CONTENT_ADMISSION_ENABLED`；两者关闭时保持旧的全字段索引兼容行为。
 详细门禁和真实回放结果以 `document_profile_parse_chunk_plan.md` 为准。
 
-DCP-0.1 的确定性工程数据集现包含 41 个页面场景：11 个旧生产回归页和 30 个对抗页。生成器
+DCP-0.1 的确定性工程数据集现包含 42 个页面场景：11 个旧生产回归页和 31 个对抗页。生成器
 同时输出本地 PDF/PNG、MinerU-shaped payload、layout/gold、六层 replay snapshot 以及
 JSON/HTML 覆盖率；对抗页的分类和策略差异作为后续 DCP-1.1/DCP-2.1 输入，不参与真实准确率
 声明。解析评测插件只读展示 case/gold/actual/diff，不写生产文档或评测表。
@@ -166,7 +166,16 @@ shared_context、ambiguous 和 unbound，长正文及等距候选不会被强绑
 `stats_json.document_visual_layout`，并透传到 image/text child metadata。开关
 `DOCUMENT_VISUAL_ITEM_RESOLUTION_ENABLED` 默认关闭；关闭时 resolver 仍输出 shadow
 验收数据，但不改变内容准入、切分或检索。DCP-1.1 已完成结构闭环；书法 OCR 可信度和字段级
-准入仍属于下一阶段 DCP-2.1。
+准入仍属于 DCP-2.1 的 shadow 建议和下一阶段 DCP-3.1 的策略解耦范围。
+
+DCP-2.1 在 VisualItem 解析后生成确定性的 `document-profile-v2`。它不再用单一 page kind
+直接决定内容去留，而是分别记录 `layout_kind / semantic_hints / text_origins / ocr_trust`，
+并为 OCR 评分保存文本质量、连续性、页面面积、VisualItem、不可分割状态、歧义关系及相邻页
+弱先验的 contribution evidence。原生 PDF 文本、caption 和 VLM 描述始终保留 normal shadow
+建议；无原生文本但存在 VisualItem 的 parser text 视为视觉 OCR 候选，进入
+`trusted / auxiliary / uncertain / shadow` 分档。完整画像保存在
+Canonical artifact，页绑定 child 只保存紧凑 shadow metadata；现有 embedding、BM25、Chunk
+内容和 parent 边界均不受影响。
 
 ## 代码边界
 

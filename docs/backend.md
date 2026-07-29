@@ -124,6 +124,12 @@ bbox，`document_visual_item_resolver` 生成 VisualItem 和保守文本关系�
 artifact；image child 始终携带 `visual_item_ids/statuses`，只有一对一时才额外携带
 `visual_item_id`。该结构当前不删除 OCR 文本，也不改变 parent 边界或索引准入。
 
+DCP-2.1 随后由 `document_parser/document_profiler_v2.py` 消费上述布局，生成布局、语义提示、
+文本来源和 OCR 可信度四轴画像。完整结果写入
+`stats_json.document_profile_v2`；页绑定 child 记录紧凑 `page_profile_v2` 与
+`content_admission_shadow_v2`。这些字段均为 shadow-only，当前切分、embedding 和 BM25
+不消费其建议。`GET /api/v1/documents/{id}/processing-profile` 只读返回汇总和逐页 evidence。
+
 重解析会先在内存中完整构建并校验新切片，非空后才在数据库事务内替换旧切片。解析器失败、空切分或切片入库失败不会清空最后一版可用切片。关键词索引在数据库提交成功后执行“先写入新 chunk id、再清理旧 chunk id”的同步，失败会记录 `keyword_index_status=pending_retry`。
 
 不支持格式的附件占位不会进入切片、关键词索引或向量索引，文档状态为 `parsed_with_fallback`；支持格式的解析器运行异常则标记为失败。Native Markdown 原文通过独立的 `source_content` 字段贯穿 parse/reflow/canonical 链路。

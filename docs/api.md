@@ -321,7 +321,7 @@ chunk 返回新增或补齐：
 
 - `GET /api/v1/parse-eval/datasets/document-profile`
   - 需要登录；
-  - 只读返回本地生成的 manifest、覆盖率报告、30 个对抗 case 的 gold/actual/diff 和产物路径；
+  - 只读返回本地生成的 manifest、覆盖率报告、31 个对抗 case 的 gold/actual/diff 和产物路径；
   - 未生成数据集时返回 `available=false` 及复现命令，不触发后台生成；
   - 合成报告始终保留 `accuracy_claim_allowed=false`。
 
@@ -335,3 +335,15 @@ chunk 返回新增或补齐：
     `VisualTextRelation` 和该页引用的紧凑 asset 映射；
   - `shadow_only=true` 表示结果仅用于验收，不改变内容准入、切分或检索；
   - asset 映射只包含页面、caption、图片地址、bbox 和 visual role，不返回 OCR 全文等无关字段。
+
+### DCP-2.1 文档多轴画像
+
+- `GET /api/v1/documents/{document_id}/processing-profile`
+  - 需要登录，只读；`page_no` 为可选整数；
+  - 返回 `profile_version / parse_revision / shadow_only`；
+  - `summary` 包含布局、语义提示、文本来源、OCR 可信度分布和不确定页数；
+  - 不带 `page_no` 时仅返回轻量 `available_pages`，`pages/legacy_pages` 为空；
+  - 指定 `page_no` 后，`pages` 返回该页四轴画像、来源准入建议、连续分数/分档、不确定原因与
+    evidence；
+  - `legacy_pages` 返回同页 v1 画像用于对照；
+  - 旧 artifact 未生成 v2 时返回 `available=false` 和原因，不触发重新解析。

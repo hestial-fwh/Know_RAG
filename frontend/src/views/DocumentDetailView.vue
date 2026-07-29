@@ -7,8 +7,11 @@ import {
   embedDocument,
   getDocument,
   getDocumentEmbeddingStatus,
+  getDocumentProcessingProfile,
   parseDocument,
   reparseDocument,
+  type DocumentPageProfileV2,
+  type DocumentProcessingProfileResponse,
   type DocumentItem,
   type EmbeddingStatus
 } from '../api/documents'
@@ -25,6 +28,10 @@ const embeddingLoading = ref(false)
 const statusLoading = ref(false)
 const latestTask = ref<ParseTask | null>(null)
 const taskLoading = ref(false)
+const processingProfile = ref<DocumentProcessingProfileResponse | null>(null)
+const profileError = ref('')
+const selectedProfilePageNo = ref(0)
+const profilePageLoading = ref(false)
 
 const statusText: Record<string, string> = {
   pending: '待解析',
@@ -53,9 +60,30 @@ const parserNotice = computed(() => {
   if (stats.value.pdf_engine) return `当前 PDF 主解析器：${stats.value.pdf_engine}`
   return '当前文档解析器以详情区显示为准'
 })
+const selectedProfilePage = computed<DocumentPageProfileV2 | undefined>(() =>
+  processingProfile.value?.pages?.find(
+    (page) => page.page_no === selectedProfilePageNo.value
+  ) || processingProfile.value?.pages?.[0]
+)
+const profilePageIndex = computed(() => processingProfile.value?.available_pages || [])
+const selectedProfileIndex = computed(() =>
+  profilePageIndex.value.findIndex(
+    (page) => page.page_no === selectedProfilePageNo.value
+  )
+)
 
 function numberValue(value: unknown) {
   return typeof value === 'number' ? value : 0
+}
+
+function formatStringMap(value?: Record<string, string>) {
+  if (!value) return '-'
+  const entries = Object.entries(value).sort(([left], [right]) =>
+    left.localeCompare(right)
+  )
+  return entries.length
+    ? entries.map(([key, status]) => `${key}: ${status}`).join('，')
+    : '-'
 }
 
 async function load() {
@@ -90,6 +118,48 @@ async function loadEmbeddingStatus() {
   }
 }
 
+async function loadProcessingProfile() {
+  if (!doc.value) return
+  profileError.value = ''
+  try {
+    processingProfile.value = await getDocumentProcessingProfile(doc.value.id)
+    const firstPage = processingProfile.value.available_pages?.[0]
+    if (firstPage) await selectProcessingProfilePage(firstPage.page_no)
+  } catch (err) {
+    profileError.value = err instanceof Error ? err.message : '获取页面画像失败'
+  }
+}
+
+async function selectProcessingProfilePage(pageNo: number) {
+  if (!doc.value || profilePageLoading.value) return
+  profilePageLoading.value = true
+  profileError.value = ''
+  try {
+    const detail = await getDocumentProcessingProfile(doc.value.id, pageNo)
+    if (processingProfile.value) {
+      processingProfile.value = {
+        ...processingProfile.value,
+        pages: detail.pages,
+        legacy_pages: detail.legacy_pages,
+        requested_page_no: pageNo
+      }
+    } else {
+      processingProfile.value = detail
+    }
+    selectedProfilePageNo.value = pageNo
+  } catch (err) {
+    profileError.value = err instanceof Error ? err.message : '获取页面画像失败'
+  } finally {
+    profilePageLoading.value = false
+  }
+}
+
+async function moveProcessingProfilePage(offset: number) {
+  const targetIndex = selectedProfileIndex.value + offset
+  const target = profilePageIndex.value[targetIndex]
+  if (target) await selectProcessingProfilePage(target.page_no)
+}
+
 async function runParse(reparse = false) {
   if (!doc.value) return
   loading.value = true
@@ -108,6 +178,7 @@ async function runParse(reparse = false) {
     message.value = '解析完成'
     await loadLatestTask()
     await loadEmbeddingStatus()
+    await loadProcessingProfile()
   } catch (err) {
     error.value = err instanceof Error ? err.message : '解析失败'
     await load()
@@ -138,6 +209,7 @@ onMounted(async () => {
     await load()
     await loadLatestTask()
     await loadEmbeddingStatus()
+    await loadProcessingProfile()
   } catch (err) {
     error.value = err instanceof Error ? err.message : '请求失败'
   }
@@ -191,6 +263,93 @@ onMounted(async () => {
         <div class="stat-card"><span class="stat-label">MinerU content_list</span><span class="stat-value">{{ numberValue(stats.mineru_content_list_count) }}</span></div>
         <div class="stat-card"><span class="stat-label">后处理合并</span><span class="stat-value">{{ numberValue(stats.reflow_merged_blocks) }}</span></div>
       </div>
+
+      <div v-if="processingProfile?.available" class="card subtle-card">
+        <div class="page-header">
+          <div>
+            <h2>多轴页面画像（DCP-2.1）</h2>
+            <p class="text-muted">
+              {{ processingProfile.profile_version }} ·
+              {{ processingProfile.shadow_only ? 'Shadow，只读建议' : 'Active' }} ·
+              revision {{ processingProfile.parse_revision }}
+            </p>
+          </div>
+          <span :class="['tag', processingProfile.summary?.uncertain_page_count ? 'tag-warn' : 'tag-ok']">
+            不确定页 {{ processingProfile.summary?.uncertain_page_count || 0 }}
+          </span>
+        </div>
+        <p v-if="profileError" class="text-error">{{ profileError }}</p>
+        <div class="grid">
+          <div class="stat-card">
+            <span class="stat-label">布局分布</span>
+            <span class="stat-value">{{ formatCountMap(processingProfile.summary?.layout_distribution) }}</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">语义提示</span>
+            <span class="stat-value">{{ processingProfile.summary?.semantic_hints?.join('、') || '无' }}</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">文本来源</span>
+            <span class="stat-value">{{ formatCountMap(processingProfile.summary?.text_origin_distribution) }}</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">OCR 可信度</span>
+            <span class="stat-value">{{ formatCountMap(processingProfile.summary?.ocr_trust_distribution) }}</span>
+          </div>
+        </div>
+        <div class="actions">
+          <button
+            type="button"
+            class="secondary"
+            :disabled="profilePageLoading || selectedProfileIndex <= 0"
+            @click="moveProcessingProfilePage(-1)"
+          >
+            上一页
+          </button>
+          <span v-if="selectedProfilePage" class="text-muted">
+            第 {{ selectedProfileIndex + 1 }} / {{ profilePageIndex.length }} 页 ·
+            P{{ selectedProfilePage.page_no }} · {{ selectedProfilePage.layout_kind }} ·
+            {{ selectedProfilePage.ocr_trust_band }}
+          </span>
+          <button
+            type="button"
+            class="secondary"
+            :disabled="
+              profilePageLoading
+              || selectedProfileIndex < 0
+              || selectedProfileIndex >= profilePageIndex.length - 1
+            "
+            @click="moveProcessingProfilePage(1)"
+          >
+            下一页
+          </button>
+        </div>
+        <div v-if="selectedProfilePage" class="card">
+          <h3>第 {{ selectedProfilePage.page_no }} 页画像</h3>
+          <dl class="details">
+            <dt>布局</dt><dd>{{ selectedProfilePage.layout_kind }}</dd>
+            <dt>语义提示</dt><dd>{{ selectedProfilePage.semantic_hints.join('、') || '无' }}</dd>
+            <dt>文本来源</dt><dd>{{ selectedProfilePage.text_origins.join('、') || '无' }}</dd>
+            <dt>Shadow 准入建议</dt><dd>{{ formatStringMap(selectedProfilePage.origin_admission) }}</dd>
+            <dt>OCR 评分</dt>
+            <dd>{{ selectedProfilePage.ocr_trust_score ?? '不适用' }} · {{ selectedProfilePage.ocr_trust_band }}</dd>
+            <dt>视觉作品</dt>
+            <dd>{{ selectedProfilePage.visual_item_count }}，歧义文本 {{ selectedProfilePage.ambiguous_text_count }}</dd>
+            <dt>原生/Canonical 字符</dt>
+            <dd>{{ selectedProfilePage.native_text_chars }} / {{ selectedProfilePage.canonical_text_chars }}</dd>
+            <dt>不确定原因</dt>
+            <dd>{{ selectedProfilePage.uncertainty_reasons.join('、') || '无' }}</dd>
+          </dl>
+          <details>
+            <summary>评分证据与贡献</summary>
+            <pre class="content-block">{{ JSON.stringify(selectedProfilePage.evidence, null, 2) }}</pre>
+          </details>
+        </div>
+      </div>
+      <p v-else-if="profileError" class="text-muted">页面画像暂不可用：{{ profileError }}</p>
+      <p v-else-if="processingProfile && !processingProfile.available" class="text-muted">
+        页面画像暂不可用：{{ processingProfile.reason || '尚未生成 DCP-2.1 画像，请重新解析文档' }}
+      </p>
 
       <dl class="details">
         <dt>ID</dt><dd>{{ doc.id }}</dd>

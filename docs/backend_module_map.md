@@ -30,6 +30,7 @@ upload_document (document_service.py)
 | Selected page renderer | `document_parser/pdf_page_renderer.py` | — | 仅渲染选中的 PDF 页面并保存到现有媒体存储 |
 | Page visual enricher | `document_parser/page_visual_enricher.py` | — | 缺失页面主视觉注入、已有整页图标记、去重统计和 fail-open |
 | Document profiler | `document_parser/document_profiler.py` | — | Canonical provenance/asset/page facts → 确定性文档与逐页画像（shadow） |
+| Multi-axis profiler | `document_parser/document_profiler_v2.py` | — | VisualItem + page facts → 四轴画像、OCR 连续评分与 evidence（shadow） |
 | Block reflow | `document_parser/block_reflow.py` | — | Layout-aware block reordering、视觉页 section scope 与普通正文跨页标题继承 |
 
 ## Chunk Rebuild Flow
@@ -191,7 +192,7 @@ The following modules still need future responsibility slicing:
 - `retrieval_service`
 ### DCP-0.1 工程数据集
 
-- `backend/scripts/document_profile_dataset/adversarial_templates.py`：30 个对抗/扰动页面与
+- `backend/scripts/document_profile_dataset/adversarial_templates.py`：31 个对抗/扰动页面与
   `VI-01`～`VI-10` 布局 gold。
 - `generator.py`：生成 PDF、PNG、layout、MinerU-shaped raw 和 gold。
 - `replay.py`：执行 source PDF → MinerU adapter → page visual → Canonical → Chunk 六层回放。
@@ -207,3 +208,12 @@ The following modules still need future responsibility slicing:
 - `app/services/document_service.py`：只读返回 visual layout 和紧凑 asset 映射。
 - `tests/test_document_visual_items_dcp11.py`：覆盖 VI-01～VI-10、保守关系、确定性、API 合同和
   单栅格多作品 chunk 元数据。
+
+### DCP-2.1 多轴画像
+
+- `app/services/document_parser/document_profiler_v2.py`：确定性四轴画像、OCR 质量评分、弱相邻页
+  平滑、uncertain 和 evidence。
+- `app/services/chunk_service.py`：artifact 保存完整画像，页绑定 child 只保存紧凑 shadow 建议。
+- `app/services/document_service.py`：按文档或页只读返回 v2/v1 画像。
+- `tests/test_document_profile_dcp21.py`：覆盖原生文本保护、连续评分、低质量 CJK OCR、
+  逻辑页、API 和 31 页数据门禁。

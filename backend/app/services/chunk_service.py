@@ -40,6 +40,9 @@ from app.services.chunker.parent_child_splitter import split_parent_child_result
 from app.services.chunker.canonical_parent_child import build_canonical_parent_child_plan
 from app.services.document_parser.canonical_document import build_canonical_document
 from app.services.document_parser.document_profiler import profile_canonical_document
+from app.services.document_parser.document_profiler_v2 import (
+    profile_canonical_document_v2,
+)
 from app.services.document_parser.types import ParsedBlock, ParsedDocument
 from app.services.pipeline_debug_artifacts import (
     mark_debug_relation_graph_disabled,
@@ -1197,6 +1200,14 @@ def _rebuild_canonical_weknora_parent_child(
         shadow_only=not bool(settings.document_visual_item_resolution_enabled),
     )
     visual_layout_payload = visual_layout.to_metadata()
+    document_profile_v2 = profile_canonical_document_v2(
+        canonical,
+        document_profile,
+        visual_layout=visual_layout_payload,
+    )
+    page_profiles_v2 = {
+        page.page_no: page for page in document_profile_v2.pages
+    }
     asset_visual_items: dict[str, list[dict[str, Any]]] = {}
     node_visual_relations: dict[str, list[dict[str, Any]]] = {}
     for page_layout in visual_layout_payload.get("pages") or []:
@@ -1209,6 +1220,38 @@ def _rebuild_canonical_weknora_parent_child(
                 node_visual_relations.setdefault(node_id, []).append(relation)
     for child in plan.children:
         metadata = dict(child.metadata or {})
+        try:
+            child_page_no = int(
+                metadata.get("page_no")
+                or metadata.get("chunk_policy_page_no")
+                or 0
+            )
+        except (TypeError, ValueError):
+            child_page_no = 0
+        if child_page_no == 0 and len(page_profiles_v2) == 1:
+            child_page_no = next(iter(page_profiles_v2))
+        page_profile_v2 = page_profiles_v2.get(child_page_no)
+        if page_profile_v2 is not None:
+            metadata["page_profile_v2"] = {
+                "profile_version": document_profile_v2.profile_version,
+                "shadow_only": True,
+                "layout_kind": page_profile_v2.layout_kind,
+                "semantic_hints": list(page_profile_v2.semantic_hints),
+                "text_origins": list(page_profile_v2.text_origins),
+                "ocr_trust_score": page_profile_v2.ocr_trust_score,
+                "ocr_trust_band": page_profile_v2.ocr_trust_band,
+                "uncertain": page_profile_v2.uncertain,
+                "uncertainty_reasons": list(
+                    page_profile_v2.uncertainty_reasons
+                ),
+            }
+            metadata["content_admission_shadow_v2"] = {
+                "profile_version": document_profile_v2.profile_version,
+                "shadow_only": True,
+                "origin_admission": dict(
+                    page_profile_v2.origin_admission
+                ),
+            }
         asset_id = str(metadata.get("asset_id") or "")
         if asset_id and asset_id in asset_visual_items:
             items = asset_visual_items[asset_id]
@@ -1319,6 +1362,10 @@ def _rebuild_canonical_weknora_parent_child(
                     "document_profile_version": document_profile.profile_version,
                     "document_primary_kind": document_profile.primary_kind,
                     "document_profile": document_profile.to_metadata(),
+                    "document_profile_v2_version": (
+                        document_profile_v2.profile_version
+                    ),
+                    "document_profile_v2": document_profile_v2.to_metadata(),
                     "document_visual_layout": visual_layout_payload,
                     "resolved_chunk_policies": [
                         policy.to_metadata() for policy in resolved_policies

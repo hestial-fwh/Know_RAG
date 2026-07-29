@@ -312,6 +312,7 @@ backend/app/services/document_parser/
 ├─ pdf_page_renderer.py                   # 选页渲染与媒体保存 [主链路，可选]
 ├─ page_visual_enricher.py                # 缺失页面主视觉补偿、去重与降级统计 [主链路，可选]
 ├─ document_profiler.py                   # Canonical 文档/逐页画像与证据汇总 [主链路，shadow]
+├─ document_profiler_v2.py                # DCP-2.1 四轴画像、OCR 连续评分与 evidence [主链路，shadow]
 ├─ docx_multimodal.py                     # DOCX 多模态解析
 ├─ generic_parsers.py                     # 通用格式解析器
 ├─ media_storage.py                       # 解析媒体文件保存
@@ -822,6 +823,7 @@ Parent
 | DCP-0 | 基线文档画像（page_kind 分类） | `document_profiler.py` | ✅ 完成 |
 | DCP-1 | PDF 页面主视觉保护 | `page_visual_profile.py` + `page_visual_enricher.py` | ✅ 完成 |
 | DCP-2 | 文档/页面/块三级画像 + 策略映射 | `document_profiler.py` + `chunk_policy_resolver.py` | ✅ 完成 |
+| DCP-2.1 | 多轴页面画像 + OCR 连续可信度（shadow） | `document_profiler_v2.py` | ✅ 完成 |
 | DCP-3 | 差异化切分（活跃策略按页切分） | `canonical_parent_child.py` → `_split_dcp3_policy_segments()` | ✅ 完成 |
 | DCP-4 | 视觉页 OCR 隔离（不参与 embedding/ES） | `content_cleaning.py` + `embedding_service.py` | ✅ 完成 |
 | DCP-5 | 前端可观测性（画像提示、按知识库灰度） | — | 🔲 下一步 |
@@ -1463,6 +1465,7 @@ backend/tests/
 ├─ test_page_visual_preservation.py               # DCP-1：PDF 页面主视觉保护
 ├─ test_document_profile_dcp0.py                  # DCP-0：基线文档画像
 ├─ test_document_profile_dcp2.py                  # DCP-2：文档/页面/块三级画像
+├─ test_document_profile_dcp21.py                 # DCP-2.1：四轴画像、OCR 评分、API 与数据门禁
 ├─ test_document_profile_dcp3.py                  # DCP-3：差异化切分策略
 ├─ test_document_pipeline_safety.py               # DCP 管线安全与回退
 ├─ test_visual_page_section_scope.py              # 视觉文档段落级父块 + 跨页绑定（三 Pass 算法）
