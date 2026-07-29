@@ -1,12 +1,13 @@
 # DCP-0 document profile dataset
 
-This package generates the deterministic engineering corpus for the document-profile,
-page-visual and adaptive-chunking plan.
+This package generates the deterministic DCP-0/DCP-0.1 engineering corpus for the
+document-profile, page-visual and adaptive-chunking plan.
 
-It contains eight document types and eleven page scenarios covering visual collections,
+It retains eight baseline document types and eleven production-regression pages covering visual collections,
 calligraphy OCR, scanned contracts, posters, academic PDFs, tables, presentations, code and a
-mixed three-page document. All PDFs and PNG assets are generated locally without downloads or
-model calls.
+mixed three-page document. DCP-0.1 adds thirty adversarial pages: threshold pairs, OCR-quality
+contrasts, negative document types, VLM failures, cross-page evidence and `VI-01` through `VI-10`
+multi-work layouts. All PDFs and PNG assets are generated locally without downloads or model calls.
 
 The replay closes six layers:
 
@@ -19,10 +20,10 @@ source PDF facts
 → production Chunk drafts
 ```
 
-Gold annotations record expected page kind, page-visual preservation, semantic role, index policy
-and recommended chunk policy. The report retains the raw DCP-0 parser baseline and separately
-checks the DCP-1 enrichment result. Adaptive chunk policy IDs and OCR index policy remain future
-stages.
+Gold annotations record expected page kind, page-visual preservation, semantic role, index policy,
+OCR quality, Visual Item and text relation. The report keeps the original eleven pages as the
+production regression gate and records adversarial gold/actual differences without claiming
+accuracy. It writes both `reports/coverage.json` and `reports/coverage.html`.
 
 Run from `backend/`:
 

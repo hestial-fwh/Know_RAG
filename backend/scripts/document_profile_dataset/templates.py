@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from .models import BlockSpec, DocumentSpec, PageSpec
+from .adversarial_templates import (
+    ADVERSARIAL_SCENARIOS,
+    build_adversarial_document_specs,
+)
 
 
 PAGE_WIDTH = 612
@@ -17,7 +21,7 @@ DOCUMENT_TYPES = (
     "mixed",
 )
 
-SCENARIOS = (
+BASE_SCENARIOS = (
     "calligraphy_visual_ocr",
     "existing_full_page_image",
     "scanned_contract_body_ocr",
@@ -30,6 +34,7 @@ SCENARIOS = (
     "mixed_scanned_page",
     "mixed_visual_page",
 )
+SCENARIOS = (*BASE_SCENARIOS, *ADVERSARIAL_SCENARIOS)
 
 
 def _block(prefix: str, suffix: str, block_type: str, bbox, **kwargs) -> BlockSpec:
@@ -474,11 +479,13 @@ def build_document_specs() -> tuple[DocumentSpec, ...]:
         ),
     )
     specs.append(DocumentSpec("dcp-mixed", "mixed", "mixed", mixed_pages))
+    specs.extend(build_adversarial_document_specs())
     return tuple(specs)
 
 
 __all__ = [
     "DOCUMENT_TYPES",
+    "BASE_SCENARIOS",
     "PAGE_HEIGHT",
     "PAGE_WIDTH",
     "SCENARIOS",

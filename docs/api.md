@@ -317,3 +317,10 @@ chunk 返回新增或补齐：
 `results` 保持为未扩展结果，响应 `message` 标记已降级；该开关默认关闭。
 
 `include_content=false` 时不返回完整 `content`，仍返回 `preview`、`matched_content` 和上下文预览。
+### DCP-0.1 数据集验收
+
+- `GET /api/v1/parse-eval/datasets/document-profile`
+  - 需要登录；
+  - 只读返回本地生成的 manifest、覆盖率报告、30 个对抗 case 的 gold/actual/diff 和产物路径；
+  - 未生成数据集时返回 `available=false` 及复现命令，不触发后台生成；
+  - 合成报告始终保留 `accuracy_claim_allowed=false`。

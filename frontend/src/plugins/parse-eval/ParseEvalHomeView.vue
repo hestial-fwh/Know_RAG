@@ -43,6 +43,7 @@ function openDoc() {
         </p>
       </div>
       <div class="pe-actions">
+        <button @click="router.push('/parse-eval/datasets/document-profile')">DCP-0.1 数据集验收</button>
         <button class="secondary" @click="router.push('/documents')">返回文档列表</button>
       </div>
     </div>

@@ -1,6 +1,6 @@
 # 多模态文档融合：画像、解析、切分与索引分阶段方案
 
-> 状态：DCP-0～DCP-3、DCP-4R PASS；DCP-4 初版保留为 FAIL 记录，下一阶段为 DCP-0.1
+> 状态：DCP-0～DCP-3、DCP-4R、DCP-0.1 PASS；DCP-4 初版保留为 FAIL 记录，下一阶段为 DCP-1.1
 > 编写日期：2026-07-23  
 > 最近审查：2026-07-28
 > 适用范围：当前 `know_rag` 主分支  
@@ -774,7 +774,7 @@ DCP-4R PASS 前，`DOCUMENT_VISUAL_OCR_QUARANTINE_ENABLED` 必须保持关闭。
 
 ### DCP-0.1：对抗数据集与混淆对
 
-**依赖：DCP-4R PASS。状态：下一编码阶段。**
+**依赖：DCP-4R PASS。状态：PASS（2026-07-29）。**
 
 在现有 8 类、11 场景生成器上增加边界扰动、负例和真实故障 replay，仍不依赖网络、版权文档或
 临时人工收集。至少新增：
@@ -798,6 +798,16 @@ artifact hash、画像、策略、Chunk 边界和准入结果确定。
 
 退出条件：所有目标能力同时有正例、负例和阈值扰动例；报告继续保持
 `accuracy_claim_allowed=false`，真实准确率结论另设门禁。
+
+实际交付：
+
+- 数据合同由 11 页扩展为 41 页：11 页旧生产回归基线、30 页对抗观测集；
+- 包含 11 个混淆组、15 类能力和 `VI-01`～`VI-10` 全部布局 gold；
+- 每页生成 PDF、PNG、MinerU-shaped raw、layout、gold 和六层 replay snapshot；
+- `coverage.json` 与 `coverage.html` 同时输出 case/gold/actual/diff 和复现命令；
+- 解析评测插件新增 `/parse-eval/datasets/document-profile` 可视化页及只读 API；
+- 数据门禁、旧生产基线和确定性测试均通过；报告保持
+  `accuracy_claim_allowed=false`，布局 actual 明确显示“pending DCP-1.1”，不伪造能力。
 
 ### DCP-1.1：页内视觉区域与作品单元
 
@@ -1212,14 +1222,14 @@ artifact 和旧 chunk 混合。
 | 顺序 | 阶段 | 当前状态 | 主要产物 | 进入下一阶段的硬门禁 |
 |---:|---|---|---|---|
 | 1 | DCP-4R | PASS | 字段级准入、存量恢复、首个前端准入卡 | 已满足 |
-| 2 | DCP-0.1 | 下一阶段 | 对抗/混淆数据集、HTML 覆盖率报告 | 正负例和扰动例完整 |
-| 3 | DCP-1.1 | 未开始 | 页内区域、Visual Item、文本归属和布局叠加图 | 多作品不重复、不混合、不强绑歧义 |
+| 2 | DCP-0.1 | PASS | 41 页数据集、MinerU replay、gold、JSON/HTML 和验收页 | 已满足 |
+| 3 | DCP-1.1 | 下一阶段 | 页内区域、Visual Item、文本归属和布局叠加图 | 多作品不重复、不混合、不强绑歧义 |
 | 4 | DCP-2.1 | 未开始 | 多轴画像、OCR 连续评分、uncertain | shadow replay 无可靠内容丢失 |
 | 5 | DCP-3.1 | 未开始 | 边界/parent/准入策略解耦 | 普通文本零差异、边界报告 PASS |
 | 6 | DCP-5.1 | 未开始 | 统一前端验收台、只读聚合 API | API/UI/E2E 闭环 PASS |
 | 7 | DCP-6 | 未开始 | 检索评估、知识库灰度和回滚 | 真实样本门槛与回滚演练 PASS |
 | 8 | DCP-7 | 门禁等待 | 恢复 relation graph Phase 4 | 上游四项稳定门禁全部满足 |
 
-下一工作项是 **DCP-0.1**：扩展正例、负例、阈值扰动和页内多作品布局数据。DCP-4R 已保证后续
-分类即使不完美也不会因页面级视觉策略删除可靠的 native/parser text、caption、VLM 或整张图片；
-接下来才进入规则校准和 DCP-1.1 页内 Visual Item 开发。
+下一工作项是 **DCP-1.1**：消费已经冻结的 `VI-01`～`VI-10` gold，开发页内区域、
+Visual Item、文本归属和保守降级。DCP-0.1 报告中现有 observed diff 是下一阶段输入，不代表
+真实准确率结论。

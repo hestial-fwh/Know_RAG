@@ -139,6 +139,22 @@ def make_asset(kind: str, seed: int, *, width: int = 320, height: int = 220) -> 
             y1 = max(20, min(height - 20, y0 + rng.randrange(-90, 91)))
             raster.line(x0, y0, x1, y1, ink, rng.randrange(7, 15))
         raster.rect(10, 10, width - 10, height - 10, (180, 170, 150), thickness=2)
+    elif kind == "split_album":
+        # One raster with two visually separable works. DCP-0.1 uses this to
+        # exercise conservative whitespace-based region candidates when the
+        # parser returns only a full-page image.
+        raster.rect(12, 12, width // 2 - 18, height - 12, (210, 225, 238), fill=True)
+        raster.rect(width // 2 + 18, 12, width - 12, height - 12, (235, 218, 200), fill=True)
+        for panel_x in (width // 4, 3 * width // 4):
+            for offset in range(-50, 51, 25):
+                raster.line(
+                    panel_x - 35,
+                    height // 2 + offset,
+                    panel_x + 35,
+                    height // 2 + offset + rng.randrange(-12, 13),
+                    ink,
+                    4,
+                )
     else:  # album
         colors = [(190, 215, 235), (230, 205, 185), (195, 225, 195)]
         for index, color in enumerate(colors):
@@ -151,4 +167,3 @@ def make_asset(kind: str, seed: int, *, width: int = 320, height: int = 220) -> 
             raster.line(x - 8, y, x + 8, y, ink, 2)
             raster.line(x, y - 8, x, y + 8, ink, 2)
     return raster
-

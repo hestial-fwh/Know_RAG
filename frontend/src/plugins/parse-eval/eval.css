@@ -62,6 +62,31 @@
   color: #0f172a;
 }
 
+.pe-dataset-table-wrap {
+  overflow-x: auto;
+}
+
+.pe-dataset-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.pe-dataset-table th,
+.pe-dataset-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e2e8f0;
+  text-align: left;
+  vertical-align: top;
+}
+
+.pe-dataset-table tbody tr {
+  cursor: pointer;
+}
+
+.pe-dataset-table tbody tr:hover {
+  background: #f4f8f6;
+}
+
 .pe-grid-2 {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(360px, 0.8fr);

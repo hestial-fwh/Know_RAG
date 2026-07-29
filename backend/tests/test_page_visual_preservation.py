@@ -60,11 +60,13 @@ def _fake_renderer(path, page_numbers, **kwargs):
     }
 
 
-def test_dcp1_profiles_all_dcp0_pages_against_visual_gold(tmp_path):
+def test_dcp1_profiles_all_dcp0_baseline_pages_against_visual_gold(tmp_path):
     manifest = generate_dataset(tmp_path, seed=101)
 
     observed = {}
     for document in manifest["documents"]:
+        if document.get("evaluation_scope") != "baseline":
+            continue
         parsed = _parsed_from_raw(
             tmp_path / document["raw_response_path"],
             document["document_id"],
@@ -99,6 +101,8 @@ def test_dcp1_enrichment_closes_missing_visuals_without_duplicates(tmp_path):
     preserved_pages = 0
 
     for document in manifest["documents"]:
+        if document.get("evaluation_scope") != "baseline":
+            continue
         parsed = _parsed_from_raw(
             tmp_path / document["raw_response_path"],
             document["document_id"],

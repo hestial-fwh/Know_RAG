@@ -24,6 +24,11 @@ async def templates(_: User = Depends(get_current_user)):
     return service.list_templates()
 
 
+@router.get("/datasets/document-profile")
+async def document_profile_dataset(_: User = Depends(get_current_user)):
+    return service.document_profile_dataset_report()
+
+
 @router.post("/documents/{doc_id}/run")
 async def run_document_evaluation(
     doc_id: str,

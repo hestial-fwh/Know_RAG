@@ -150,6 +150,11 @@ native/parser text、caption、VLM、image/table content 和 visual OCR 分通�
 新部署使用 `DOCUMENT_FIELD_CONTENT_ADMISSION_ENABLED`；两者关闭时保持旧的全字段索引兼容行为。
 详细门禁和真实回放结果以 `document_profile_parse_chunk_plan.md` 为准。
 
+DCP-0.1 的确定性工程数据集现包含 41 个页面场景：11 个旧生产回归页和 30 个对抗页。生成器
+同时输出本地 PDF/PNG、MinerU-shaped payload、layout/gold、六层 replay snapshot 以及
+JSON/HTML 覆盖率；对抗页的分类和策略差异作为后续 DCP-1.1/DCP-2.1 输入，不参与真实准确率
+声明。解析评测插件只读展示 case/gold/actual/diff，不写生产文档或评测表。
+
 当前 Canonical 能保存同页多个图片 asset，但尚未实现通用的页内 `LayoutRegion / VisualItem`
 作品单元解析；`page_primary_visual` 仍只是整页漏图保护，不能代表一页只有一个作品。规划中的
 DCP-1.1 将基于 parser/PDF bbox、轻量 OpenCV 布局证据和保守关系状态建立多作品单元；在该阶段

@@ -64,8 +64,55 @@ export interface ParseEvalReport {
   markdown: string
 }
 
+export interface DocumentProfileDatasetCase {
+  case_id: string
+  document_id: string
+  page_no: number
+  capabilities: string[]
+  confusion_group: string
+  variant: string
+  gold: Record<string, unknown>
+  actual: Record<string, unknown>
+  diffs: string[]
+  status: string
+  artifacts: Record<string, string>
+}
+
+export interface DocumentProfileDatasetResponse {
+  available: boolean
+  dataset_root: string
+  generate_command: string
+  html_report_path?: string
+  manifest: {
+    dataset_id: string
+    generator_seed: number
+    document_count: number
+    page_count: number
+    adversarial_page_count: number
+  } | null
+  report: {
+    engineering_baseline_passed: boolean
+    dcp01_dataset_gate_passed: boolean
+    accuracy_claim_allowed: boolean
+    adversarial_dataset: {
+      case_count: number
+      confusion_group_count: number
+      capabilities: string[]
+      paired_confusion_groups: string[]
+      visual_item_cases: string[]
+      cases: DocumentProfileDatasetCase[]
+    }
+  } | null
+}
+
 export function listParseEvalTemplates() {
   return api.get<{ items: ParseEvalTemplate[] }>('/api/v1/parse-eval/templates')
+}
+
+export function getDocumentProfileDatasetReport() {
+  return api.get<DocumentProfileDatasetResponse>(
+    '/api/v1/parse-eval/datasets/document-profile'
+  )
 }
 
 export function runParseEvaluation(

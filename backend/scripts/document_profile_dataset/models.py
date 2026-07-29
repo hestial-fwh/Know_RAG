@@ -18,6 +18,9 @@ class BlockSpec:
     caption: str = ""
     expected_semantic_role: str = ""
     expected_index_policy: str = "normal"
+    expected_visual_item_id: str = ""
+    expected_relation: str = ""
+    ocr_quality: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -38,6 +41,11 @@ class PageSpec:
     page_height: int = 792
     tags: tuple[str, ...] = ()
     expected_known_gaps: tuple[str, ...] = ()
+    capabilities: tuple[str, ...] = ()
+    confusion_group: str = ""
+    variant: str = ""
+    expected_visual_items: tuple[dict[str, Any], ...] = ()
+    baseline_assertion: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         image_blocks = [block for block in self.blocks if block.block_type == "image"]
@@ -61,6 +69,11 @@ class PageSpec:
             "blocks": [block.to_dict() for block in self.blocks],
             "tags": list(self.tags),
             "expected_known_gaps": list(self.expected_known_gaps),
+            "capabilities": list(self.capabilities),
+            "confusion_group": self.confusion_group,
+            "variant": self.variant,
+            "expected_visual_items": list(self.expected_visual_items),
+            "baseline_assertion": self.baseline_assertion,
         }
 
 
@@ -70,3 +83,4 @@ class DocumentSpec:
     document_type: str
     primary_kind: str
     pages: tuple[PageSpec, ...]
+    evaluation_scope: str = "baseline"

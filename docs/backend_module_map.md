@@ -189,3 +189,11 @@ The following modules still need future responsibility slicing:
 - `document_service`
 - `llm_context_builder`
 - `retrieval_service`
+### DCP-0.1 工程数据集
+
+- `backend/scripts/document_profile_dataset/adversarial_templates.py`：30 个对抗/扰动页面与
+  `VI-01`～`VI-10` 布局 gold。
+- `generator.py`：生成 PDF、PNG、layout、MinerU-shaped raw 和 gold。
+- `replay.py`：执行 source PDF → MinerU adapter → page visual → Canonical → Chunk 六层回放。
+- `report.py`：保持旧 11 页生产门禁，另输出对抗 case/gold/actual/diff 的 JSON/HTML 报告。
+- `app/plugins/parse_eval/service.py`：只读暴露已生成报告，不在 API 请求中执行生成器。

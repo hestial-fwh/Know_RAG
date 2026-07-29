@@ -122,6 +122,7 @@ def _write_document(
         "document_id": spec.document_id,
         "document_type": spec.document_type,
         "primary_kind": spec.primary_kind,
+        "evaluation_scope": spec.evaluation_scope,
         "pages": [page.to_dict() for page in spec.pages],
     }
     _json(layout_path, layout)
@@ -156,6 +157,7 @@ def _write_document(
             "document_id": spec.document_id,
             "document_type": spec.document_type,
             "primary_kind": spec.primary_kind,
+            "evaluation_scope": spec.evaluation_scope,
             "pages": [
                 {
                     "case_id": page.case_id,
@@ -164,12 +166,20 @@ def _write_document(
                     "preserve_page_visual": page.preserve_page_visual,
                     "chunk_policy_id": page.chunk_policy_id,
                     "expected_known_gaps": list(page.expected_known_gaps),
+                    "capabilities": list(page.capabilities),
+                    "confusion_group": page.confusion_group,
+                    "variant": page.variant,
+                    "expected_visual_items": list(page.expected_visual_items),
+                    "baseline_assertion": page.baseline_assertion,
                     "block_policies": [
                         {
                             "block_id": block.block_id,
                             "semantic_role": block.expected_semantic_role,
                             "index_policy": block.expected_index_policy,
                             "parser_output_expected": block.parser_output,
+                            "expected_visual_item_id": block.expected_visual_item_id,
+                            "expected_relation": block.expected_relation,
+                            "ocr_quality": block.ocr_quality,
                         }
                         for block in page.blocks
                     ],
@@ -182,13 +192,17 @@ def _write_document(
         "document_id": spec.document_id,
         "document_type": spec.document_type,
         "primary_kind": spec.primary_kind,
+        "evaluation_scope": spec.evaluation_scope,
         "page_count": len(spec.pages),
         "scenarios": [page.case_id for page in spec.pages],
         "pdf_path": pdf_path.relative_to(output_dir).as_posix(),
         "pdf_sha256": sha256(pdf_path.read_bytes()).hexdigest(),
         "layout_path": layout_path.relative_to(output_dir).as_posix(),
+        "layout_sha256": sha256(layout_path.read_bytes()).hexdigest(),
         "raw_response_path": raw_path.relative_to(output_dir).as_posix(),
+        "raw_response_sha256": sha256(raw_path.read_bytes()).hexdigest(),
         "gold_path": gold_path.relative_to(output_dir).as_posix(),
+        "gold_sha256": sha256(gold_path.read_bytes()).hexdigest(),
         "assets": assets,
     }
 
@@ -201,13 +215,26 @@ def generate_dataset(output_dir: Path, *, seed: int = 20260723) -> dict[str, Any
         for index, spec in enumerate(specs)
     ]
     manifest = {
-        "schema_version": 1,
-        "dataset_id": "document-profile-dcp0-v1",
+        "schema_version": 2,
+        "dataset_id": "document-profile-dcp01-v2",
         "generator_seed": seed,
         "document_types": list(DOCUMENT_TYPES),
         "scenarios": list(SCENARIOS),
         "document_count": len(documents),
         "page_count": sum(document["page_count"] for document in documents),
+        "baseline_document_count": sum(
+            document["evaluation_scope"] == "baseline" for document in documents
+        ),
+        "baseline_page_count": sum(
+            document["page_count"]
+            for document in documents
+            if document["evaluation_scope"] == "baseline"
+        ),
+        "adversarial_page_count": sum(
+            document["page_count"]
+            for document in documents
+            if document["evaluation_scope"] == "adversarial"
+        ),
         "documents": documents,
         "provenance": {
             "source_kind": "deterministic_synthetic",

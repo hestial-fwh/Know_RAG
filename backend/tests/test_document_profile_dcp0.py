@@ -12,6 +12,7 @@ from app.services.document_parser.mineru_adapter import (
     _find_content_list,
 )
 from app.services.document_parser.types import ParsedDocument
+from app.plugins.parse_eval.service import document_profile_dataset_report
 from scripts.document_profile_dataset.generator import (
     DOCUMENT_TYPES,
     SCENARIOS,
@@ -37,15 +38,20 @@ def test_dcp0_tracked_spec_matches_generator_contract():
 
     assert spec["document_types"] == list(DOCUMENT_TYPES)
     assert spec["scenarios"] == list(SCENARIOS)
-    assert spec["document_count"] == len(DOCUMENT_TYPES)
-    assert spec["page_count"] == 11
+    assert spec["document_count"] == 11
+    assert spec["page_count"] == 41
+    assert spec["baseline_page_count"] == 11
+    assert spec["adversarial_page_count"] == 30
 
 
 def test_dcp0_generator_creates_pdf_assets_raw_layout_and_gold(tmp_path):
     manifest = generate_dataset(tmp_path, seed=17)
 
-    assert manifest["document_count"] == 8
-    assert manifest["page_count"] == 11
+    assert manifest["document_count"] == 11
+    assert manifest["page_count"] == 41
+    assert manifest["baseline_document_count"] == len(DOCUMENT_TYPES)
+    assert manifest["baseline_page_count"] == 11
+    assert manifest["adversarial_page_count"] == 30
     assert manifest["provenance"]["external_assets"] is False
     assert manifest["provenance"]["external_model_calls"] is False
     observed_scenarios = set()
@@ -76,6 +82,14 @@ def test_dcp0_generator_is_deterministic(tmp_path):
         [asset["sha256"] for asset in document["assets"]]
         for document in second["documents"]
     ]
+    for hash_key in (
+        "layout_sha256",
+        "raw_response_sha256",
+        "gold_sha256",
+    ):
+        assert [document[hash_key] for document in first["documents"]] == [
+            document[hash_key] for document in second["documents"]
+        ]
 
 
 def test_dcp0_replay_and_report_close_five_layer_baseline(tmp_path):
@@ -83,13 +97,23 @@ def test_dcp0_replay_and_report_close_five_layer_baseline(tmp_path):
     snapshots = replay_manifest(tmp_path, manifest)
     report = build_coverage_report(tmp_path, manifest)
 
-    assert len(snapshots) == 8
+    assert len(snapshots) == 11
     assert all(set(snapshot["layers"]) == EXPECTED_LAYERS for snapshot in snapshots)
     assert report["engineering_baseline_passed"] is True
     assert report["document_type_gate_passed"] is True
     assert report["scenario_gate_passed"] is True
     assert report["five_layer_trace_gate_passed"] is True
     assert report["traced_page_count"] == 11
+    assert report["replayed_page_count"] == 41
+    assert report["dcp01_dataset_gate_passed"] is True
+    adversarial = report["adversarial_dataset"]
+    assert adversarial["case_count"] == 30
+    assert adversarial["gate_passed"] is True
+    assert adversarial["artifact_hashes_complete"] is True
+    assert adversarial["visual_item_cases"] == [
+        f"VI-{index:02d}" for index in range(1, 11)
+    ]
+    assert (tmp_path / "reports" / "coverage.html").is_file()
     visual = report["page_visual_baseline"]
     assert visual == {
         "expected_preserve_pages": 6,
@@ -132,6 +156,19 @@ def test_dcp0_report_fails_when_expected_visual_gap_drifts(tmp_path):
     assert report["engineering_baseline_passed"] is False
     assert report["page_visual_baseline"]["known_gap_gate_passed"] is False
     assert any("known visual gap drift" in failure for failure in report["failures"])
+
+
+def test_dcp01_report_is_available_to_parse_eval_frontend(tmp_path):
+    manifest = generate_dataset(tmp_path, seed=24)
+    replay_manifest(tmp_path, manifest)
+    build_coverage_report(tmp_path, manifest)
+
+    response = document_profile_dataset_report(tmp_path)
+
+    assert response["success"] is True
+    assert response["data"]["available"] is True
+    assert response["data"]["manifest"]["page_count"] == 41
+    assert response["data"]["report"]["dcp01_dataset_gate_passed"] is True
 
 
 def test_dcp0_report_fails_when_media_option_has_no_runtime_consumer(

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
+from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.response import error_response, success_response
@@ -79,6 +81,48 @@ def item_to_dict(item: ParseEvalItem, *, include_chunk: bool = False, db: Sessio
 
 def list_templates():
     return success_response({"items": TEMPLATES})
+
+
+def document_profile_dataset_report(dataset_root: Path | None = None):
+    """Return the generated DCP-0.1 report without mutating evaluation data."""
+
+    if dataset_root is None:
+        backend_root = Path(__file__).resolve().parents[3]
+        dataset_root = backend_root / ".generated" / "document_profile_dcp0"
+    report_path = dataset_root / "reports" / "coverage.json"
+    manifest_path = dataset_root / "corpus_manifest.json"
+    command = "python -m scripts.generate_document_profile_dataset"
+    if not report_path.is_file() or not manifest_path.is_file():
+        return success_response(
+            {
+                "available": False,
+                "dataset_root": str(dataset_root),
+                "generate_command": command,
+                "report": None,
+                "manifest": None,
+            }
+        )
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return error_response(f"DCP-0.1 数据集报告不可读：{exc}")
+    return success_response(
+        {
+            "available": True,
+            "dataset_root": str(dataset_root),
+            "generate_command": command,
+            "html_report_path": str(dataset_root / "reports" / "coverage.html"),
+            "report": report,
+            "manifest": {
+                "dataset_id": manifest.get("dataset_id"),
+                "generator_seed": manifest.get("generator_seed"),
+                "document_count": manifest.get("document_count"),
+                "page_count": manifest.get("page_count"),
+                "adversarial_page_count": manifest.get("adversarial_page_count"),
+            },
+        }
+    )
 
 
 def _collect_chunks(db: Session, document_id: str) -> list[Chunk]:

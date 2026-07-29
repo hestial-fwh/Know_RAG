@@ -25,6 +25,7 @@ parse_eval_items
 
 ```text
 GET  /api/v1/parse-eval/templates
+GET  /api/v1/parse-eval/datasets/document-profile
 POST /api/v1/parse-eval/documents/{doc_id}/run
 GET  /api/v1/parse-eval/documents/{doc_id}/latest
 GET  /api/v1/parse-eval/runs/{run_id}

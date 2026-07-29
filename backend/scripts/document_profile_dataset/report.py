@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from html import escape
 import json
 from pathlib import Path
 import re
@@ -8,7 +9,7 @@ from typing import Any
 
 from app.services.chunker.chunk_policy_resolver import DCP3_ACTIVE_POLICY_IDS
 
-from .templates import DOCUMENT_TYPES, SCENARIOS
+from .templates import BASE_SCENARIOS, DOCUMENT_TYPES, SCENARIOS
 
 
 EXPECTED_LAYERS = {
@@ -41,6 +42,149 @@ def _media_crop_closure() -> dict[str, Any]:
         "consumer_files": consumers,
         "known_gap_confirmed": '"enable_media_crop"' in source and not consumers,
     }
+
+
+def _adversarial_cases(
+    *,
+    document: dict[str, Any],
+    layout: dict[str, Any],
+    gold: dict[str, Any],
+    snapshot: dict[str, Any],
+) -> list[dict[str, Any]]:
+    layers = snapshot.get("layers") or {}
+    stats = (layers.get("canonical_artifact") or {}).get("stats_json") or {}
+    profiles = {
+        int(item["page_no"]): item
+        for item in (stats.get("document_profile") or {}).get("pages") or []
+        if item.get("page_no") is not None
+    }
+    policies = {
+        int(item["page_no"]): item
+        for item in stats.get("resolved_chunk_policies") or []
+        if item.get("page_no") is not None
+    }
+    chunks_by_page: Counter[int] = Counter()
+    for chunk in layers.get("chunk_metadata") or []:
+        metadata = chunk.get("metadata_json") or {}
+        page_no = metadata.get("page_no") or metadata.get("chunk_policy_page_no")
+        try:
+            chunks_by_page[int(page_no)] += 1
+        except (TypeError, ValueError):
+            continue
+    gold_pages = {
+        int(page["page_no"]): page for page in gold.get("pages") or []
+    }
+    cases: list[dict[str, Any]] = []
+    for page in layout.get("pages") or []:
+        page_no = int(page["page_no"])
+        gold_page = gold_pages.get(page_no) or {}
+        profile = profiles.get(page_no) or {}
+        policy = policies.get(page_no) or {}
+        diffs: list[str] = []
+        if profile.get("page_kind") != gold_page.get("page_kind"):
+            diffs.append(
+                "page_kind: "
+                f"{profile.get('page_kind') or 'missing'} != "
+                f"{gold_page.get('page_kind') or 'missing'}"
+            )
+        if policy.get("policy_id") != gold_page.get("chunk_policy_id"):
+            diffs.append(
+                "policy: "
+                f"{policy.get('policy_id') or 'missing'} != "
+                f"{gold_page.get('chunk_policy_id') or 'missing'}"
+            )
+        expected_items = gold_page.get("expected_visual_items") or []
+        if expected_items:
+            diffs.append("visual_items: pending DCP-1.1 implementation")
+        cases.append(
+            {
+                "case_id": page["case_id"],
+                "document_id": document["document_id"],
+                "page_no": page_no,
+                "artifacts": {
+                    "pdf_path": document.get("pdf_path"),
+                    "raw_response_path": document.get("raw_response_path"),
+                    "gold_path": document.get("gold_path"),
+                    "snapshot_path": document.get("snapshot_path"),
+                    "replay_command": (
+                        "python -m scripts.generate_document_profile_dataset "
+                        f"--seed {document.get('generator_seed') or 20260723}"
+                    ),
+                },
+                "capabilities": gold_page.get("capabilities") or [],
+                "confusion_group": gold_page.get("confusion_group") or "",
+                "variant": gold_page.get("variant") or "",
+                "gold": {
+                    "page_kind": gold_page.get("page_kind"),
+                    "chunk_policy_id": gold_page.get("chunk_policy_id"),
+                    "visual_items": expected_items,
+                    "block_policies": gold_page.get("block_policies") or [],
+                },
+                "actual": {
+                    "page_kind": profile.get("page_kind"),
+                    "profile_evidence": profile.get("evidence") or {},
+                    "chunk_policy_id": policy.get("policy_id"),
+                    "policy_evidence": policy.get("evidence") or {},
+                    "chunk_count": chunks_by_page.get(page_no, 0),
+                    "visual_items": None,
+                },
+                "diffs": diffs,
+                "status": "observed_diff" if diffs else "matched",
+                "accuracy_claim_allowed": False,
+            }
+        )
+    return cases
+
+
+def _write_html_report(path: Path, report: dict[str, Any]) -> None:
+    rows = []
+    for case in report.get("adversarial_dataset", {}).get("cases", []):
+        capabilities = ", ".join(case.get("capabilities") or [])
+        diffs = "; ".join(case.get("diffs") or []) or "无差异"
+        rows.append(
+            "<tr>"
+            f"<td>{escape(str(case.get('case_id') or ''))}</td>"
+            f"<td>{escape(str(case.get('confusion_group') or '-'))}</td>"
+            f"<td>{escape(str(case.get('variant') or '-'))}</td>"
+            f"<td>{escape(capabilities)}</td>"
+            f"<td>{escape(str(case.get('actual', {}).get('page_kind') or '-'))}</td>"
+            f"<td>{escape(diffs)}</td>"
+            "</tr>"
+        )
+    payload = escape(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    html = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>DCP-0.1 对抗数据集覆盖率</title>
+  <style>
+    body {{ font: 14px/1.5 system-ui, sans-serif; margin: 24px; color: #172033; }}
+    .summary {{ display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }}
+    .metric {{ border: 1px solid #d8dfeb; border-radius: 8px; padding: 10px 14px; }}
+    table {{ border-collapse: collapse; width: 100%; }}
+    th, td {{ border: 1px solid #d8dfeb; padding: 8px; vertical-align: top; }}
+    th {{ background: #f4f7fb; text-align: left; }}
+    tr:nth-child(even) {{ background: #fafbfd; }}
+    details {{ margin-top: 20px; }}
+  </style>
+</head>
+<body>
+  <h1>DCP-0.1 对抗数据集覆盖率</h1>
+  <p>合成数据仅用于工程覆盖，不代表真实 MinerU 准确率。</p>
+  <div class="summary">
+    <div class="metric">总场景：{report.get("page_count", 0)}</div>
+    <div class="metric">对抗场景：{report.get("adversarial_dataset", {}).get("case_count", 0)}</div>
+    <div class="metric">混淆组：{report.get("adversarial_dataset", {}).get("confusion_group_count", 0)}</div>
+    <div class="metric">数据门禁：{"PASS" if report.get("dcp01_dataset_gate_passed") else "FAIL"}</div>
+  </div>
+  <table>
+    <thead><tr><th>Case</th><th>混淆组</th><th>变体</th><th>能力</th><th>Actual 类型</th><th>差异</th></tr></thead>
+    <tbody>{''.join(rows)}</tbody>
+  </table>
+  <details><summary>完整 JSON</summary><pre>{payload}</pre></details>
+</body>
+</html>"""
+    path.write_text(html, encoding="utf-8")
 
 
 def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[str, Any]:
@@ -78,6 +222,8 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
     active_cross_page_chunks = 0
     adaptive_enabled_documents = 0
     traced_pages = 0
+    adversarial_cases: list[dict[str, Any]] = []
+    replayed_page_count = 0
 
     for document in manifest.get("documents") or []:
         layout = _read(output_dir / document["layout_path"])
@@ -91,6 +237,17 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
         if set(layers) != EXPECTED_LAYERS:
             failures.append(
                 f"{document['document_id']}: layer mismatch {sorted(layers)}"
+            )
+            continue
+        replayed_page_count += int(document.get("page_count") or 0)
+        if document.get("evaluation_scope") == "adversarial":
+            adversarial_cases.extend(
+                _adversarial_cases(
+                    document=document,
+                    layout=layout,
+                    gold=gold,
+                    snapshot=snapshot,
+                )
             )
             continue
         facts_by_page = {
@@ -325,13 +482,13 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
             )
 
     media_crop = _media_crop_closure()
-    scenario_gate = set(scenario_counts) == set(SCENARIOS) and all(
-        scenario_counts[scenario] == 1 for scenario in SCENARIOS
+    scenario_gate = set(scenario_counts) == set(BASE_SCENARIOS) and all(
+        scenario_counts[scenario] == 1 for scenario in BASE_SCENARIOS
     )
     document_type_gate = set(manifest.get("document_types") or []) == set(
         DOCUMENT_TYPES
     )
-    five_layer_gate = traced_pages == manifest.get("page_count") and not any(
+    five_layer_gate = traced_pages == manifest.get("baseline_page_count") and not any(
         "layer mismatch" in failure or "missing replay" in failure
         for failure in failures
     )
@@ -341,8 +498,8 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
         and enriched_duplicate_visual_pages == 0
         and injected_visual_assets == expected_gap_pages
     )
-    expected_page_count = int(manifest.get("page_count") or 0)
-    expected_document_count = int(manifest.get("document_count") or 0)
+    expected_page_count = int(manifest.get("baseline_page_count") or 0)
+    expected_document_count = int(manifest.get("baseline_document_count") or 0)
     document_profile_gate = (
         profiled_pages == expected_page_count
         and matched_page_profiles == expected_page_count
@@ -361,12 +518,80 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
         and active_cross_page_chunks == 0
         and adaptive_enabled_documents == expected_document_count
     )
+    capabilities = {
+        capability
+        for case in adversarial_cases
+        for capability in case.get("capabilities") or []
+    }
+    required_capabilities = {
+        "native_text_visual_page",
+        "poster_boundary",
+        "character_threshold_perturbation",
+        "dominant_ratio_boundary",
+        "text_area_boundary",
+        "bbox_perturbation",
+        "primary_visual_negative",
+        "ocr_quality",
+        "mixed_text_sources",
+        "negative_document_type",
+        "vlm_resilience",
+        "cross_page_relation",
+        "visual_item_layout",
+        "duplicate_fallback",
+    }
+    confusion_groups: dict[str, set[str]] = {}
+    for case in adversarial_cases:
+        group = str(case.get("confusion_group") or "")
+        if group:
+            confusion_groups.setdefault(group, set()).add(
+                str(case.get("variant") or "")
+            )
+    required_pairs = {
+        "poster-char-count",
+        "dominant-image-ratio",
+        "parser-text-area",
+        "ocr_quality",
+        "vlm_resilience",
+    }
+    paired_groups = {
+        group for group, variants in confusion_groups.items() if len(variants) >= 2
+    }
+    visual_item_cases = {
+        case["case_id"]
+        for case in adversarial_cases
+        if "visual_item_layout" in set(case.get("capabilities") or [])
+    }
+    expected_visual_item_cases = {f"VI-{index:02d}" for index in range(1, 11)}
+    adversarial_gate = all(
+        (
+            int(manifest.get("page_count") or 0) >= 32,
+            len(adversarial_cases)
+            == int(manifest.get("adversarial_page_count") or 0),
+            required_capabilities <= capabilities,
+            required_pairs <= paired_groups,
+            expected_visual_item_cases == visual_item_cases,
+            replayed_page_count == int(manifest.get("page_count") or 0),
+            set(manifest.get("scenarios") or []) == set(SCENARIOS),
+            all(
+                document.get(hash_key)
+                for document in manifest.get("documents") or []
+                for hash_key in (
+                    "pdf_sha256",
+                    "layout_sha256",
+                    "raw_response_sha256",
+                    "gold_sha256",
+                    "snapshot_sha256",
+                )
+            ),
+        )
+    )
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "dataset_id": manifest.get("dataset_id"),
         "document_count": manifest.get("document_count"),
         "page_count": manifest.get("page_count"),
         "traced_page_count": traced_pages,
+        "replayed_page_count": replayed_page_count,
         "document_type_gate_passed": document_type_gate,
         "scenario_gate_passed": scenario_gate,
         "five_layer_trace_gate_passed": five_layer_gate,
@@ -432,6 +657,29 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
             "gate_passed": adaptive_policy_gate,
         },
         "configuration_closure": {"enable_media_crop": media_crop},
+        "adversarial_dataset": {
+            "case_count": len(adversarial_cases),
+            "capabilities": sorted(capabilities),
+            "required_capabilities": sorted(required_capabilities),
+            "confusion_group_count": len(confusion_groups),
+            "paired_confusion_groups": sorted(paired_groups),
+            "required_paired_groups": sorted(required_pairs),
+            "visual_item_cases": sorted(visual_item_cases),
+            "cases": adversarial_cases,
+            "gate_passed": adversarial_gate,
+            "artifact_hashes_complete": all(
+                document.get(hash_key)
+                for document in manifest.get("documents") or []
+                for hash_key in (
+                    "pdf_sha256",
+                    "layout_sha256",
+                    "raw_response_sha256",
+                    "gold_sha256",
+                    "snapshot_sha256",
+                )
+            ),
+        },
+        "dcp01_dataset_gate_passed": adversarial_gate,
         "failures": failures,
         "accuracy_claim_allowed": False,
     }
@@ -445,6 +693,7 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
             document_profile_gate,
             resolved_policy_gate,
             adaptive_policy_gate,
+            adversarial_gate,
             not failures,
             media_crop["option_recorded"],
             media_crop["runtime_consumer_detected"],
@@ -456,6 +705,7 @@ def build_coverage_report(output_dir: Path, manifest: dict[str, Any]) -> dict[st
         json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+    _write_html_report(output_dir / "reports" / "coverage.html", report)
     return report
 
 

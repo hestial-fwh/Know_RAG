@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import asdict
+from hashlib import sha256
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -200,6 +201,7 @@ def replay_manifest(output_dir: Path, manifest: dict[str, Any]) -> list[dict[str
             document_id=document["document_id"],
         )
         document["snapshot_path"] = destination.relative_to(output_dir).as_posix()
+        document["snapshot_sha256"] = sha256(destination.read_bytes()).hexdigest()
         snapshots.append(snapshot)
     _json(output_dir / "corpus_manifest.json", manifest)
     return snapshots
