@@ -36,6 +36,9 @@ from app.services.chunker.chunk_policy_resolver import (
     DCP3_ACTIVE_POLICY_IDS,
     resolve_chunk_policies,
 )
+from app.services.chunker.dcp31_parent_policy import (
+    apply_visual_item_parent_policy,
+)
 from app.services.chunker.parent_child_splitter import split_parent_child_result
 from app.services.chunker.canonical_parent_child import build_canonical_parent_child_plan
 from app.services.document_parser.canonical_document import build_canonical_document
@@ -1177,26 +1180,13 @@ def _rebuild_canonical_weknora_parent_child(
     )
     document_profile = profile_canonical_document(canonical)
     save_debug_page_profile(document_profile)
-    resolved_policies = resolve_chunk_policies(
-        document_profile,
-        runtime_cfg,
-        materialize_parent=materialize_parents,
-        active_policy_ids=active_policy_ids,
-    )
-    save_debug_resolved_policies(resolved_policies)
-    plan = build_canonical_parent_child_plan(
-        canonical,
-        runtime_cfg,
-        resolved_policies=resolved_policies,
-    )
-    save_debug_chunk_plan(plan)
     page_layout_graph = build_page_layout_graph(
-        assets=plan.assets,
-        provenance_nodes=plan.provenance_nodes,
+        assets=canonical.assets,
+        provenance_nodes=canonical.provenance_nodes,
     )
     visual_layout = resolve_document_visual_layout(
         page_layout_graph,
-        assets=plan.assets,
+        assets=canonical.assets,
         shadow_only=not bool(settings.document_visual_item_resolution_enabled),
     )
     visual_layout_payload = visual_layout.to_metadata()
@@ -1204,6 +1194,24 @@ def _rebuild_canonical_weknora_parent_child(
         canonical,
         document_profile,
         visual_layout=visual_layout_payload,
+    )
+    policy_v2_enabled = bool(
+        settings.document_adaptive_chunk_policy_v2_enabled
+    )
+    resolved_policies = resolve_chunk_policies(
+        document_profile,
+        runtime_cfg,
+        materialize_parent=materialize_parents,
+        active_policy_ids=active_policy_ids,
+        profile_v2=document_profile_v2,
+        visual_layout=visual_layout_payload,
+        policy_v2_enabled=policy_v2_enabled,
+    )
+    save_debug_resolved_policies(resolved_policies)
+    plan = build_canonical_parent_child_plan(
+        canonical,
+        runtime_cfg,
+        resolved_policies=resolved_policies,
     )
     page_profiles_v2 = {
         page.page_no: page for page in document_profile_v2.pages
@@ -1252,6 +1260,13 @@ def _rebuild_canonical_weknora_parent_child(
                     page_profile_v2.origin_admission
                 ),
             }
+            metadata["content_admission_v2"] = {
+                "policy_version": "content-admission-block-origin-v1",
+                "applied": policy_v2_enabled,
+                "origin_admission": dict(
+                    page_profile_v2.origin_admission
+                ),
+            }
         asset_id = str(metadata.get("asset_id") or "")
         if asset_id and asset_id in asset_visual_items:
             items = asset_visual_items[asset_id]
@@ -1272,6 +1287,12 @@ def _rebuild_canonical_weknora_parent_child(
         if relations:
             metadata["visual_text_relations"] = relations
         child.metadata = metadata
+    dcp31_parent_summary = apply_visual_item_parent_policy(
+        plan,
+        visual_layout_payload,
+        enabled=policy_v2_enabled,
+    )
+    save_debug_chunk_plan(plan)
     relation_graph = None
     phase3_applied = False
     if settings.document_relation_graph_enabled:
@@ -1366,6 +1387,12 @@ def _rebuild_canonical_weknora_parent_child(
                         document_profile_v2.profile_version
                     ),
                     "document_profile_v2": document_profile_v2.to_metadata(),
+                    "mineru_ocr_admission": (
+                        canonical.metadata.get("mineru_ocr_admission") or {}
+                    ),
+                    "mineru_block_origin": (
+                        canonical.metadata.get("mineru_block_origin") or {}
+                    ),
                     "document_visual_layout": visual_layout_payload,
                     "resolved_chunk_policies": [
                         policy.to_metadata() for policy in resolved_policies
@@ -1375,6 +1402,8 @@ def _rebuild_canonical_weknora_parent_child(
                     ),
                     "chunk_policy_execution_version": "dcp3-v1",
                     "adaptive_chunk_policy_enabled": adaptive_policy_active,
+                    "adaptive_chunk_policy_v2_enabled": policy_v2_enabled,
+                    "dcp31_parent_policy": dcp31_parent_summary,
                     "active_resolved_chunk_policy_counts": dict(
                         sorted(active_resolved_policy_counts.items())
                     ),
@@ -1541,6 +1570,11 @@ def _enforce_parent_child_integrity(chunks: list[Chunk]) -> list[Chunk]:
     parents = {chunk.id: chunk for chunk in chunks if (chunk.chunk_type or "") == "parent_text"}
     if not parents:
         return chunks
+
+    def explicitly_materialized(chunk: Chunk) -> bool:
+        policy = (chunk.metadata_json or {}).get("parent_policy")
+        return isinstance(policy, dict) and bool(policy.get("materialize"))
+
     children_by_parent: dict[str, list[Chunk]] = {parent_id: [] for parent_id in parents}
     for chunk in chunks:
         if chunk.parent_chunk_id in children_by_parent:
@@ -1574,6 +1608,27 @@ def _enforce_parent_child_integrity(chunks: list[Chunk]) -> list[Chunk]:
                             "visual_page_scoped_parent"
                         )
                     )
+                    or bool(
+                        (parents[parent_id].metadata_json or {}).get(
+                            "visual_item_scoped_parent"
+                        )
+                    )
+                    or bool(
+                        (children[0].metadata_json or {}).get(
+                            "visual_item_scoped_parent"
+                        )
+                    )
+                    or bool(
+                        (parents[parent_id].metadata_json or {}).get(
+                            "dcp31_page_overview_parent"
+                        )
+                    )
+                    or bool(
+                        (parents[parent_id].metadata_json or {}).get(
+                            "dcp31_remainder_parent"
+                        )
+                    )
+                    or explicitly_materialized(parents[parent_id])
                 )
             )
         )

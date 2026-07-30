@@ -100,6 +100,14 @@ class Settings(BaseSettings):
         False,
         alias="DOCUMENT_FIELD_CONTENT_ADMISSION_ENABLED",
     )
+    document_mineru_ocr_block_admission_enabled: bool = Field(
+        False,
+        alias="DOCUMENT_MINERU_OCR_BLOCK_ADMISSION_ENABLED",
+    )
+    document_adaptive_chunk_policy_v2_enabled: bool = Field(
+        False,
+        alias="DOCUMENT_ADAPTIVE_CHUNK_POLICY_V2_ENABLED",
+    )
     document_visual_item_resolution_enabled: bool = Field(
         False,
         alias="DOCUMENT_VISUAL_ITEM_RESOLUTION_ENABLED",

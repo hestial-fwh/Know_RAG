@@ -1,6 +1,6 @@
 # 多模态文档融合：画像、解析、切分与索引分阶段方案
 
-> 状态：DCP-0～DCP-3、DCP-4R、DCP-0.1、DCP-1.1、DCP-2.1 PASS；DCP-4 初版保留为 FAIL 记录，下一阶段为 DCP-3.1
+> 状态：DCP-0～DCP-3、DCP-4R、DCP-0.1、DCP-1.1、DCP-2.1、DCP-3.1 PASS；DCP-4 初版保留为 FAIL 记录，下一阶段为 DCP-5.1
 > 编写日期：2026-07-23  
 > 最近审查：2026-07-29
 > 适用范围：当前 `know_rag` 主分支  
@@ -959,6 +959,24 @@ embedding 或 BM25。作品级 parent 与准入执行由 DCP-3.1 解耦后接入
 
 ### DCP-3.1：边界、父块和内容准入策略解耦
 
+**状态：PASS（2026-07-29）。**
+
+已完成生产闭环：
+
+- MinerU PDF 文本 block 在 reflow 前按块标记为 `native_text / mixed_or_ambiguous /
+  mineru_ocr / parser_noise`，不再用“页面存在原生文本”替代块级来源判断；
+- VLM 增强完成后执行 `mineru-ocr-admission-v1`，将候选 block 分为 `normal /
+  auxiliary / shadow`；只有 `normal` 进入生产 ParsedDocument、reflow 和 Canonical 主 Markdown，
+  原始文本、bbox、分数与 reasons 保存在 debug artifact 和 processing-profile 审计投影中；
+- `BoundaryPolicy / ParentPolicy / ContentAdmissionPolicy` 已成为相互独立、可序列化的策略对象，
+  旧策略字段继续兼容；
+- 同页多 `VisualItem` 时按作品建立独立 parent；无法可靠绑定的文本、图片和整页 fallback 进入
+  同页 page-overview parent，不强挂到某个作品，也不跨页合并；
+- 文档详情页支持查看生产投影汇总、逐块来源、准入、分数、bbox、原因和原始 OCR。
+
+自动化验收：DCP-3.1、DCP-2.1、DCP-3、DCP-4R 聚焦回归 43 项通过；后端全量 498 项通过；
+前端 typecheck、ESLint、Vitest 及生产构建通过。真实书法 replay 指标在本节验收记录中持续保留。
+
 **依赖：DCP-2.1 PASS。状态：未开始。**
 
 本阶段首先修复一个已经由真实书法 PDF replay 证实的前置缺口：MinerU 可能在同一页同时产出
@@ -1076,13 +1094,28 @@ content、range 和 parent 关系与基线完全一致。
 - 32 页对应页面图片和 VLM 描述全部保留，图片检索仍可命中；
 - 关闭新开关重放后与当前 baseline 完全一致。
 
+2026-07-30 使用保存的真实增强产物
+`run_id=20260729T103118.494868` 完成生产投影重放并写入 revision
+`95be537c-7731-433b-8c10-9bf035725623`：158 个输入 block 中
+`normal=1 / auxiliary=3 / shadow=100`，排除 103 个低可信 block；最终生成 55 个 Chunk
+（11 text、11 parent、33 image）。第 7 页只剩 1 个可靠印刷 text child，第 12、16、17、30 页
+不再生成污染 text child，已知污染串生产命中为 0，可靠说明和作品标题保留，父块引用孤立数为 0。
+该真实文档每页目前只有一个上游 VisualItem，因此作品级 parent 策略未触发；同页多 VisualItem
+不共享 parent 由确定性回归样例覆盖，上游无法可靠分割整页图时不会伪造多个作品区域。
+
+2026-07-30 父块完整性回归修复：旧完整性后处理曾错误压平只有一个 child 的
+`visual_item_scoped_parent`，并让歧义 fallback 成为 root child。修复后作品 singleton parent
+明确保留，歧义内容归入 page-overview parent，作品抽取后的 legacy remainder parent 也显式
+物化。对 `diskfcl87_fcl87_05-页面2.pdf` 重放后为 37 parent + 75 child，生产
+`parent_chunk_id=None` 子块为 0，错误 parent 引用为 0。
+
 退出条件：可靠原生/印刷内容丢失 0；书法 replay 已知污染 OCR 进入生产 text child 为 0；
 固定集无孤立 child、无无证据跨页、无作品跨 parent 混合；普通文本零差异；前端 block 级
 准入证据和真实样本边界报告人工 PASS。
 
 ### DCP-5.1：统一前端验收台与受控覆盖
 
-**依赖：DCP-3.1 PASS。状态：未开始。**
+**依赖：DCP-3.1 PASS。状态：下一阶段。**
 
 在现有 `DocumentDetailView`、`DocumentContentView`、`ChunkDetailView`、`SearchDebugView` 和
 解析评测入口上扩展，不新建特殊上传流程。新增只读聚合 API，建议：
@@ -1382,13 +1415,11 @@ artifact 和旧 chunk 混合。
 | 2 | DCP-0.1 | PASS | 42 页数据集、MinerU replay、gold、JSON/HTML 和验收页 | 已满足 |
 | 3 | DCP-1.1 | PASS | 页内区域、Visual Item、文本归属和布局验收图 | 已满足 |
 | 4 | DCP-2.1 | PASS | 多轴画像、OCR 连续评分、uncertain | shadow replay 无可靠内容丢失 |
-| 5 | DCP-3.1 | 下一阶段 | MinerU block OCR 隔离、生产投影、边界/parent/准入策略解耦 | 可靠内容零丢失、坏 OCR 入生产 child 为 0、普通文本零差异、边界报告 PASS |
-| 6 | DCP-5.1 | 未开始 | 统一前端验收台、只读聚合 API | API/UI/E2E 闭环 PASS |
+| 5 | DCP-3.1 | PASS | MinerU block OCR 隔离、生产投影、边界/parent/准入策略解耦 | 可靠内容零丢失、坏 OCR 入生产 child 为 0、普通文本零差异、边界报告 PASS |
+| 6 | DCP-5.1 | 下一阶段 | 统一前端验收台、只读聚合 API | API/UI/E2E 闭环 PASS |
 | 7 | DCP-6 | 未开始 | 检索评估、知识库灰度和回滚 | 真实样本门槛与回滚演练 PASS |
 | 8 | DCP-7 | 门禁等待 | 恢复 relation graph Phase 4 | 上游四项稳定门禁全部满足 |
 
-下一工作项是 **DCP-3.1**：在 DCP-1.1 的作品单元和 DCP-2.1 多轴画像上，建立
-block 级来源标记和 reflow 前 OCR 生产投影，再建立相互解耦的
-`BoundaryPolicy / ParentPolicy / ContentAdmissionPolicy`。先用真实书法 replay 证明可靠印刷
-说明不丢失、低质量书法 OCR 不进入生产 child，再以 shadow diff 验证普通正文零变化、作品不跨
-parent 混合、无孤立 child 和无证据跨页，最后接入现有 DCP-4R 字段级准入执行链路。
+下一工作项是 **DCP-5.1**：把页面事实、VisualItem、block 来源、生产准入、切分策略和索引通道
+聚合成统一前端验收台；补齐原 PDF 页面底图叠加、策略时间线、边界告警、检索命中解释与受控覆盖
+入口，并用至少 3 个端到端文档完成 API/UI/E2E 闭环。

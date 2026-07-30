@@ -268,6 +268,42 @@ export interface DocumentProcessingProfileResponse {
   }>
   pages?: DocumentPageProfileV2[]
   legacy_pages?: Array<Record<string, unknown>>
+  policy_v2_enabled?: boolean
+  block_origin?: {
+    algorithm_version?: string
+    status?: string
+    block_counts?: Record<string, number>
+  }
+  ocr_admission?: {
+    algorithm_version?: string
+    enabled?: boolean
+    production_projection_applied?: boolean
+    input_block_count?: number
+    output_block_count?: number
+    excluded_block_count?: number
+    admission_counts?: Record<string, number>
+    blocks?: Array<{
+      page_no?: number | null
+      order_index?: number
+      bbox?: number[] | null
+      text_origin?: string
+      ocr_admission?: string
+      ocr_quality_score?: number
+      ocr_admission_reasons?: string[]
+      text?: string
+      text_truncated?: boolean
+    }>
+  }
+  parent_policy?: {
+    algorithm_version?: string
+    enabled?: boolean
+    applied?: boolean
+    affected_pages?: number[]
+    visual_item_parent_count?: number
+    page_overview_parent_count?: number
+    ambiguous_standalone_count?: number
+  }
+  resolved_policies?: Array<Record<string, unknown>>
 }
 
 export function getDocumentProcessingProfile(id: string, pageNo?: number) {

@@ -10,6 +10,9 @@ from app.services.document_parser.mineru_adapter import (
     is_mineru_supported_format,
     parse_document_with_mineru,
 )
+from app.services.document_parser.mineru_ocr_admission import (
+    annotate_mineru_block_origins,
+)
 from app.services.document_parser.page_visual_enricher import (
     attach_pdf_page_visual_profile,
     enrich_pdf_page_visuals,
@@ -96,19 +99,21 @@ def _maybe_preserve_pdf_page_visuals(
         0.70,
     )
     if not _page_visual_preservation_enabled(document):
-        return attach_pdf_page_visual_profile(
+        profiled = attach_pdf_page_visual_profile(
             path,
             parsed,
             dominant_image_threshold=dominant_image_threshold,
         )
-    return enrich_pdf_page_visuals(
-        path,
-        parsed,
-        knowledge_base_id=document.knowledge_base_id,
-        document_id=document.id,
-        dominant_image_threshold=dominant_image_threshold,
-        render_dpi=getattr(settings, "document_page_visual_render_dpi", 144),
-    )
+    else:
+        profiled = enrich_pdf_page_visuals(
+            path,
+            parsed,
+            knowledge_base_id=document.knowledge_base_id,
+            document_id=document.id,
+            dominant_image_threshold=dominant_image_threshold,
+            render_dpi=getattr(settings, "document_page_visual_render_dpi", 144),
+        )
+    return annotate_mineru_block_origins(path, profiled)
 
 
 def resolve_parser_engine(

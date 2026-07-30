@@ -1917,6 +1917,28 @@ def _split_dcp3_policy_segments(
                     "chunk_policy_applied": True,
                     "chunk_policy_page_no": policy.page_no,
                     "chunk_policy_boundary_strategy": policy.boundary_strategy,
+                    "boundary_policy": policy.boundary_policy.to_metadata()
+                    if hasattr(policy.boundary_policy, "to_metadata")
+                    else {
+                        "policy_id": policy.boundary_policy.policy_id,
+                        "strategy": policy.boundary_policy.strategy,
+                        "preserve_page_boundary": (
+                            policy.boundary_policy.preserve_page_boundary
+                        ),
+                        "table_mode": policy.boundary_policy.table_mode,
+                    },
+                    "parent_policy": {
+                        "policy_id": policy.parent_policy.policy_id,
+                        "strategy": policy.parent_policy.strategy,
+                        "materialize": policy.parent_policy.materialize,
+                    },
+                    "content_admission_policy": {
+                        "policy_id": policy.content_admission_policy.policy_id,
+                        "origin_admission": dict(
+                            policy.content_admission_policy.origin_admission
+                        ),
+                        "stage": policy.content_admission_policy.stage,
+                    },
                     "dcp3_executed_policy_id": policy.policy_id,
                     "dcp3_executed_policy_page_no": policy.page_no,
                 }
@@ -2003,6 +2025,26 @@ def _apply_chunk_policy_metadata(
                     policy.preserve_page_boundary
                 ),
                 "chunk_policy_table_mode": policy.table_mode,
+                "boundary_policy": {
+                    "policy_id": policy.boundary_policy.policy_id,
+                    "strategy": policy.boundary_policy.strategy,
+                    "preserve_page_boundary": (
+                        policy.boundary_policy.preserve_page_boundary
+                    ),
+                    "table_mode": policy.boundary_policy.table_mode,
+                },
+                "parent_policy": {
+                    "policy_id": policy.parent_policy.policy_id,
+                    "strategy": policy.parent_policy.strategy,
+                    "materialize": policy.parent_policy.materialize,
+                },
+                "content_admission_policy": {
+                    "policy_id": policy.content_admission_policy.policy_id,
+                    "origin_admission": dict(
+                        policy.content_admission_policy.origin_admission
+                    ),
+                    "stage": policy.content_admission_policy.stage,
+                },
                 METADATA_KEY_IMAGE_OCR_MODE: policy.image_ocr_mode,
                 "chunk_policy_applied": applied,
                 "chunk_policy_mode": "active" if applied else "shadow_fallback",

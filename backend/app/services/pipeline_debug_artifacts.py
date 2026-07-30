@@ -343,6 +343,12 @@ class DebugRun:
                 "document_field_content_admission_enabled": bool(
                     settings.document_field_content_admission_enabled
                 ),
+                "document_mineru_ocr_block_admission_enabled": bool(
+                    settings.document_mineru_ocr_block_admission_enabled
+                ),
+                "document_adaptive_chunk_policy_v2_enabled": bool(
+                    settings.document_adaptive_chunk_policy_v2_enabled
+                ),
                 "document_visual_item_resolution_enabled": bool(
                     settings.document_visual_item_resolution_enabled
                 ),

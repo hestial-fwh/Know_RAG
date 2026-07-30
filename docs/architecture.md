@@ -55,7 +55,13 @@ PDF 页面尺寸、原生文本字符数、嵌入图片数量/覆盖率和 parse
 image block 的页面进行选页渲染；已有页面图按 page/bbox 覆盖率去重，普通论文小图页不补整页图。
 补入的 block 标记为 `page_primary_visual`，保留权威 PDF page extent，并设置
 `exclude_from_asset_group=true`，避免与普通 figure 组成错误图片组。画像或渲染失败时 fail-open
-返回原 ParsedDocument，不触发 parser fallback，也不删除任何 OCR/正文。
+返回原 ParsedDocument，不触发 parser fallback，也不删除任何 OCR/正文。MinerU PDF 主路径随后
+执行 block 来源标记，使用 PDF 原生文本层与 MinerU block 的规范化匹配证据区分
+`native_text / mixed_or_ambiguous / mineru_ocr / parser_noise`。VLM 增强完成后、reflow 之前，
+`mineru-ocr-admission-v1` 对 OCR 候选按文字质量、版式、页面视觉事实和书法语义证据评分；
+`normal` 进入生产 ParsedDocument，`auxiliary/shadow` 仅保留在审计投影，不污染 Canonical
+Markdown、text child、embedding 或 BM25。该行为由
+`DOCUMENT_MINERU_OCR_BLOCK_ADMISSION_ENABLED` 控制，关闭时保持旧内容不变。
 已有整页 parser 图片也会标记为 `page_primary_visual`。`block_reflow` 对这类视觉页使用页级
 section scope：只接受本页顶部、短文本形态可靠的作品标题；页面中部的 parser 标题会降级为
 普通文本，没有可靠标题时生成“第 N 页内容”边界。视觉页标题不会跨页传播，普通论文和连续正文
@@ -138,6 +144,15 @@ DCP-3 由默认关闭的 `DOCUMENT_ADAPTIVE_CHUNK_POLICY_ENABLED` 控制。开�
 关闭开关时全部策略退回 shadow，切分保持原 Canonical 全局路径。DCP-3 不改变 OCR/BM25/
 embedding 准入，相关隔离仍属于 DCP-4。
 
+DCP-3.1 在上述兼容策略之上引入可组合的 `BoundaryPolicy / ParentPolicy /
+ContentAdmissionPolicy`，由 `DOCUMENT_ADAPTIVE_CHUNK_POLICY_V2_ENABLED` 控制。三类策略分别
+决定切分边界、父块归属和来源准入，均随 chunk metadata 与 Canonical artifact 持久化。同页存在
+多个已解析 `VisualItem` 时，以作品为 parent 边界；已绑定的图片与文本只进入对应作品。无法
+唯一归属的整页 fallback、文本或图片不强挂到任一作品，而是进入同页
+`page_overview_ambiguous` parent；作品级 singleton parent、页面概览 parent 和作品抽取后的
+legacy remainder parent 都是明确可物化边界，不再被普通“少于两个子块”规则压平。禁止跨作品
+或跨页强绑。关闭 v2 开关时继续使用原 DCP-3 策略。
+
 DCP-4 初版的整 Chunk OCR 隔离已由 DCP-4R 替换。当前 `ContentAdmissionResult` 按
 native/parser text、caption、VLM、image/table content 和 visual OCR 分通道合成内容；页面级
 `chunk_policy_image_ocr_mode=shadow_auxiliary` 只隔离明确的 `visual_ocr` 字段，不影响同页可靠
@@ -166,7 +181,7 @@ shared_context、ambiguous 和 unbound，长正文及等距候选不会被强绑
 `stats_json.document_visual_layout`，并透传到 image/text child metadata。开关
 `DOCUMENT_VISUAL_ITEM_RESOLUTION_ENABLED` 默认关闭；关闭时 resolver 仍输出 shadow
 验收数据，但不改变内容准入、切分或检索。DCP-1.1 已完成结构闭环；书法 OCR 可信度和字段级
-准入仍属于 DCP-2.1 的 shadow 建议和下一阶段 DCP-3.1 的策略解耦范围。
+准入由 DCP-2.1 提供 shadow 证据，并由 DCP-3.1 的 block 级生产投影和解耦策略执行。
 
 DCP-2.1 在 VisualItem 解析后生成确定性的 `document-profile-v2`。它不再用单一 page kind
 直接决定内容去留，而是分别记录 `layout_kind / semantic_hints / text_origins / ocr_trust`，
@@ -175,7 +190,8 @@ DCP-2.1 在 VisualItem 解析后生成确定性的 `document-profile-v2`。它�
 建议；无原生文本但存在 VisualItem 的 parser text 视为视觉 OCR 候选，进入
 `trusted / auxiliary / uncertain / shadow` 分档。完整画像保存在
 Canonical artifact，页绑定 child 只保存紧凑 shadow metadata；现有 embedding、BM25、Chunk
-内容和 parent 边界均不受影响。
+内容和 parent 边界均不受影响；DCP-3.1 开启后，生产准入与 VisualItem parent 策略消费这些
+证据，原始 shadow 画像仍完整保留用于解释和回放。
 
 ## 代码边界
 

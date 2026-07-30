@@ -113,3 +113,9 @@ PDF 的 `DocumentContentView` 在当前 Canonical artifact 存在视觉布局数
 不确定原因和 contribution evidence。旧解析产物明确提示尚未生成并需重新解析。前端不执行
 OCR 质量判断，也不能把 shadow 建议写回生产。详情页首次只读取轻量页面索引，随后按当前页
 加载完整 evidence，避免长文档一次传输并渲染全部页面画像。
+
+DCP-3.1 开启后，同一页面继续展示生产投影结果：顶部汇总 MinerU OCR 的
+`normal/auxiliary/shadow` 数量以及 VisualItem/page-overview parent 执行情况；逐块展示来源、准入、质量分、
+bbox、reasons 与原始 OCR。原始文本只在用户切到具体页面时懒加载。这里展示的是后端已执行的
+生产决策，不在浏览器中重新评分；“已隔离”表示未进入 reflow/Canonical/text child，而不是删除
+原始 PDF 或 debug artifact。

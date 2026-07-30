@@ -342,6 +342,11 @@ chunk 返回新增或补齐：
   - 需要登录，只读；`page_no` 为可选整数；
   - 返回 `profile_version / parse_revision / shadow_only`；
   - `summary` 包含布局、语义提示、文本来源、OCR 可信度分布和不确定页数；
+  - `ocr_admission` 返回 reflow 前生产投影汇总；指定 `page_no` 时才返回该页原始 block 审计项，
+    每项包含 `origin/admission/quality_score/reasons/bbox/raw_text`；
+  - `block_origin` 返回 MinerU block 来源识别版本与计数；
+  - `parent_policy` 返回 DCP-3.1 VisualItem 与 page-overview parent 执行汇总；
+  - `resolved_policies` 返回解耦后的 boundary、parent、content-admission 策略；
   - 不带 `page_no` 时仅返回轻量 `available_pages`，`pages/legacy_pages` 为空；
   - 指定 `page_no` 后，`pages` 返回该页四轴画像、来源准入建议、连续分数/分档、不确定原因与
     evidence；

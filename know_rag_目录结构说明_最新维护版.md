@@ -57,11 +57,11 @@ Canonical Markdown
 9. Current 文档入口是 `docs/index.md`；历史变更通过 Git 记录追溯，不保留重复 Phase/repair 报告。
 10. 上传链路不设置应用层大小上限；容量边界由临时磁盘、MinIO 和外部代理决定。
 11. `ParseTaskEvent` 仅是运行期临时进度，任务结束即清空，不保存 block/chunk 预览。
-12. **DCP（Document Chunking Pipeline）分五个阶段**：DCP-0（基线画像）→ DCP-1（页面主视觉保护）→ DCP-2（文档/页面/块三级画像）→ DCP-3（差异化切分策略）→ DCP-4（视觉页 OCR 隔离），DCP-5（前端可观测性）待开发。
+12. **DCP（Document Chunking Pipeline）当前主线**：DCP-0～3、DCP-4R、DCP-0.1、DCP-1.1、DCP-2.1、DCP-3.1 已完成；下一阶段 DCP-5.1 负责统一前端验收台。
 13. **视觉类文档跨页绑定**：`_build_visual_section_parents()` 使用三 Pass 算法——Pass 1 逐页分类+页内绑定，Pass 2 跨页孤儿绑定（纯图页→最近文字页），Pass 3 统一物化。由 `DOCUMENT_VISUAL_SECTION_PARENT_ENABLED` 控制。
 14. **文档分类全链路**：PDF 视觉分析 → page_primary_visual 注入 → CanonicalDocument 构建 → 页面级分类（table_dense/visual_dominant/scanned_prose/slide/native_text）→ 策略映射 → 三条切分路径（DCP-3 活跃策略 / visual_page_ranges / 普通文本）。详见 `docs/explain/document_classification_pipeline.md`。
-15. **8 个 feature flags 控制渐进式功能**：`DOCUMENT_PAGE_VISUAL_PRESERVATION_ENABLED`、`DOCUMENT_ADAPTIVE_CHUNK_POLICY_ENABLED`、`DOCUMENT_VISUAL_SECTION_PARENT_ENABLED`、`DOCUMENT_VISUAL_OCR_QUARANTINE_ENABLED`、`DOCUMENT_RELATION_GRAPH_ENABLED`、`DOCUMENT_RELATION_MATERIALIZATION_ENABLED`、`DOCUMENT_RELATION_RETRIEVAL_EXPANSION_ENABLED`、`DOCUMENT_ASSET_GROUP_ENABLED`。全部默认 `false`，按环境显式启用。
-16. `content_cleaning.py` 提供 DCP-4 OCR 隔离常量和 `is_visual_ocr_quarantined()` 函数，`embedding_service.py` 在向量化前检查隔离标记，确保视觉页 OCR 文本不参与 embedding 和 ES 索引。
+15. **DCP-3.1 的两个独立开关**：`DOCUMENT_MINERU_OCR_BLOCK_ADMISSION_ENABLED` 控制 reflow 前 block 级 OCR 生产投影；`DOCUMENT_ADAPTIVE_CHUNK_POLICY_V2_ENABLED` 控制 boundary/parent/content-admission 三策略解耦。全部默认 `false`，按环境显式启用。
+16. DCP-4 初版的整 Chunk 隔离已由 DCP-4R 字段级准入替代；DCP-3.1 进一步在 reflow 前移除明确的低质量 MinerU OCR，同时保留原始审计数据。
 17. **跨浮动内容正文续接**：`_detect_floating_content_continuations()` 扫描未以句末标点结尾的 text child，跨越图片/表格/caption/页码噪声向前查找续写文本，匹配后调用 `_adjust_continuation_boundary()` 将切分点对齐到自然句末标点，尾部文本移入续写块头部。孤儿块不再创建 1:1 合成 Parent，改为标记 `standalone_root_child`。
 
 ---
@@ -194,6 +194,8 @@ backend/app/core/
 |------|--------|----------|------|
 | `DOCUMENT_PAGE_VISUAL_PRESERVATION_ENABLED` | `false` | DCP-1 | PDF 页面主视觉分析与 page_primary_visual 注入 |
 | `DOCUMENT_ADAPTIVE_CHUNK_POLICY_ENABLED` | `false` | DCP-3 | 差异化切分策略映射（活跃策略 vs 影子策略） |
+| `DOCUMENT_MINERU_OCR_BLOCK_ADMISSION_ENABLED` | `false` | DCP-3.1 | MinerU block 来源识别与 reflow 前 OCR 生产投影 |
+| `DOCUMENT_ADAPTIVE_CHUNK_POLICY_V2_ENABLED` | `false` | DCP-3.1 | boundary、parent、content-admission 三策略解耦 |
 | `DOCUMENT_VISUAL_SECTION_PARENT_ENABLED` | `false` | 跨页绑定 | 视觉文档段落级父块 + 跨页图片绑定（三 Pass 算法） |
 | `DOCUMENT_VISUAL_OCR_QUARANTINE_ENABLED` | `false` | DCP-4 | 视觉页 OCR 文本隔离（不参与 embedding/ES） |
 | `DOCUMENT_RELATION_GRAPH_ENABLED` | `false` | 关系图 | 文档关系图总开关 |
@@ -313,6 +315,7 @@ backend/app/services/document_parser/
 ├─ page_visual_enricher.py                # 缺失页面主视觉补偿、去重与降级统计 [主链路，可选]
 ├─ document_profiler.py                   # Canonical 文档/逐页画像与证据汇总 [主链路，shadow]
 ├─ document_profiler_v2.py                # DCP-2.1 四轴画像、OCR 连续评分与 evidence [主链路，shadow]
+├─ mineru_ocr_admission.py                # DCP-3.1 block 来源识别、质量评分与生产投影 [主链路]
 ├─ docx_multimodal.py                     # DOCX 多模态解析
 ├─ generic_parsers.py                     # 通用格式解析器
 ├─ media_storage.py                       # 解析媒体文件保存
@@ -378,6 +381,7 @@ backend/app/services/chunker/
 │
 ├─ canonical_parent_child.py              # Canonical → 父子切分计划 [当前核心算法]
 ├─ chunk_policy_resolver.py               # 逐页 resolved policy 与 DCP-3 active/shadow 边界
+├─ dcp31_parent_policy.py                  # VisualItem、page-overview 与 legacy remainder 父块策略
 ├─ parent_child_splitter.py               # Know_RAG ↔ WeKnora Python 算法适配
 ├─ weknora_splitter.py                    # Old 两阶段 Parent/Child 实际算法实现
 │
@@ -825,8 +829,9 @@ Parent
 | DCP-2 | 文档/页面/块三级画像 + 策略映射 | `document_profiler.py` + `chunk_policy_resolver.py` | ✅ 完成 |
 | DCP-2.1 | 多轴页面画像 + OCR 连续可信度（shadow） | `document_profiler_v2.py` | ✅ 完成 |
 | DCP-3 | 差异化切分（活跃策略按页切分） | `canonical_parent_child.py` → `_split_dcp3_policy_segments()` | ✅ 完成 |
-| DCP-4 | 视觉页 OCR 隔离（不参与 embedding/ES） | `content_cleaning.py` + `embedding_service.py` | ✅ 完成 |
-| DCP-5 | 前端可观测性（画像提示、按知识库灰度） | — | 🔲 下一步 |
+| DCP-3.1 | block OCR 生产投影 + 三策略解耦 + VisualItem/page-overview parent | `mineru_ocr_admission.py` + `dcp31_parent_policy.py` | ✅ 完成 |
+| DCP-4R | 字段级 OCR 准入（不丢 caption/VLM/native text） | `content_cleaning.py` + `embedding_service.py` | ✅ 完成 |
+| DCP-5.1 | 统一前端验收台与受控覆盖 | `DocumentDetailView.vue`（增量基础） | 🔲 下一步 |
 
 ## 9.2 文档分类全链路（6 阶段）
 
@@ -877,13 +882,14 @@ Pass 3（Phase 4）：统一物化
   └─ 每个保留组物化为一个 CanonicalParentDraft
 ```
 
-## 9.5 DCP-4 OCR 隔离
+## 9.5 DCP-4R 与 DCP-3.1 OCR 准入
 
-视觉页（纯图页）的 OCR 文本通常质量低（书法字识别错误、版面乱码），不应参与语义检索。
+视觉页 OCR 是否进入生产内容按 block 和内容通道决定，不再按整页或整个 Chunk 一刀切。
 
-- `content_cleaning.py`：定义 `is_visual_ocr_quarantined()` 检查隔离标记
-- `embedding_service.py`：在向量化前检查隔离标记，跳过已隔离 chunk
-- 隔离的 chunk 既不生成 embedding，也不同步到 Elasticsearch
+- `mineru_ocr_admission.py`：在 VLM 后、reflow 前标记来源并评分，只有 `normal` block 进入生产正文；
+- `content_cleaning.py`：DCP-4R 在索引层按 native/parser/caption/VLM/visual OCR 通道合成内容；
+- `embedding_service.py` 与 Elasticsearch BM25 共用字段级准入结果；
+- `auxiliary/shadow` OCR 保留原文、bbox、分数和原因供 processing-profile 与 debug artifact 审计。
 
 ## 9.6 关键阈值
 

@@ -24,6 +24,9 @@ from app.services.storage import delete_document_objects, object_key_for_source,
 from app.services.storage import delete_document_cache
 
 from app.services.document_parser.block_reflow import reflow_parsed_document
+from app.services.document_parser.mineru_ocr_admission import (
+    apply_mineru_ocr_admission,
+)
 from app.services.pipeline_debug_artifacts import (
     finalize_debug_run,
     init_debug_run,
@@ -482,6 +485,13 @@ def get_document_processing_profile(
             }
         )
     profile_v1 = stats.get("document_profile") or {}
+    ocr_admission = stats.get("mineru_ocr_admission") or {}
+    admission_blocks = [
+        block
+        for block in ocr_admission.get("blocks") or []
+        if page_no is not None
+        and int(block.get("page_no") or 0) == page_no
+    ]
     all_pages_v2 = profile_v2.get("pages") or []
     available_pages = [
         {
@@ -522,6 +532,20 @@ def get_document_processing_profile(
             "evidence": profile_v2.get("evidence") or [],
             "pages": pages_v2,
             "legacy_pages": pages_v1,
+            "ocr_admission": {
+                **{
+                    key: value
+                    for key, value in ocr_admission.items()
+                    if key != "blocks"
+                },
+                "blocks": admission_blocks,
+            },
+            "block_origin": stats.get("mineru_block_origin") or {},
+            "policy_v2_enabled": bool(
+                stats.get("adaptive_chunk_policy_v2_enabled", False)
+            ),
+            "parent_policy": stats.get("dcp31_parent_policy") or {},
+            "resolved_policies": stats.get("resolved_chunk_policies") or [],
         }
     )
 
@@ -751,6 +775,16 @@ async def parse_document(
 
             enhanced_images = await enhance_image_blocks(db, parsed_document.blocks) if vlm_enabled else 0
             save_debug_parsed_document("03_enhanced_document", parsed_document)
+            parsed_document = apply_mineru_ocr_admission(
+                parsed_document,
+                enabled=bool(
+                    settings.document_mineru_ocr_block_admission_enabled
+                ),
+            )
+            ocr_admission_stats = (
+                parsed_document.metadata or {}
+            ).get("mineru_ocr_admission") or {}
+            save_debug_parsed_document("03_ocr_admission", parsed_document)
             parsed_document = reflow_parsed_document(parsed_document)
             save_debug_parsed_document("04_reflowed_document", parsed_document)
 
@@ -761,6 +795,15 @@ async def parse_document(
                     "reflow_output_blocks": (parsed_document.metadata or {}).get("reflow_output_blocks", 0),
                     "reflow_merged_blocks": (parsed_document.metadata or {}).get("reflow_merged_blocks", 0),
                     "ocr_repaired_blocks": (parsed_document.metadata or {}).get("ocr_repaired_blocks", 0),
+                    "ocr_admission_enabled": bool(
+                        ocr_admission_stats.get("enabled", False)
+                    ),
+                    "ocr_admission_counts": (
+                        ocr_admission_stats.get("admission_counts") or {}
+                    ),
+                    "ocr_admission_excluded_blocks": int(
+                        ocr_admission_stats.get("excluded_block_count") or 0
+                    ),
                 }
                 parse_task_service.add_event(
                     db,

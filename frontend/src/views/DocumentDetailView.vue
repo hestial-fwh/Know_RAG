@@ -141,6 +141,11 @@ async function selectProcessingProfilePage(pageNo: number) {
         ...processingProfile.value,
         pages: detail.pages,
         legacy_pages: detail.legacy_pages,
+        ocr_admission: detail.ocr_admission,
+        block_origin: detail.block_origin,
+        policy_v2_enabled: detail.policy_v2_enabled,
+        parent_policy: detail.parent_policy,
+        resolved_policies: detail.resolved_policies,
         requested_page_no: pageNo
       }
     } else {
@@ -296,6 +301,25 @@ onMounted(async () => {
             <span class="stat-label">OCR 可信度</span>
             <span class="stat-value">{{ formatCountMap(processingProfile.summary?.ocr_trust_distribution) }}</span>
           </div>
+          <div class="stat-card">
+            <span class="stat-label">DCP-3.1 生产投影</span>
+            <span class="stat-value">
+              {{ processingProfile.ocr_admission?.production_projection_applied ? '已执行' : '未执行' }}
+              · 隔离 {{ processingProfile.ocr_admission?.excluded_block_count || 0 }} block
+            </span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Block 准入分布</span>
+            <span class="stat-value">{{ formatCountMap(processingProfile.ocr_admission?.admission_counts) }}</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">ParentPolicy</span>
+            <span class="stat-value">
+              {{ processingProfile.parent_policy?.applied ? 'VisualItem 已应用' : '兼容模式' }}
+              · 作品 parent {{ processingProfile.parent_policy?.visual_item_parent_count || 0 }}
+              · 页面概览 parent {{ processingProfile.parent_policy?.page_overview_parent_count || 0 }}
+            </span>
+          </div>
         </div>
         <div class="actions">
           <button
@@ -343,6 +367,53 @@ onMounted(async () => {
           <details>
             <summary>评分证据与贡献</summary>
             <pre class="content-block">{{ JSON.stringify(selectedProfilePage.evidence, null, 2) }}</pre>
+          </details>
+          <details open>
+            <summary>
+              DCP-3.1 Block 准入（本页
+              {{ processingProfile.ocr_admission?.blocks?.length || 0 }} 个候选）
+            </summary>
+            <p
+              v-if="!processingProfile.ocr_admission?.production_projection_applied"
+              class="text-muted"
+            >
+              当前 revision 未启用 reflow 前生产投影；以下无 active 判定。
+            </p>
+            <div
+              v-for="block in processingProfile.ocr_admission?.blocks || []"
+              :key="`${block.page_no}-${block.order_index}`"
+              class="admission-block"
+            >
+              <div class="actions">
+                <span
+                  :class="[
+                    'tag',
+                    block.ocr_admission === 'normal'
+                      ? 'tag-ok'
+                      : block.ocr_admission === 'auxiliary'
+                        ? 'tag-warn'
+                        : ''
+                  ]"
+                >
+                  {{ block.ocr_admission || 'unknown' }}
+                </span>
+                <span class="text-muted">
+                  来源 {{ block.text_origin || '-' }} · 评分
+                  {{ block.ocr_quality_score ?? '-' }} · bbox
+                  {{ block.bbox?.join(', ') || '缺失' }}
+                </span>
+              </div>
+              <p class="text-muted">
+                {{ block.ocr_admission_reasons?.join('、') || '无判定原因' }}
+              </p>
+              <pre class="content-block">{{ block.text || '' }}</pre>
+            </div>
+            <p
+              v-if="!(processingProfile.ocr_admission?.blocks?.length)"
+              class="text-muted"
+            >
+              本页没有 MinerU OCR 准入候选，或该 revision 尚未重新解析。
+            </p>
           </details>
         </div>
       </div>

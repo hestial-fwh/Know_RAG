@@ -31,7 +31,9 @@ upload_document (document_service.py)
 | Page visual enricher | `document_parser/page_visual_enricher.py` | — | 缺失页面主视觉注入、已有整页图标记、去重统计和 fail-open |
 | Document profiler | `document_parser/document_profiler.py` | — | Canonical provenance/asset/page facts → 确定性文档与逐页画像（shadow） |
 | Multi-axis profiler | `document_parser/document_profiler_v2.py` | — | VisualItem + page facts → 四轴画像、OCR 连续评分与 evidence（shadow） |
+| MinerU OCR admission | `document_parser/mineru_ocr_admission.py` | — | block 来源识别、质量评分及 reflow 前生产投影 |
 | Block reflow | `document_parser/block_reflow.py` | — | Layout-aware block reordering、视觉页 section scope 与普通正文跨页标题继承 |
+| DCP-3.1 parent policy | `chunker/dcp31_parent_policy.py` | — | 同页多 VisualItem 的作品级 parent、歧义 page-overview parent 与 legacy remainder 保留 |
 
 ## Chunk Rebuild Flow
 
