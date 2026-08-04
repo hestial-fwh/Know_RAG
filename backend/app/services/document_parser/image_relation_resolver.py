@@ -146,6 +146,8 @@ def normalize_bbox(
     bbox: object,
     *,
     page_extent: tuple[float, float, float, float],
+    v2_enabled: bool = False,
+    text_page_extent: tuple[float, float, float, float] | None = None,
 ) -> tuple[float, float, float, float] | None:
     box = valid_bbox(bbox)
     extent = valid_bbox(page_extent)
@@ -154,7 +156,48 @@ def normalize_bbox(
     ex0, ey0, ex1, ey1 = extent
     width = ex1 - ex0
     height = ey1 - ey0
+    if width <= 0 or height <= 0:
+        return None
     x0, y0, x1, y1 = box
+
+    # v2: detect when the extent is likely wrong (bbox corners extend
+    # beyond the extent by more than 5 %).  Fall back to text-only
+    # extent or return None to signal explicit degradation.
+    if v2_enabled:
+        out_of_extent = (
+            x0 < ex0 - 0.05 * width
+            or y0 < ey0 - 0.05 * height
+            or x1 > ex1 + 0.05 * width
+            or y1 > ey1 + 0.05 * height
+        )
+        if out_of_extent:
+            if text_page_extent is not None:
+                text_extent = valid_bbox(text_page_extent)
+                if text_extent is not None:
+                    tex0, tey0, tex1, tey1 = text_extent
+                    tw = tex1 - tex0
+                    th = tey1 - tey0
+                    if tw > 0 and th > 0:
+                        normalized = (
+                            max(0.0, min(1.0, (x0 - tex0) / tw)),
+                            max(0.0, min(1.0, (y0 - tey0) / th)),
+                            max(0.0, min(1.0, (x1 - tex0) / tw)),
+                            max(0.0, min(1.0, (y1 - tey0) / th)),
+                        )
+                        return valid_bbox(normalized)
+            # extent is suspect and no fallback available
+            return None
+
+        # bbox is wholly within extent — exact normalization (no clamping)
+        normalized = (
+            (x0 - ex0) / width,
+            (y0 - ey0) / height,
+            (x1 - ex0) / width,
+            (y1 - ey0) / height,
+        )
+        return valid_bbox(normalized)
+
+    # v1: clamp to [0,1] (existing behaviour)
     normalized = (
         max(0.0, min(1.0, (x0 - ex0) / width)),
         max(0.0, min(1.0, (y0 - ey0) / height)),

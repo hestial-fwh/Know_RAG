@@ -162,8 +162,12 @@ def _milvus_ensure_collection(client: Any, config: VectorStoreConfig, dimension:
     schema.add_field(field_name="chunk_id", datatype=DataType.VARCHAR, max_length=128)
     schema.add_field(field_name="document_id", datatype=DataType.VARCHAR, max_length=128)
     schema.add_field(field_name="knowledge_base_id", datatype=DataType.VARCHAR, max_length=128)
+    schema.add_field(field_name="chunk_type", datatype=DataType.VARCHAR, max_length=64)
+    schema.add_field(field_name="chunk_index", datatype=DataType.INT64)
+    schema.add_field(field_name="content", datatype=DataType.VARCHAR, max_length=65535)
     index_params = client.prepare_index_params()
     index_params.add_index(field_name="vector", index_type="AUTOINDEX", metric_type=metric_type)
+    index_params.add_index(field_name="knowledge_base_id", index_type="INVERTED")
     client.create_collection(collection_name=collection, schema=schema, index_params=index_params)
     return collection
 
@@ -177,8 +181,8 @@ def _milvus_upsert(db: Session, config: VectorStoreConfig, chunk: Chunk, vector:
         "chunk_id": chunk.id,
         "document_id": chunk.document_id,
         "knowledge_base_id": chunk.knowledge_base_id,
-        "chunk_type": chunk.chunk_type,
-        "chunk_index": int(chunk.chunk_index),
+        "chunk_type": chunk.chunk_type or "text",
+        "chunk_index": int(chunk.chunk_index or 0),
         "content": sanitize_text_for_postgres(content)[:6000],
     }]
     client.upsert(collection_name=collection, data=data)
@@ -206,8 +210,8 @@ def _milvus_search(config: VectorStoreConfig, kb_id: str, query_vector: list[flo
     for item in (result[0] if result else []):
         entity = item.get("entity") or {}
         chunk_id = str(entity.get("chunk_id") or item.get("id"))
-        distance = float(item.get("distance") or item.get("score") or 0)
-        score = distance if distance <= 1 else 1 / (1 + distance)
+        similarity = float(item.get("distance") or item.get("score") or 0)
+        score = (similarity + 1) / 2
         hits.append(VectorHit(chunk_id=chunk_id, score=score))
     return hits
 

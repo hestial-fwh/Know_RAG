@@ -82,6 +82,39 @@ async def startup_initialize_services():
     except Exception as exc:
         logger.warning("Elasticsearch keyword index initialization skipped: %s", exc)
 
+    try:
+        from app.db.session import SessionLocal
+        from app.services.vector_store_adapters import (
+            _milvus_client,
+            _milvus_ensure_collection,
+            get_active_vector_config,
+            is_external_provider,
+        )
+
+        db = SessionLocal()
+        try:
+            config = get_active_vector_config(db)
+            if is_external_provider(config) and (
+                (config.provider or "").lower() in {"milvus", "zilliz"}
+            ):
+                from app.db.models import ModelConfig
+
+                row = (
+                    db.query(ModelConfig)
+                    .filter(ModelConfig.model_type == "embedding")
+                    .first()
+                )
+                dim = row.dimension if row and row.dimension else 1024
+                client = _milvus_client(config)
+                _milvus_ensure_collection(client, config, dim)
+                logger.info("Milvus collection initialized")
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning(
+            "Milvus collection initialization skipped: %s", exc
+        )
+
 @app.get("/health")
 async def health():
     return success_response(

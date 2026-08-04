@@ -234,6 +234,7 @@ class PageVisualLayout:
     visual_items: list[VisualItem] = field(default_factory=list)
     text_relations: list[VisualTextRelation] = field(default_factory=list)
     fallback_reason: str = ""
+    suppressed_asset_ids: set[str] = field(default_factory=set)
 
     def to_metadata(self) -> dict[str, Any]:
         return {
@@ -245,6 +246,7 @@ class PageVisualLayout:
                 relation.to_metadata() for relation in self.text_relations
             ],
             "fallback_reason": self.fallback_reason,
+            "suppressed_asset_ids": sorted(self.suppressed_asset_ids),
             "summary": {
                 "region_count": len(self.regions),
                 "visual_item_count": len(self.visual_items),
@@ -260,6 +262,7 @@ class PageVisualLayout:
                     region.status == "duplicate_fallback"
                     for region in self.regions
                 ),
+                "suppressed_asset_count": len(self.suppressed_asset_ids),
             },
         }
 
@@ -422,10 +425,65 @@ def _item_from_region(region: LayoutRegion, *, status: str) -> VisualItem:
     )
 
 
+def _score_text_visual_candidate_v2(
+    node: PageLayoutNode,
+    item: VisualItem,
+    spatial_score: float,
+    spatial_reason: str,
+    *,
+    semantic_role: str = "",
+) -> tuple[float, str, list[str]]:
+    """Score text-visual binding for non-caption text (art books etc.).
+
+    Explicit bindable roles always score 1.0.  For ordinary descriptive
+    text the score combines spatial proximity, text length, and layout
+    characteristics.
+    """
+    text = (node.text or "").strip()
+    text_len = len(text)
+
+    # Explicit roles get maximum score — keep existing priority
+    if semantic_role in {
+        "caption",
+        "figure_caption",
+        "image_caption",
+        "inscription",
+        "visual_ocr_candidate",
+    }:
+        return 1.0, spatial_reason, [semantic_role]
+
+    base = spatial_score * 0.65
+
+    # Short descriptive text (10-200 chars) — typical art-book labels
+    if 10 <= text_len <= 200:
+        base += 0.12
+    elif text_len < 10:
+        base -= 0.10  # too short to be meaningful
+
+    # Sparse dense layout suggests deliberate placement
+    if node.normalized_bbox is not None and item.normalized_bbox is not None:
+        text_area = (node.normalized_bbox[2] - node.normalized_bbox[0]) * (
+            node.normalized_bbox[3] - node.normalized_bbox[1]
+        )
+        if text_area > 0 and text_len / max(text_area, 1e-9) > 500:
+            base += 0.05
+
+    base = min(0.94, max(0.0, base))
+    evidence = [
+        f"v2_text_bind_score:{base:.4f}",
+        f"len:{text_len}",
+        f"role:{semantic_role}",
+        f"spatial:{spatial_score:.4f}",
+    ]
+    return base, spatial_reason, evidence
+
+
 def _text_relation(
     page_no: int,
     node: PageLayoutNode,
     items: list[VisualItem],
+    *,
+    v2_enabled: bool = False,
 ) -> VisualTextRelation:
     base = {
         "page_no": page_no,
@@ -456,7 +514,11 @@ def _text_relation(
             evidence=("missing_geometry_or_visual_item",),
         )
     text = (node.text or "").strip()
-    if len(text) > 200 and not bindable_role:
+    # v2: raise the long-body-text guard to 500 chars to allow
+    # typical art-book descriptive labels (author, title, dimensions,
+    # medium, etc.) which are typically 20-200 chars.
+    _long_text_threshold = 500 if v2_enabled else 200
+    if len(text) > _long_text_threshold and not bindable_role:
         return VisualTextRelation(
             relation_id=_stable_id("visual-text", {**base, "type": "unbound_long"}),
             page_no=page_no,
@@ -538,6 +600,62 @@ def _text_relation(
             evidence=("multiple_equal_spatial_candidates",),
         )
     if not bindable_role:
+        # v2: scoring-based binding for non-caption descriptive text
+        # (author, title, dimensions, medium — common in art books)
+        if v2_enabled:
+            best_score, best_reason, v2_evidence = 0.0, "", []
+            best_item: VisualItem | None = None
+            for _score, candidate_item, reason in scored:
+                v2_score, _reason, evidence = _score_text_visual_candidate_v2(
+                    node,
+                    candidate_item,
+                    spatial_score=_score,
+                    spatial_reason=reason,
+                    semantic_role=semantic_role,
+                )
+                if v2_score > best_score:
+                    best_score, best_reason, v2_evidence = v2_score, reason, evidence
+                    best_item = candidate_item
+            if best_item is not None:
+                if best_score >= 0.70:
+                    return VisualTextRelation(
+                        relation_id=_stable_id(
+                            "visual-text",
+                            {
+                                **base,
+                                "type": "v2_bound",
+                                "target": best_item.visual_item_id,
+                            },
+                        ),
+                        page_no=page_no,
+                        source_node_id=node.node_id,
+                        source_block_id=node.source_block_id,
+                        visual_item_ids=(best_item.visual_item_id,),
+                        relation_type="description",
+                        status="bound",
+                        score=best_score,
+                        evidence=tuple(v2_evidence),
+                    )
+                if best_score >= 0.50:
+                    return VisualTextRelation(
+                        relation_id=_stable_id(
+                            "visual-text",
+                            {
+                                **base,
+                                "type": "v2_ambiguous",
+                                "target": best_item.visual_item_id,
+                            },
+                        ),
+                        page_no=page_no,
+                        source_node_id=node.node_id,
+                        source_block_id=node.source_block_id,
+                        visual_item_ids=(best_item.visual_item_id,),
+                        relation_type="description",
+                        status="ambiguous",
+                        score=best_score,
+                        evidence=tuple(v2_evidence),
+                    )
+        # v1 / fallback: non-bindable role → unbound
         return VisualTextRelation(
             relation_id=_stable_id(
                 "visual-text",
@@ -575,6 +693,7 @@ def resolve_document_visual_layout(
     *,
     assets: dict[str, Any],
     shadow_only: bool = True,
+    v2_enabled: bool = False,
 ) -> DocumentVisualLayout:
     pages: list[PageVisualLayout] = []
     for page_no in sorted(layout_graph.pages):
@@ -610,6 +729,8 @@ def resolve_document_visual_layout(
                 page.regions.append(
                     _region_from_asset(page_no, node, status="duplicate_fallback")
                 )
+                # v2: track suppressed assets so chunk creation can filter them
+                page.suppressed_asset_ids.add(node.asset_id)
         elif full_page_nodes:
             node = next(
                 (
@@ -681,7 +802,7 @@ def resolve_document_visual_layout(
                 )
             )
         page.text_relations.extend(
-            _text_relation(page_no, node, page.visual_items)
+            _text_relation(page_no, node, page.visual_items, v2_enabled=v2_enabled)
             for node in source_page.text_nodes
         )
         pages.append(page)

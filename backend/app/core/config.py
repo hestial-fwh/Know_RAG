@@ -112,6 +112,10 @@ class Settings(BaseSettings):
         False,
         alias="DOCUMENT_VISUAL_ITEM_RESOLUTION_ENABLED",
     )
+    document_image_text_binding_v2_enabled: bool = Field(
+        False,
+        alias="DOCUMENT_IMAGE_TEXT_BINDING_V2_ENABLED",
+    )
     document_visual_section_parent_enabled: bool = Field(
         False,
         alias="DOCUMENT_VISUAL_SECTION_PARENT_ENABLED",

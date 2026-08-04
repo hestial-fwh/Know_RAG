@@ -83,6 +83,7 @@ class CanonicalChunkPlan:
     assets: dict[str, CanonicalAsset] = field(default_factory=dict)
     provenance_nodes: list[CanonicalSourceNode] = field(default_factory=list)
     figure_links: FigureLinkResult = field(default_factory=FigureLinkResult)
+    suppressed_assets_by_page: dict[int, set[str]] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -779,6 +780,7 @@ def _materialize_text_segment_with_assets(
     *,
     child_size: int,
     segment_offset: int = 0,
+    suppressed_asset_ids: set[str] | None = None,
 ) -> list[CanonicalChildDraft]:
     text = _preserve(text)
     refs = find_image_asset_refs(text)
@@ -834,6 +836,14 @@ def _materialize_text_segment_with_assets(
 
         asset = canonical.assets.get(asset_id)
         if asset is not None:
+            # v2: skip suppressed fallback assets (full-page raster when
+            # local images already exist)
+            _suppressed = suppressed_asset_ids or set()
+            if asset.asset_id in _suppressed:
+                    cursor = end
+                    pending_structure = ""
+                    pending_structure_start = 0
+                    continue
             local_heading = _last_heading(pending_structure)
             if _is_page_primary_visual_asset(asset):
                 image_context = asset.context_header.strip() or local_heading
@@ -944,6 +954,7 @@ def _materialize_source_child(
     canonical: CanonicalDocument,
     *,
     child_size: int,
+    suppressed_asset_ids: set[str] | None = None,
 ) -> list[CanonicalChildDraft]:
     children: list[CanonicalChildDraft] = []
     base_meta = {
@@ -975,6 +986,7 @@ def _materialize_source_child(
                     segment,
                     child_size=child_size,
                     segment_offset=source_child.start + seg_start,
+                    suppressed_asset_ids=suppressed_asset_ids,
                 )
             )
     return children
@@ -2859,6 +2871,7 @@ def build_canonical_parent_child_plan(
     cfg: ChunkerConfig,
     *,
     resolved_policies: tuple[ResolvedChunkPolicy, ...] = (),
+    suppressed_assets_by_page: dict[int, set[str]] | None = None,
 ) -> CanonicalChunkPlan:
     child_size = max(getattr(cfg, "child_chunk_size", 384) or 384, 1)
     normalized_markdown = normalize_canonical_markdown(
@@ -2909,9 +2922,18 @@ def build_canonical_parent_child_plan(
     _apply_heading_context_to_source_children(result.children)
 
     children: list[CanonicalChildDraft] = []
+    # v2: flatten suppressed asset IDs across all pages
+    _flat_suppressed: set[str] = set()
+    for _ids in (suppressed_assets_by_page or {}).values():
+        _flat_suppressed.update(_ids)
     for source_child in sorted(result.children, key=lambda item: item.seq):
         children.extend(
-            _materialize_source_child(source_child, canonical, child_size=child_size)
+            _materialize_source_child(
+                source_child,
+                canonical,
+                child_size=child_size,
+                suppressed_asset_ids=_flat_suppressed or None,
+            )
         )
 
     # Structure-first post-processing policy.
@@ -3263,6 +3285,7 @@ def build_canonical_parent_child_plan(
         assets=canonical.assets,
         provenance_nodes=provenance_nodes,
         figure_links=figure_links,
+        suppressed_assets_by_page=dict(suppressed_assets_by_page or {}),
     )
 
 

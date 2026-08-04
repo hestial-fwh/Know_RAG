@@ -109,6 +109,7 @@ services:
       DOCUMENT_MINERU_OCR_BLOCK_ADMISSION_ENABLED: ${DOCUMENT_MINERU_OCR_BLOCK_ADMISSION_ENABLED:-false}
       DOCUMENT_ADAPTIVE_CHUNK_POLICY_V2_ENABLED: ${DOCUMENT_ADAPTIVE_CHUNK_POLICY_V2_ENABLED:-false}
       DOCUMENT_VISUAL_ITEM_RESOLUTION_ENABLED: ${DOCUMENT_VISUAL_ITEM_RESOLUTION_ENABLED:-false}
+      DOCUMENT_IMAGE_TEXT_BINDING_V2_ENABLED: ${DOCUMENT_IMAGE_TEXT_BINDING_V2_ENABLED:-false}
       DOCUMENT_VISUAL_SECTION_PARENT_ENABLED: ${DOCUMENT_VISUAL_SECTION_PARENT_ENABLED:-false}
       DOCUMENT_PIPELINE_DEBUG_ARTIFACTS_ENABLED: ${DOCUMENT_PIPELINE_DEBUG_ARTIFACTS_ENABLED:-false}
       DOCUMENT_PAGE_VISUAL_MIN_COVERAGE: ${DOCUMENT_PAGE_VISUAL_MIN_COVERAGE:-0.70}
@@ -123,6 +124,7 @@ services:
       - minio
       - elasticsearch
       - mineru-cpu
+      - milvus
     volumes:
       - ./cache:/data/cache
       - know-rag-models:/data/models
@@ -202,6 +204,21 @@ services:
       - "6334:6334"
     volumes:
       - know-rag-qdrant-data:/qdrant/storage
+    networks:
+      - know-rag-net
+
+  milvus:
+    image: milvusdb/milvus:v2.5.0
+    container_name: know-rag-milvus
+    command: milvus run standalone
+    environment:
+      ETCD_USE_EMBED: "true"
+      ETCD_DATA_DIR: /var/lib/milvus/etcd
+      COMMON_STORAGETYPE: local
+    ports:
+      - "127.0.0.1:19530:19530"
+    volumes:
+      - know-rag-milvus-data:/var/lib/milvus
     networks:
       - know-rag-net
 
@@ -303,6 +320,7 @@ volumes:
   know-rag-cache:
   know-rag-minio-data:
   know-rag-qdrant-data:
+  know-rag-milvus-data:
   know-rag-models:
   know-rag-elasticsearch-data:
   know-rag-mineru-models:

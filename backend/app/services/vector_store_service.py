@@ -32,8 +32,8 @@ def get_or_create_config(db):
         return row
     row = VectorStoreConfig(
         id=new_id(),
-        provider="postgres",
-        config=default_config_for_provider("postgres"),
+        provider="milvus",
+        config=default_config_for_provider("milvus"),
         is_active=True,
     )
     db.add(row)

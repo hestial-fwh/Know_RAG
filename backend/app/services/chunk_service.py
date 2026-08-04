@@ -1180,14 +1180,19 @@ def _rebuild_canonical_weknora_parent_child(
     )
     document_profile = profile_canonical_document(canonical)
     save_debug_page_profile(document_profile)
+    binding_v2_enabled = bool(
+        settings.document_image_text_binding_v2_enabled
+    )
     page_layout_graph = build_page_layout_graph(
         assets=canonical.assets,
         provenance_nodes=canonical.provenance_nodes,
+        v2_enabled=binding_v2_enabled,
     )
     visual_layout = resolve_document_visual_layout(
         page_layout_graph,
         assets=canonical.assets,
         shadow_only=not bool(settings.document_visual_item_resolution_enabled),
+        v2_enabled=binding_v2_enabled,
     )
     visual_layout_payload = visual_layout.to_metadata()
     document_profile_v2 = profile_canonical_document_v2(
@@ -1208,10 +1213,22 @@ def _rebuild_canonical_weknora_parent_child(
         policy_v2_enabled=policy_v2_enabled,
     )
     save_debug_resolved_policies(resolved_policies)
+    # v2: extract suppressed asset IDs from visual layout to avoid
+    # full-page-raster duplication when local images exist
+    suppressed_assets_by_page: dict[int, set[str]] = {}
+    if binding_v2_enabled:
+        for page_layout in visual_layout_payload.get("pages") or []:
+            page_no = page_layout.get("page_no")
+            suppressed = page_layout.get("suppressed_asset_ids") or []
+            if page_no is not None and suppressed:
+                suppressed_assets_by_page[int(page_no)] = set(
+                    str(aid) for aid in suppressed
+                )
     plan = build_canonical_parent_child_plan(
         canonical,
         runtime_cfg,
         resolved_policies=resolved_policies,
+        suppressed_assets_by_page=suppressed_assets_by_page or None,
     )
     page_profiles_v2 = {
         page.page_no: page for page in document_profile_v2.pages
@@ -1292,6 +1309,31 @@ def _rebuild_canonical_weknora_parent_child(
         visual_layout_payload,
         enabled=policy_v2_enabled,
     )
+    # v2: semantic completeness diagnostics (non-blocking)
+    completeness_report: dict[str, Any] = {}
+    if binding_v2_enabled:
+        try:
+            from app.services.document_relation.semantic_completeness import (
+                compute_semantic_completeness,
+            )
+            _completeness = compute_semantic_completeness(
+                plan,
+                visual_layout_payload,
+                v2_enabled=True,
+            )
+            completeness_report = _completeness.to_metadata()
+            if _completeness.warning_count:
+                logger.warning(
+                    "Semantic completeness: %d warnings for document_id=%s",
+                    _completeness.warning_count,
+                    document.id,
+                )
+        except Exception:
+            logger.warning(
+                "Semantic completeness check failed open: document_id=%s",
+                document.id,
+                exc_info=True,
+            )
     save_debug_chunk_plan(plan)
     relation_graph = None
     phase3_applied = False
@@ -1404,6 +1446,7 @@ def _rebuild_canonical_weknora_parent_child(
                     "adaptive_chunk_policy_enabled": adaptive_policy_active,
                     "adaptive_chunk_policy_v2_enabled": policy_v2_enabled,
                     "dcp31_parent_policy": dcp31_parent_summary,
+                    "semantic_completeness": completeness_report,
                     "active_resolved_chunk_policy_counts": dict(
                         sorted(active_resolved_policy_counts.items())
                     ),
