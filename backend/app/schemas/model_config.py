@@ -22,3 +22,8 @@ class ModelConfig(BaseModel):
     ocr_model: str = "deepdoc-local-ocr"
     ocr_base_url: str = ""
     ocr_api_key: str = ""
+
+    rerank_provider: str = ""
+    rerank_model: str = ""
+    rerank_base_url: str = ""
+    rerank_api_key: str = ""

@@ -7,7 +7,7 @@ const form = ref<RetrievalConfig>({
   score_threshold: 0.3,
   use_vector: true,
   use_keyword: true,
-  rerank_model_id: '',
+  rerank_enabled: false,
   fusion_strategy: 'rrf',
   rrf_k: 60,
   rrf_vector_weight: 1,
@@ -56,7 +56,7 @@ onMounted(load)
       <label class="check"><input v-model="form.use_vector" type="checkbox" /> 启用向量检索</label>
       <label class="check"><input v-model="form.use_keyword" type="checkbox" /> 启用关键词检索</label>
       <label class="check"><input v-model="form.include_context" type="checkbox" /> 默认返回上下文预览</label>
-      <label>Rerank 模型 ID <input v-model="form.rerank_model_id" /></label>
+      <label class="check"><input v-model="form.rerank_enabled" type="checkbox" /> 启用 Rerank 重排序</label>
       <p v-if="message" class="text-success">{{ message }}</p>
       <p v-if="error" class="text-error">{{ error }}</p>
       <button>保存</button>

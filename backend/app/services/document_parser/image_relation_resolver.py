@@ -284,6 +284,7 @@ class ImageRelation:
     figure_ids: list[str] = field(default_factory=list)
     caption_suppressed: bool = False
     deterministic_binding_allowed: bool = False
+    composite_figure: bool = False
     spatial_status: str = "not_evaluated"
     normalized_bbox: tuple[float, float, float, float] | None = None
     raw_bbox: tuple[float, float, float, float] | None = None
@@ -306,6 +307,7 @@ class ImageRelation:
             "figure_ids": list(self.figure_ids),
             "caption_suppressed": self.caption_suppressed,
             "deterministic_binding_allowed": self.deterministic_binding_allowed,
+            "composite_figure": self.composite_figure,
             "spatial_status": self.spatial_status,
             "normalized_bbox": list(self.normalized_bbox) if self.normalized_bbox else None,
             "raw_bbox": list(self.raw_bbox) if self.raw_bbox else None,
@@ -445,19 +447,30 @@ def resolve_image_relation(
             relation.spatial_status = "spatial_candidate_suppressed"
 
     if len(relation.figure_ids) > 1:
-        relation.caption_ambiguous = True
-        if "multiple_figure_ids_in_single_caption" not in relation.ambiguity_reasons:
-            relation.ambiguity_reasons.append("multiple_figure_ids_in_single_caption")
-        relation.caption_method = f"{relation.caption_method}_ambiguous"
-        relation.binding_score = min(relation.binding_score, 0.25)
+        # Newline-separated parser captions represent genuine composite figures
+        # (e.g. "图3\n图4" = two sub-figures in one PDF image).
+        # Single-line merged captions (e.g. "图7、图8") remain ambiguous.
+        if (
+            "\n" in relation.original_caption
+            and relation.caption_method == "parser_caption"
+        ):
+            relation.composite_figure = True
+        else:
+            relation.caption_ambiguous = True
+            if "multiple_figure_ids_in_single_caption" not in relation.ambiguity_reasons:
+                relation.ambiguity_reasons.append("multiple_figure_ids_in_single_caption")
+            relation.caption_method = f"{relation.caption_method}_ambiguous"
+            relation.binding_score = min(relation.binding_score, 0.25)
 
     relation.ambiguous = relation.caption_ambiguous or relation.footnote_ambiguous
 
     relation.deterministic_binding_allowed = bool(
-        len(relation.figure_ids) == 1
-        and relation.caption
+        relation.caption
         and not relation.caption_suppressed
         and not relation.caption_ambiguous
+        and (
+            len(relation.figure_ids) == 1 or relation.composite_figure
+        )
     )
     return relation
 

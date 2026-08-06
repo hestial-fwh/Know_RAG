@@ -5,7 +5,7 @@ export interface RetrievalConfig {
   score_threshold: number
   use_vector: boolean
   use_keyword: boolean
-  rerank_model_id: string
+  rerank_enabled: boolean
   fusion_strategy: string
   rrf_k: number
   rrf_vector_weight: number
@@ -88,6 +88,10 @@ export interface ModelConfig {
   ocr_model?: string
   ocr_base_url?: string
   ocr_api_key?: string
+  rerank_provider?: string
+  rerank_model?: string
+  rerank_base_url?: string
+  rerank_api_key?: string
   provider_presets?: ProviderPreset[]
 }
 
@@ -118,9 +122,9 @@ export const getModelConfig = () => api.get<ModelConfig>('/api/v1/model-config')
 export const getProviderPresets = () => api.get<{ providers: ProviderPreset[] }>('/api/v1/model-config/providers')
 export const updateModelConfig = (payload: ModelConfig) =>
   api.put<ModelConfig>('/api/v1/model-config', payload)
-export const testModelApi = (modelType: 'llm' | 'embedding' | 'image2text' | 'ocr', payload: ModelConfig) =>
+export const testModelApi = (modelType: 'llm' | 'embedding' | 'image2text' | 'ocr' | 'rerank', payload: ModelConfig) =>
   api.post<ApiTestResult>(`/api/v1/model-config/test/${modelType}`, payload)
-export const getProviderModels = (modelType: 'llm' | 'embedding' | 'image2text' | 'ocr', payload: ModelConfig) => {
+export const getProviderModels = (modelType: 'llm' | 'embedding' | 'image2text' | 'ocr' | 'rerank', payload: ModelConfig) => {
   const cfg: Record<string, unknown> = { model_type: modelType }
   if (modelType === 'llm') {
     cfg.provider = payload.provider
@@ -137,6 +141,11 @@ export const getProviderModels = (modelType: 'llm' | 'embedding' | 'image2text' 
     cfg.base_url = payload.image2text_base_url || ''
     cfg.api_key = payload.image2text_api_key || payload.api_key || ''
     cfg.model_name = payload.image2text_model || ''
+  } else if (modelType === 'rerank') {
+    cfg.provider = payload.rerank_provider || ''
+    cfg.base_url = payload.rerank_base_url || ''
+    cfg.api_key = payload.rerank_api_key || payload.api_key || ''
+    cfg.model_name = payload.rerank_model || ''
   } else {
     cfg.provider = payload.ocr_provider || ''
     cfg.base_url = payload.ocr_base_url || ''

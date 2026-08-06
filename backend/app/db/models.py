@@ -55,7 +55,7 @@ class RetrievalConfig(Base):
     score_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.3)
     use_vector: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     use_keyword: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    rerank_model_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    rerank_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     fusion_strategy: Mapped[str] = mapped_column(String(50), nullable=False, default="rrf")
     rrf_k: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     rrf_vector_weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)

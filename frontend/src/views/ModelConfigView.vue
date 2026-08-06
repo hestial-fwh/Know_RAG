@@ -16,7 +16,7 @@ import {
   type ProviderPreset
 } from '../api/config'
 
-type ModelField = 'llm' | 'embedding' | 'image2text' | 'ocr'
+type ModelField = 'llm' | 'embedding' | 'image2text' | 'ocr' | 'rerank'
 
 const LOCAL_PROVIDER_PRESETS: ProviderPreset[] = [
   { value: 'deepdoc-builtin', label: 'DeepDoc 内置 OCR（默认，无需 API）', default_base_url: '', api_style: 'builtin_ocr', model_examples: { ocr: 'deepdoc-local-ocr' } },
@@ -52,7 +52,11 @@ const form = ref<ModelConfig>({
   ocr_provider: 'deepdoc-builtin',
   ocr_model: 'deepdoc-local-ocr',
   ocr_base_url: '',
-  ocr_api_key: ''
+  ocr_api_key: '',
+  rerank_provider: '',
+  rerank_model: '',
+  rerank_base_url: '',
+  rerank_api_key: ''
 })
 const message = ref('')
 const error = ref('')
@@ -60,9 +64,9 @@ const dirty = ref(false)
 const apiTests = ref<Record<string, ApiTestResult>>({})
 const testing = ref<Record<string, boolean>>({})
 const deepdoc = ref<DeepDocStatus | null>(null)
-const modelOptions = ref<Record<ModelField, ProviderModelOption[]>>({ llm: [], embedding: [], image2text: [], ocr: [] })
-const modelLoadMessage = ref<Record<ModelField, string>>({ llm: '', embedding: '', image2text: '', ocr: '' })
-const loadingModels = ref<Record<ModelField, boolean>>({ llm: false, embedding: false, image2text: false, ocr: false })
+const modelOptions = ref<Record<ModelField, ProviderModelOption[]>>({ llm: [], embedding: [], image2text: [], ocr: [], rerank: [] })
+const modelLoadMessage = ref<Record<ModelField, string>>({ llm: '', embedding: '', image2text: '', ocr: '', rerank: '' })
+const loadingModels = ref<Record<ModelField, boolean>>({ llm: false, embedding: false, image2text: false, ocr: false, rerank: false })
 const testText = ref('这是正文')
 const testTitle = ref('测试文档')
 const testContextHeader = ref('第一章 > 第二节')
@@ -85,6 +89,7 @@ function providerOptionsFor(field: ModelField) {
   const items = providerOptions.value.filter(item => {
     const examples = item.model_examples || {}
     if (field === 'ocr' && item.value === 'deepdoc-builtin') return true
+    if (field === 'rerank') return Boolean(examples[field]) || item.value === 'jina'
     return Boolean(examples[field]) || item.value === 'custom' || item.value === 'openai-compatible' || item.value === 'ollama'
   })
   if (field === 'ocr' && !items.some(item => item.value === 'deepdoc-builtin')) {
@@ -101,6 +106,7 @@ function getProvider(field: ModelField) {
   if (field === 'llm') return form.value.provider
   if (field === 'embedding') return form.value.embedding_provider
   if (field === 'image2text') return form.value.image2text_provider
+  if (field === 'rerank') return form.value.rerank_provider
   return form.value.ocr_provider
 }
 
@@ -108,6 +114,7 @@ function getCurrentModel(field: ModelField) {
   if (field === 'llm') return form.value.llm_model
   if (field === 'embedding') return form.value.embedding_model
   if (field === 'image2text') return form.value.image2text_model || ''
+  if (field === 'rerank') return form.value.rerank_model || ''
   return form.value.ocr_model || ''
 }
 
@@ -115,6 +122,7 @@ function setCurrentModel(field: ModelField, value: string) {
   if (field === 'llm') form.value.llm_model = value
   else if (field === 'embedding') form.value.embedding_model = value
   else if (field === 'image2text') form.value.image2text_model = value
+  else if (field === 'rerank') form.value.rerank_model = value
   else form.value.ocr_model = value
   dirty.value = true
 }
@@ -143,6 +151,11 @@ function applyPreset(field: ModelField) {
       form.value.ocr_model = ''
       form.value.ocr_api_key = ''
     }
+    if (field === 'rerank') {
+      form.value.rerank_base_url = ''
+      form.value.rerank_model = ''
+      form.value.rerank_api_key = ''
+    }
     return
   }
   const preset = presetOf(provider)
@@ -167,6 +180,9 @@ function applyPreset(field: ModelField) {
       form.value.ocr_api_key = ''
       form.value.ocr_model = examples.ocr || 'deepdoc-local-ocr'
     }
+  } else if (field === 'rerank') {
+    form.value.rerank_base_url = defaultUrl
+    form.value.rerank_model = examples.rerank || ''
   }
 
   void loadProviderModels(field, true)
@@ -233,7 +249,8 @@ async function load() {
     loadProviderModels('llm', true),
     loadProviderModels('embedding', true),
     form.value.image2text_provider ? loadProviderModels('image2text', true) : Promise.resolve(),
-    form.value.ocr_provider ? loadProviderModels('ocr', true) : Promise.resolve()
+    form.value.ocr_provider ? loadProviderModels('ocr', true) : Promise.resolve(),
+    form.value.rerank_provider ? loadProviderModels('rerank', true) : Promise.resolve()
   ])
   dirty.value = false
 }
@@ -448,6 +465,39 @@ onMounted(load)
       <div class="actions inline-actions">
         <button type="button" class="secondary" @click="runApiTest('ocr')" :disabled="testing.ocr || !form.ocr_provider">{{ testing.ocr ? '测试中...' : '测试 OCR API' }}</button>
         <span v-if="apiTests.ocr" :class="apiTests.ocr.available ? 'ok' : 'error'">{{ statusLabel(apiTests.ocr.available, apiTests.ocr.skipped) }}：{{ apiTests.ocr.response_preview || '' }}</span>
+      </div>
+
+      <h2>Rerank API（可选）</h2>
+      <p class="text-muted">召回后重排序。支持 Jina AI / SiliconFlow / DashScope 等兼容 Cohere /v1/rerank 格式的服务。未配置则跳过 rerank。</p>
+      <label>Rerank 供应商
+        <select v-model="form.rerank_provider" @change="applyPreset('rerank')">
+          <option value="">关闭</option>
+          <option v-for="item in providerOptionsFor('rerank')" :key="item.value" :value="item.value">{{ item.label }}</option>
+        </select>
+      </label>
+      <label>Rerank Base URL <input v-model="form.rerank_base_url" @input="markDirty" /></label>
+      <label>Rerank API Key <input v-model="form.rerank_api_key" @input="markDirty" type="password" autocomplete="off" /></label>
+      <label>Rerank 模型
+        <input
+          :value="form.rerank_model"
+          list="rerank-model-options"
+          placeholder="可选择或手动输入模型名，例如 BAAI/bge-reranker-v2-m3"
+          @input="setCurrentModel('rerank', eventValue($event))"
+        />
+        <datalist id="rerank-model-options">
+          <option v-for="item in modelOptions.rerank" :key="item.id" :value="item.id">
+            {{ item.name || item.id }}
+          </option>
+        </datalist>
+        <small class="field-help">可从列表选择，也可手动输入供应商支持的模型名。</small>
+      </label>
+      <div class="actions inline-actions">
+        <button type="button" class="secondary" @click="loadProviderModels('rerank')" :disabled="loadingModels.rerank || !form.rerank_provider">{{ loadingModels.rerank ? '获取中...' : '刷新 Rerank 模型列表' }}</button>
+        <span class="text-muted">{{ modelLoadMessage.rerank }}</span>
+      </div>
+      <div class="actions inline-actions">
+        <button type="button" class="secondary" @click="runApiTest('rerank')" :disabled="testing.rerank || !form.rerank_provider">{{ testing.rerank ? '测试中...' : '测试 Rerank API' }}</button>
+        <span v-if="apiTests.rerank" :class="apiTests.rerank.available ? 'ok' : 'error'">{{ statusLabel(apiTests.rerank.available, apiTests.rerank.skipped) }}：{{ apiTests.rerank.response_preview || '' }}</span>
       </div>
 
       <h2>DeepDoc 生产模型状态</h2>

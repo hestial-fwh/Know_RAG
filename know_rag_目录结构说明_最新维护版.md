@@ -1,7 +1,7 @@
 # Know_RAG 项目目录结构与主链路维护手册（最新代码基线）
 
 > **代码基线**：当前工作区（含 DCP-1.1 页内 VisualItem 与保守文本关系）
-> **维护日期**：2026-07-29
+> **维护日期**：2026-08-06
 > **用途**：用于后续项目维护、功能定位、主链路排查、代码重构和新人接手。  
 > **分析原则**：以本次上传代码的**真实调用关系**为准，不以历史设计文档或曾经存在的重构方案代替当前运行时事实。
 
@@ -50,7 +50,7 @@ Canonical Markdown
 → 同事务持久化 Chunk + Canonical provenance artifact
 ```
 
-5. `merge_short_text_siblings()` 仍保留在代码中，但**当前生产 `build_canonical_parent_child_plan()` 不调用它**；生产只运行有来源范围和精确文本重叠双重证据的 `merge_overlap_tail_text_children()`。
+5. `merge_short_text_siblings()` 已在生产启用（阈值 `min_child_size=40`），仅合并超短碎片（<40 语义字符，如专利号行、孤立元数据行）。章节、结论、标注远高于该阈值不会被合并。有来源范围和精确文本重叠双重证据的 `merge_overlap_tail_text_children()` 仍正常运行。
 6. 默认关键词检索后端是 Elasticsearch BM25，PostgreSQL ILIKE 仅是显式配置的故障回退。
 7. 真实只读 MCP 服务位于 `backend/app/integrations/mcp/`；`routes_mcp_placeholder.py` 只是兼容占位路由。
 8. 普通 chunk API 不返回完整 embedding，只返回索引状态、维度、范数和最多 16 维预览。
@@ -220,7 +220,8 @@ backend/app/db/
       ├─ 0009_parse_eval_plugin_phase_aa.py# 解析评估插件
       ├─ 0010_parse_event_retention.py    # 解析事件保留策略
       ├─ 0011_canonical_provenance_p25.py # Canonical provenance 当前 revision
-      └─ 0012_document_relation_graph.py  # 文档关系图（versioned edges/groups/graphs）
+      ├─ 0012_document_relation_graph.py  # 文档关系图（versioned edges/groups/graphs）
+      └─ 0013_rerank_enabled.py           # rerank_model_id → rerank_enabled (boolean)  # 文档关系图（versioned edges/groups/graphs）
 ```
 
 ### `models.py` 中的核心实体
@@ -229,8 +230,8 @@ backend/app/db/
 |---|---|
 | `User` | 用户与认证主体 |
 | `KnowledgeBase` | 知识库 |
-| `RetrievalConfig` | 检索模式、权重、阈值、父上下文等配置 |
-| `ModelConfig` | OCR/VLM/Embedding 等模型配置 |
+| `RetrievalConfig` | 检索模式、权重、阈值、rerank 开关、父上下文等配置 |
+| `ModelConfig` | LLM/Embedding/VLM/OCR/Rerank 等模型配置 |
 | `VectorStoreConfig` | PostgreSQL / Qdrant / Milvus 等向量存储配置 |
 | `ChunkerConfig` | 切分运行时配置；`enable_parent_child` 在这里决定主分支 |
 | `AuditLog` | 操作审计 |
@@ -320,7 +321,7 @@ backend/app/services/document_parser/
 ├─ generic_parsers.py                     # 通用格式解析器
 ├─ media_storage.py                       # 解析媒体文件保存
 ├─ block_reflow.py                        # ParsedBlock 重排、OCR 修复、视觉页 section scope、普通正文标题继承 [主链路]
-├─ image_relation_resolver.py             # 图片 caption 质量、图号歧义、bbox 空间候选与 binding_score [主链路]
+├─ image_relation_resolver.py             # 图片 caption 质量、图号歧义、复合图号识别、bbox 空间候选与 binding_score [主链路]
 ├─ figure_linker.py                       # normalize 后正文图号引用 → asset 候选证据（P2/P2.5）[主链路]
 └─ canonical_document.py                  # Canonical Markdown + asset/source-node provenance [核心算法]
 ```
@@ -732,6 +733,8 @@ chunk_service.rebuild_document_chunks()
       │  │  ├─ table
       │  │  └─ image / asset
       │  ├─ deduplicate_overlap_shadow_children()
+      │  ├─ merge_overlap_tail_text_children()
+      │  ├─ merge_short_text_siblings()          # 超短碎片合并（min_child_size=40）
       │  ├─ _flatten_underfilled_parent_links()
       │  │  └─ 只做 Parent 0/1 最终完整性约束
       │  ├─ _detect_floating_content_continuations()
@@ -812,7 +815,7 @@ Parent
 | `chunk_service._rebuild_markdown_weknora_parent_child()` | 保留实现；当前 dispatcher 不调用 |
 | `chunk_service._rebuild_document_chunks_structured_parent_child()` | 保留的旧结构化父子实现；当前 dispatcher 不调用 |
 | `chunking.rebuild_service.ChunkRebuildService` | 模块化重构实现；当前 dispatcher 不调用 |
-| `canonical_parent_child.merge_short_text_siblings()` | Helper 保留；生产 plan 有意不调用 |
+| `canonical_parent_child.merge_short_text_siblings()` | 生产已启用；min_child_size=40，仅合并超短碎片 |
 
 ---
 
@@ -1060,6 +1063,9 @@ GET/POST /api/v1/knowledge-bases/{kb_id}/search
       │  ├─ merge_results_rrf()      【默认重点】
       │  └─ merge_results_weighted()
       │
+      ├─ rerank_results()             【可选，需 rerank_enabled=true】
+      │  └─ 调用 Cohere-compatible /v1/rerank API 重排序
+      │
       ├─ attach_context()            【可选】
       │  └─ Parent preview / sibling summaries
       │
@@ -1095,9 +1101,10 @@ Parent Text
 | 6 | `retrieval_service.py` | `keyword_search()` | BM25 召回 |
 | 7 | `keyword_index_service.py` | `search_bm25()` | Elasticsearch 查询 |
 | 8 | `retrieval_service.py` | `merge_results_rrf()` | 按排名进行融合 |
-| 9 | `retrieval_service.py` | `attach_context()` | 回填 Parent/邻居上下文 |
-| 10 | `retrieval_service.py` | `build_parent_groups()` | 以 Parent 为单位聚合证据 |
-| 11 | `retrieval_service.py` | `hybrid_search()` | 整体 orchestration |
+| 9 | `retrieval_service.py` | `rerank_results()` | Rerank 重排序（可选，需 ModelConfig 配置 rerank 模型） |
+| 10 | `retrieval_service.py` | `attach_context()` | 回填 Parent/邻居上下文 |
+| 11 | `retrieval_service.py` | `build_parent_groups()` | 以 Parent 为单位聚合证据 |
+| 12 | `retrieval_service.py` | `hybrid_search()` | 整体 orchestration |
 
 ---
 
@@ -1376,20 +1383,23 @@ _rebuild_markdown_weknora_parent_child()
 _rebuild_document_chunks_structured_parent_child()
 ```
 
-## 19.3 不要看到短块就自动合并
+## 19.3 短块合并策略（已变更）
 
-`merge_short_text_siblings()` 当前保留但不进入生产 plan，原因是单纯追求“没有短块”会损害文档结构。生产只定向修复有来源范围重叠和精确文本重叠证据的短尾。
+`merge_short_text_siblings()` 已在生产启用，但仅限超短碎片（`min_child_size=40`，<40 语义字符）。
+这类碎片几乎全是元数据残片（专利号、页码、孤立标签），不是可检索的语义单元。
+章节、结论、标注等有意义的结构单元远高于此阈值，不会被合并。
 
 处理短块问题时先分类：
 
 ```text
-真实语义短块        → 保留
-结构噪声            → Canonical/quality gate 清理
-错误断句            → 修边界算法
-纯 overlap shadow   → 精确去重
-overlap 加少量新尾句 → 定向合并回前块
-重复 asset marker   → 按 asset_id 只物化一次
-错误 Parent 关系    → integrity 修复
+超短元数据碎片（<40 chars） → 合并到相邻兄弟块（merge_short_text_siblings）
+真实语义短块              → 保留
+结构噪声                  → Canonical/quality gate 清理
+错误断句                  → 修边界算法
+纯 overlap shadow         → 精确去重
+overlap 加少量新尾句       → 定向合并回前块
+重复 asset marker         → 按 asset_id 只物化一次
+错误 Parent 关系          → integrity 修复
 ```
 
 ## 19.4 `mcp_placeholder` 不是实际 MCP
@@ -1785,6 +1795,7 @@ Client / MCP
     ├─ Vector Search
     └─ BM25 Search
 → RRF / Weighted Fusion
+→ Optional Rerank（Cohere-compatible /v1/rerank）
 → Child Hits
 → Parent Context / Parent Groups
 → llm_context_builder.py

@@ -171,6 +171,7 @@ class ImageRelation:
     figure_ids: list[str] = field(default_factory=list)
     caption_suppressed: bool = False
     deterministic_binding_allowed: bool = False
+    composite_figure: bool = False
     spatial_status: str = "not_evaluated"
     normalized_bbox: tuple[float, float, float, float] | None = None
     raw_bbox: tuple[float, float, float, float] | None = None
@@ -186,10 +187,14 @@ metadata。当前规则：
 1. caption 与 OCR 归一化后完全相同，且 caption 仅为纯数字或部件编号时：保留
    `original_caption` 供审计，清空可绑定 caption，设置
    `caption_method=suppressed_duplicate_identifier`、`binding_score=0.05`。
-2. 单张图片 caption 中出现两个及以上不同图号（例如“图7、图8”）时：保留 caption，
-   写入全部 `figure_ids`，设置 `ambiguous=true`、
-   `ambiguity_reasons=[multiple_figure_ids_in_single_caption]`、`binding_score<=0.25`，并设置
-   `deterministic_binding_allowed=false`。
+2. 单张图片 caption 中出现两个及以上不同图号时，区分两种情形：
+   - MinerU 原生换行分隔（如 `”图3\n图4”`）→ 识别为 `composite_figure`，
+     保留全部 `figure_ids`，记录 `ambiguity_reasons=[composite_figure_allowed]`，
+     允许 `deterministic_binding_allowed`。
+   - 单行顿号分隔（如 `”图7、图8”`）或 spatial_bbox 来源的多图号 →
+     保留 caption 和 `figure_ids`，设置 `ambiguous=true`、
+     `ambiguity_reasons=[multiple_figure_ids_in_single_caption]`、
+     `binding_score<=0.25`，阻断 `deterministic_binding_allowed`。
 3. 同一图号在 caption 中重复出现不构成 ambiguous。
 4. 描述性 caption 即使与 OCR 相同也不按编号噪声清除。
 

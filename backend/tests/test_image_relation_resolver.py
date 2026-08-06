@@ -583,3 +583,127 @@ def test_ambiguous_relation_reaches_production_orm_chunk():
     assert image.metadata_json["ambiguous"] is True
     assert image.metadata_json["figure_ids"] == ["figure:7", "figure:8"]
     assert image.metadata_json["deterministic_binding_allowed"] is False
+
+
+def test_newline_separated_composite_figure_is_allowed():
+    """图3\\n图4 (MinerU composite figure) should NOT be ambiguous."""
+    relation = resolve_image_relation(
+        caption="图3\n图4 组合结构截面图",
+        ocr_text="",
+    )
+
+    assert relation.figure_ids == ["figure:3", "figure:4"]
+    assert relation.composite_figure is True
+    assert relation.ambiguous is False
+    assert relation.caption_ambiguous is False
+    assert relation.deterministic_binding_allowed is True
+    assert "multiple_figure_ids_in_single_caption" not in relation.ambiguity_reasons
+
+
+def test_newline_separated_composite_figure_reaches_production():
+    parsed = ParsedDocument(
+        content="",
+        blocks=[
+            ParsedBlock(
+                block_type="image",
+                text="图3\n图4 组合结构截面图",
+                order_index=0,
+                page_no=1,
+                metadata={
+                    "parser": "mineru",
+                    "caption": "图3\n图4 组合结构截面图",
+                    "ocr_text": "截面示意",
+                },
+            )
+        ],
+    )
+
+    canonical = build_canonical_document(parsed, file_type="pdf")
+    asset = next(iter(canonical.assets.values()))
+    assert asset.composite_figure is True
+    assert asset.ambiguous is False
+    assert asset.figure_ids == ["figure:3", "figure:4"]
+    assert asset.deterministic_binding_allowed is True
+
+    plan = build_canonical_parent_child_plan(canonical, _cfg())
+    image = next(child for child in plan.children if child.chunk_type == "image")
+    assert image.metadata["composite_figure"] is True
+    assert image.metadata["ambiguous"] is False
+    assert image.metadata["figure_ids"] == ["figure:3", "figure:4"]
+    assert image.metadata["deterministic_binding_allowed"] is True
+
+    document = SimpleNamespace(
+        id="doc-composite-figure",
+        knowledge_base_id="kb-composite-figure",
+        title="复合图号",
+        file_name="composite.pdf",
+        file_type="pdf",
+    )
+    chunks, inserted = _rebuild_canonical_weknora_parent_child(
+        document,
+        parsed,
+        "pdf",
+        _cfg(),
+    )
+    image_chunk = next(chunk for chunk in chunks if chunk.chunk_type == "image")
+    assert inserted == len(chunks)
+    assert image_chunk.metadata_json["composite_figure"] is True
+    assert image_chunk.metadata_json["ambiguous"] is False
+    assert image_chunk.metadata_json["figure_ids"] == ["figure:3", "figure:4"]
+    assert image_chunk.metadata_json["deterministic_binding_allowed"] is True
+
+
+def test_single_line_multi_figure_stays_ambiguous():
+    """图7、图8 on a single line should remain ambiguous (existing behavior)."""
+    relation = resolve_image_relation(
+        caption="图7、图8 不同工况结果对比",
+        ocr_text="",
+    )
+
+    assert relation.figure_ids == ["figure:7", "figure:8"]
+    assert relation.composite_figure is False
+    assert relation.ambiguous is True
+    assert relation.caption_ambiguous is True
+    assert relation.deterministic_binding_allowed is False
+    assert "multiple_figure_ids_in_single_caption" in relation.ambiguity_reasons
+
+
+def test_spatial_multi_figure_stays_ambiguous():
+    """Multi-figure from spatial_bbox should remain ambiguous."""
+    candidates = [
+        SpatialRelationCandidate(
+            text="图9、图10 结果对比",
+            kind="caption",
+            page_no=1,
+            bbox=(0.05, 0.52, 0.95, 0.58),
+            source_order=1,
+        ),
+    ]
+
+    relation = resolve_image_relation(
+        caption="",
+        page_no=1,
+        image_bbox=(0.0, 0.0, 1.0, 0.5),
+        image_order=0,
+        spatial_candidates=candidates,
+        enable_spatial=True,
+    )
+
+    assert relation.figure_ids == ["figure:9", "figure:10"]
+    assert relation.composite_figure is False
+    assert relation.ambiguous is True
+    assert relation.deterministic_binding_allowed is False
+    assert "multiple_figure_ids_in_single_caption" in relation.ambiguity_reasons
+
+
+def test_three_figure_composite_is_allowed():
+    """图3\\n图4\\n图5 triple composite figure should be allowed."""
+    relation = resolve_image_relation(
+        caption="图3\n图4\n图5 多视图",
+        ocr_text="",
+    )
+
+    assert relation.figure_ids == ["figure:3", "figure:4", "figure:5"]
+    assert relation.composite_figure is True
+    assert relation.ambiguous is False
+    assert relation.deterministic_binding_allowed is True

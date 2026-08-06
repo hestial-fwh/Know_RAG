@@ -878,6 +878,7 @@ def _materialize_text_segment_with_assets(
                 "footnote_ambiguous": asset.footnote_ambiguous,
                 "figure_ids": list(asset.figure_ids),
                 "deterministic_binding_allowed": asset.deterministic_binding_allowed,
+                "composite_figure": asset.composite_figure,
                 "spatial_status": asset.spatial_status,
                 "normalized_bbox": list(asset.normalized_bbox)
                 if asset.normalized_bbox
@@ -2938,13 +2939,15 @@ def build_canonical_parent_child_plan(
 
     # Structure-first post-processing policy.
     #
-    # Keep only repairs backed by exact overlap evidence. Do NOT run generic
-    # short-sibling merging: a short child can be a complete section,
-    # conclusion, captioned note, or other meaningful structural unit. The
-    # compatibility helper remains public but is not part of the runtime path.
+    # Keep only repairs backed by exact overlap evidence.  Generic short-sibling
+    # merging is enabled ONLY for ultra-short fragments (< 40 semantic chars) that
+    # are clearly not meaningful structural units (e.g. patent number lines,
+    # isolated metadata rows).  Sections, conclusions, and captioned notes are
+    # well above this threshold and are never merged.
     children = deduplicate_repeated_asset_children(children)
     children = deduplicate_overlap_shadow_children(children)
     children = merge_overlap_tail_text_children(children, child_size=child_size)
+    children = merge_short_text_siblings(children, child_size=child_size, min_child_size=40)
     for child in children:
         child.metadata["runtime_postprocess_policy"] = "structure_first"
         child.flags["runtime_postprocess_policy"] = "structure_first"

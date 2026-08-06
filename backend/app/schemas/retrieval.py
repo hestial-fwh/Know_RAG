@@ -6,7 +6,7 @@ class RetrievalConfig(BaseModel):
     score_threshold: float = 0.3
     use_vector: bool = True
     use_keyword: bool = True
-    rerank_model_id: str = ""
+    rerank_enabled: bool = False
     fusion_strategy: str = "rrf"
     rrf_k: int = 60
     rrf_vector_weight: float = 1.0

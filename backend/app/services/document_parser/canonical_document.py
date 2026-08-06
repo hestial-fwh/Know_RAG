@@ -115,6 +115,7 @@ class CanonicalAsset:
     footnote_ambiguous: bool = False
     figure_ids: list[str] = field(default_factory=list)
     deterministic_binding_allowed: bool = False
+    composite_figure: bool = False
     spatial_status: str = "not_evaluated"
     normalized_bbox: tuple[float, float, float, float] | None = None
     bbox_coordinate_space: str = ""
@@ -153,6 +154,7 @@ class CanonicalAsset:
             "footnote_ambiguous": self.footnote_ambiguous,
             "figure_ids": list(self.figure_ids),
             "deterministic_binding_allowed": self.deterministic_binding_allowed,
+            "composite_figure": self.composite_figure,
             "spatial_status": self.spatial_status,
             "normalized_bbox": list(self.normalized_bbox) if self.normalized_bbox else None,
             "bbox_coordinate_space": self.bbox_coordinate_space,
@@ -984,6 +986,7 @@ def build_canonical_document(
                 footnote_ambiguous=relation.footnote_ambiguous,
                 figure_ids=list(relation.figure_ids),
                 deterministic_binding_allowed=relation.deterministic_binding_allowed,
+                composite_figure=relation.composite_figure,
                 spatial_status=relation.spatial_status,
                 normalized_bbox=relation.normalized_bbox,
                 bbox_coordinate_space=relation.bbox_coordinate_space,

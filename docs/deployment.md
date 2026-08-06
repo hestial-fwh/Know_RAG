@@ -1,7 +1,7 @@
 # Deployment
 
 > 状态：Current
-> 维护日期：2026-07-15
+> 维护日期：2026-08-05
 
 前端镜像默认使用 `NPM_REGISTRY=https://registry.npmmirror.com`，并在构建时统一替换
 `package-lock.json` 中的 registry host。若当前网络访问官方源更稳定，可在 `.env` 设置：
@@ -56,6 +56,7 @@ http://host.docker.internal:11434
 ## 环境变量
 
 ```text
+DEEPDOC_AUTO_DOWNLOAD=0
 OLLAMA_EMBEDDING_MODEL=bge-m3
 OLLAMA_EMBEDDING_DIMENSION=1024
 AUTO_EMBED_AFTER_PARSE=false
@@ -71,6 +72,9 @@ DOCUMENT_VISUAL_ITEM_RESOLUTION_ENABLED=false
 `DOCUMENT_FIELD_CONTENT_ADMISSION_ENABLED=true` 启用 DCP-4R 字段级内容准入。旧
 `DOCUMENT_VISUAL_OCR_QUARANTINE_ENABLED=true` 也会兼容触发相同的字段级行为，不再跳过整个
 Chunk；新部署应使用前者。
+
+`DEEPDOC_AUTO_DOWNLOAD=0` 阻止首次启动时自动下载 DeepDoc ONNX 模型（约 1-2 GB）。
+如后续需要 DeepDoc 作为 MinerU 的 fallback 解析器，改回 `1` 重启即可。
 
 `DOCUMENT_VISUAL_ITEM_RESOLUTION_ENABLED` 是 DCP-1.1 状态标记，默认 `false`。无论开关值如何，
 当前版本都会生成只读 visual layout artifact 供验收；关闭时返回 `shadow_only=true`，且不会改变

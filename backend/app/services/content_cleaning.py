@@ -369,9 +369,10 @@ def is_low_information_text(text: Any) -> bool:
         # Treat short numbered titles as non-indexable standalone chunks.
         # Their text is still represented in context_header / heading_path.
         return True
-    # Very short text without sentence punctuation is usually a title, not a
-    # meaningful retrieval unit.
-    if len(compact) < 12 and not re.search(r"[。！？!?；;，,]", cleaned):
+    # Text under 30 chars without sentence punctuation is almost certainly a
+    # metadata fragment (patent number, page-count line, isolated label), not a
+    # retrievable sentence.
+    if len(compact) < 30 and not re.search(r"[。！？!?；;，,]", cleaned):
         return True
     return False
 

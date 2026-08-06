@@ -1,7 +1,7 @@
 # Architecture
 
 > 状态：Current
-> 维护日期：2026-07-28
+> 维护日期：2026-08-05
 
 `know_rag` 是本地优先的 RAG 知识库构建、解析、切分、索引和检索系统。
 
@@ -204,7 +204,7 @@ Canonical artifact，页绑定 child 只保存紧凑 shadow metadata；现有 em
 - `document_relation_persistence_service.py`：Canonical artifact/graph 的 ORM 持久化与 dual-read 边界。
 - `document_relation_expansion_service.py`：scoped retrieval expansion 只读查询边界。
 - `services/embedding/`：索引文本构建；`embedding_service.py` 负责模型调用与写入。
-- `retrieval_service.py`：向量、BM25、RRF、关系扩展开关和结果映射。
+- `retrieval_service.py`：向量、BM25、RRF、rerank、关系扩展开关和结果映射。
 - `context/knowledge_context_service.py`：前端与 MCP 共用的上下文出口。
 
 ## 数据边界

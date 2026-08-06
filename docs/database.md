@@ -1,7 +1,7 @@
 # Database
 
 > 状态：Current（后续 Phase 小节为历史增量记录）
-> 维护日期：2026-07-23
+> 维护日期：2026-08-05
 
 执行迁移：
 
@@ -192,4 +192,8 @@ Phase D 新增：
 - `rrf_keyword_weight`：关键词召回 RRF 权重，默认 1.0
 - `include_context`：是否默认返回上下文预览，默认 true
 
-执行 `alembic upgrade head` 会通过 `0007_retrieval_rrf_phase_d.py` 增量添加字段。
+Phase 0013 将 `rerank_model_id` 替换为：
+- `rerank_enabled`：是否启用 rerank 重排序，默认 false
+
+执行 `alembic upgrade head` 会通过 `0007_retrieval_rrf_phase_d.py` 和
+`0013_rerank_enabled.py` 增量添加/修改字段。

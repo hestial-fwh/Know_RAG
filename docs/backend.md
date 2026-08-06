@@ -1,7 +1,7 @@
 # Backend
 
 > 状态：Current（后续 Phase 小节为历史增量记录）
-> 维护日期：2026-07-29
+> 维护日期：2026-08-05
 
 后端使用 FastAPI、SQLAlchemy 2.x、Alembic、PostgreSQL、pgvector 和本地 Ollama。
 
@@ -43,6 +43,7 @@
 - 向量检索：pgvector cosine distance。
 - 关键词检索：默认 Elasticsearch BM25；仅在显式启用 fallback 时使用 PostgreSQL ILIKE。
 - hybrid search：按配置权重合并分数。
+- rerank：可选的检索结果重排序，由 `rerank_enabled` 和 `model_config` 中的 rerank provider 控制。
 
 ## 未实现
 

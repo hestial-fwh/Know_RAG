@@ -27,7 +27,7 @@ DEFAULT_RETRIEVAL_CONFIG = {
     "score_threshold": 0.3,
     "use_vector": True,
     "use_keyword": True,
-    "rerank_model_id": "",
+    "rerank_enabled": False,
     "fusion_strategy": "rrf",
     "rrf_k": 60,
     "rrf_vector_weight": 1.0,
@@ -63,6 +63,7 @@ class SearchOptions:
     rrf_k: int = 60
     vector_weight: float = 1.0
     keyword_weight: float = 1.0
+    rerank_enabled: bool = False
 
 
 def retrieval_config_to_dict(config: RetrievalConfig) -> dict:
@@ -72,7 +73,7 @@ def retrieval_config_to_dict(config: RetrievalConfig) -> dict:
         "score_threshold": config.score_threshold,
         "use_vector": config.use_vector,
         "use_keyword": config.use_keyword,
-        "rerank_model_id": config.rerank_model_id,
+        "rerank_enabled": config.rerank_enabled,
         "fusion_strategy": config.fusion_strategy,
         "rrf_k": config.rrf_k,
         "rrf_vector_weight": config.rrf_vector_weight,
@@ -267,6 +268,8 @@ def normalize_options(db, payload: dict) -> tuple[SearchOptions | None, str | No
     if vector_weight <= 0 or keyword_weight <= 0:
         return None, "检索权重参数不合法"
 
+    rerank_enabled = payload.get("rerank_enabled") if "rerank_enabled" in payload else bool(config.rerank_enabled)
+
     return SearchOptions(
         query=query,
         top_k=top_k,
@@ -287,6 +290,7 @@ def normalize_options(db, payload: dict) -> tuple[SearchOptions | None, str | No
         rrf_k=rrf_k,
         vector_weight=vector_weight,
         keyword_weight=keyword_weight,
+        rerank_enabled=rerank_enabled,
     ), None
 
 
@@ -614,6 +618,99 @@ def merge_results(vector_results: list[dict], keyword_results: list[dict], optio
     if options.fusion_strategy == "weighted":
         return merge_results_weighted(vector_results, keyword_results, options)
     return merge_results_rrf(vector_results, keyword_results, options)
+
+
+async def rerank_results(
+    db: Session,
+    query: str,
+    results: list[dict],
+    top_k: int,
+) -> list[dict]:
+    """Re-score merged results using the configured rerank model.
+
+    Fetches the candidate documents from chunk content, calls the rerank API
+    (Cohere-compatible /v1/rerank), and replaces scores with relevance scores.
+    Falls back to original results on any error.
+    """
+    if not results:
+        return results
+
+    from app.db.models import ModelConfig
+
+    row = db.query(ModelConfig).filter(ModelConfig.model_type == "rerank").first()
+    if not row or not row.provider or not row.model_name or not row.base_url:
+        logger.info("Rerank skipped: no rerank model configured")
+        return results
+
+    import httpx
+
+    documents = []
+    for r in results:
+        content = r.get("content") or r.get("preview") or r.get("text") or ""
+        if not content:
+            content = r.get("matched_content") or ""
+        if not content.strip():
+            content = " "  # placeholder — avoid empty string rejected by rerank API
+        documents.append(content)
+
+    base = row.base_url.rstrip("/")
+    rerank_url = f"{base}/rerank"
+
+    headers = {"Content-Type": "application/json"}
+    if row.api_key:
+        headers["Authorization"] = f"Bearer {row.api_key}"
+
+    payload = {
+        "model": row.model_name,
+        "query": query,
+        "documents": documents,
+        "top_n": min(top_k, len(documents)),
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(rerank_url, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        logger.warning("Rerank API call failed, returning original results: %s", exc)
+        return results
+
+    rerank_items = data.get("results") or []
+    if not rerank_items:
+        logger.info("Rerank returned no results, keeping original order")
+        return results
+
+    # Build a new list ordered by rerank relevance score
+    reranked: list[dict] = []
+    seen: set[str] = set()
+    for item in sorted(rerank_items, key=lambda x: float(x.get("relevance_score") or 0), reverse=True):
+        idx = int(item.get("index") or 0)
+        if 0 <= idx < len(results):
+            r = dict(results[idx])
+            r["score"] = float(item.get("relevance_score") or 0)
+            r["rerank_score"] = r["score"]
+            r["match_type"] = (r.get("match_type") or "") + "+rerank"
+            cid = r.get("chunk_id", "")
+            if cid not in seen:
+                seen.add(cid)
+                reranked.append(r)
+
+    # Append any results not covered by rerank
+    for r in results:
+        cid = r.get("chunk_id", "")
+        if cid not in seen:
+            reranked.append(r)
+
+    logger.info(
+        "Rerank complete: %d results → %d reranked (top_k=%d, provider=%s, model=%s)",
+        len(results),
+        len(reranked),
+        top_k,
+        row.provider,
+        row.model_name,
+    )
+    return reranked
 
 
 def _safe_positive_int(value: Any, default: int, *, minimum: int = 0, maximum: int | None = None) -> int:
@@ -1367,6 +1464,8 @@ async def hybrid_search(db, actor: User | None, kb_id: str, payload: dict):
             return error_response(str(exc) or "关键词检索失败")
 
     results = merge_results(vector_results, keyword_results, options)
+    if options.rerank_enabled:
+        results = await rerank_results(db, options.query, results, options.top_k)
     results = _expand_figure_bindings(
         db,
         results,
@@ -1403,6 +1502,7 @@ async def hybrid_search(db, actor: User | None, kb_id: str, payload: dict):
             "fusion_strategy": options.fusion_strategy,
             "use_vector": options.use_vector,
             "use_keyword": options.use_keyword,
+            "rerank_enabled": options.rerank_enabled,
         },
     )
     db.commit()
@@ -1437,6 +1537,7 @@ async def hybrid_search(db, actor: User | None, kb_id: str, payload: dict):
                 "parent_group_count": len(parent_groups),
                 "embedding_provider": embedding_runtime.provider,
                 "embedding_model": embedding_runtime.model_name,
+                "rerank_enabled": options.rerank_enabled,
             },
         },
         message,

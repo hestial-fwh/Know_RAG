@@ -23,13 +23,13 @@ PROVIDER_PRESETS = {
         "label": "Ollama / 本地模型",
         "default_base_url": "http://host.docker.internal:11434",
         "api_style": "ollama",
-        "model_examples": {"llm": "qwen2.5:3b", "embedding": "bge-m3", "image2text": "qwen2.5vl:7b", "ocr": "qwen2.5vl:7b"},
+        "model_examples": {"llm": "qwen2.5:3b", "embedding": "bge-m3", "image2text": "qwen2.5vl:7b", "ocr": "qwen2.5vl:7b", "rerank": ""},
     },
     "openai-compatible": {
         "label": "OpenAI-Compatible",
         "default_base_url": "https://api.example.com/v1",
         "api_style": "openai",
-        "model_examples": {"llm": "gpt-4o-mini", "embedding": "text-embedding-3-small", "image2text": "gpt-4o-mini", "ocr": "gpt-4o-mini"},
+        "model_examples": {"llm": "gpt-4o-mini", "embedding": "text-embedding-3-small", "image2text": "gpt-4o-mini", "ocr": "gpt-4o-mini", "rerank": ""},
     },
     "openai": {
         "label": "OpenAI",
@@ -47,13 +47,19 @@ PROVIDER_PRESETS = {
         "label": "阿里云百炼 / DashScope",
         "default_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "api_style": "openai",
-        "model_examples": {"llm": "qwen-plus", "embedding": "text-embedding-v4", "image2text": "qwen-vl-plus", "ocr": "qwen-vl-plus"},
+        "model_examples": {"llm": "qwen-plus", "embedding": "text-embedding-v4", "image2text": "qwen-vl-plus", "ocr": "qwen-vl-plus", "rerank": "gte-rerank"},
     },
     "siliconflow": {
         "label": "SiliconFlow",
         "default_base_url": "https://api.siliconflow.cn/v1",
         "api_style": "openai",
-        "model_examples": {"llm": "Qwen/Qwen2.5-72B-Instruct", "embedding": "BAAI/bge-m3", "image2text": "Qwen/Qwen2.5-VL-72B-Instruct", "ocr": "Qwen/Qwen2.5-VL-72B-Instruct"},
+        "model_examples": {"llm": "Qwen/Qwen2.5-72B-Instruct", "embedding": "BAAI/bge-m3", "image2text": "Qwen/Qwen2.5-VL-72B-Instruct", "ocr": "Qwen/Qwen2.5-VL-72B-Instruct", "rerank": "BAAI/bge-reranker-v2-m3"},
+    },
+    "jina": {
+        "label": "Jina AI",
+        "default_base_url": "https://api.jina.ai/v1",
+        "api_style": "jina",
+        "model_examples": {"rerank": "jina-reranker-v2-base-multilingual"},
     },
     "zhipu": {
         "label": "智谱 AI",
@@ -208,6 +214,7 @@ def get_model_config(db):
     emb = by_type.get("embedding")
     image2text = by_type.get("image2text")
     ocr = by_type.get("ocr")
+    rerank = by_type.get("rerank")
     return success_response(
         {
             "provider": llm.provider if llm else "ollama",
@@ -227,6 +234,10 @@ def get_model_config(db):
             "ocr_model": ocr.model_name if ocr else "deepdoc-local-ocr",
             "ocr_base_url": ocr.base_url if ocr else "",
             "ocr_api_key": ocr.api_key if ocr else "",
+            "rerank_provider": rerank.provider if rerank else "",
+            "rerank_model": rerank.model_name if rerank else "",
+            "rerank_base_url": rerank.base_url if rerank else "",
+            "rerank_api_key": rerank.api_key if rerank else "",
             "models": [model_to_dict(row) for row in rows],
             "provider_presets": [{"value": k, **v} for k, v in PROVIDER_PRESETS.items()],
         }
@@ -289,6 +300,21 @@ def update_model_config(db, payload: dict):
         if msg:
             return error_response(msg)
         _upsert_model(db, model_type=model_type, provider=provider, model_name=model, base_url=base_url, api_key=api_key)
+
+    # Rerank is optional — only save if explicitly configured
+    rerank_provider = (payload.get("rerank_provider") or "").strip()
+    rerank_model = (payload.get("rerank_model") or "").strip()
+    rerank_base_url = (payload.get("rerank_base_url") or "").strip()
+    rerank_api_key = payload.get("rerank_api_key") or ""
+    if rerank_provider.lower() in {"", "disabled", "none", "off"}:
+        row = db.query(ModelConfig).filter(ModelConfig.model_type == "rerank").first()
+        if row:
+            row.provider = ""
+            row.model_name = ""
+            row.base_url = ""
+            row.api_key = ""
+    else:
+        _upsert_model(db, model_type="rerank", provider=rerank_provider, model_name=rerank_model, base_url=rerank_base_url, api_key=rerank_api_key)
 
     db.commit()
     return get_model_config(db)
@@ -561,6 +587,43 @@ async def _test_embedding(cfg: dict) -> dict:
     }
 
 
+async def _test_rerank(cfg: dict) -> dict:
+    provider = (cfg["provider"] or "").lower()
+    model = cfg["model_name"]
+    base_url = (cfg["base_url"] or "").rstrip("/")
+    if not model or not base_url:
+        raise ValueError("Rerank 的模型名称和 Base URL 不能为空")
+
+    validation = await _ensure_model_available(cfg, "rerank")
+
+    payload = {
+        "model": model,
+        "query": "know rag rerank test",
+        "documents": ["测试文档片段 A", "测试文档片段 B", "测试文档片段 C"],
+        "top_n": 2,
+    }
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            f"{base_url}/rerank",
+            headers=_headers(cfg.get("api_key") or ""),
+            json=payload,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    results = data.get("results") or []
+    if not results:
+        raise ValueError(f"Rerank API 返回为空或格式不支持：{str(data)[:300]}")
+
+    first = results[0]
+    return {
+        "response_preview": f"Rerank 成功，返回 {len(results)} 条结果（最高分 {first.get('relevance_score', '-')}）",
+        "result_count": len(results),
+        **validation,
+    }
+
+
 async def _test_vision(cfg: dict, *, ocr: bool = False) -> dict:
     from app.services.vision_service import describe_image_with_config, recognize_image_with_config
 
@@ -611,7 +674,7 @@ async def _test_vision(cfg: dict, *, ocr: bool = False) -> dict:
 
 
 async def test_single_model_config(payload: dict, model_type: str):
-    if model_type not in {"llm", "embedding", "image2text", "ocr"}:
+    if model_type not in {"llm", "embedding", "image2text", "ocr", "rerank"}:
         return error_response(f"不支持的测试类型：{model_type}")
     cfg = _cfg_from_payload(payload, model_type)
     try:
@@ -621,6 +684,8 @@ async def test_single_model_config(payload: dict, model_type: str):
             detail = await _test_embedding(cfg)
         elif model_type == "image2text":
             detail = await _test_vision(cfg, ocr=False)
+        elif model_type == "rerank":
+            detail = await _test_rerank(cfg)
         else:
             detail = await _test_vision(cfg, ocr=True)
         return success_response({"available": True, "model_type": model_type, "provider": cfg.get("provider"), "model": cfg.get("model_name"), **detail}, "API 测试成功")
@@ -630,9 +695,12 @@ async def test_single_model_config(payload: dict, model_type: str):
 
 async def test_model_config(payload: dict):
     results = {}
-    for model_type in ("llm", "embedding", "image2text", "ocr"):
+    for model_type in ("llm", "embedding", "image2text", "ocr", "rerank"):
         cfg = _cfg_from_payload(payload, model_type)
         if model_type == "image2text" and not (cfg.get("model_name") or cfg.get("base_url")):
+            results[model_type] = {"skipped": True, "reason": "未配置"}
+            continue
+        if model_type == "rerank" and not (cfg.get("model_name") or cfg.get("base_url")):
             results[model_type] = {"skipped": True, "reason": "未配置"}
             continue
         if model_type == "ocr" and not (cfg.get("model_name") or cfg.get("base_url") or (cfg.get("provider") == "deepdoc-builtin")):
