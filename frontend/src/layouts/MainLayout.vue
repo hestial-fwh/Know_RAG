@@ -27,7 +27,6 @@ const navSections: NavSection[] = [
       { to: '/knowledge-bases', label: '知识库', icon: '▤' },
       { to: '/documents', label: '文档', icon: '▢' },
       { to: '/documents/upload', label: '文档上传', icon: '⬆' },
-      { to: '/chunks', label: '切片浏览', icon: '▦' }
     ]
   },
   {
@@ -35,7 +34,6 @@ const navSections: NavSection[] = [
     items: [
       { to: '/parse-eval', label: '解析评测', icon: '◈' },
       { to: '/debug/search', label: '检索调试', icon: '◎' },
-      { to: '/debug/chat', label: '问答调试', icon: '◉' }
     ]
   },
   {
@@ -45,7 +43,6 @@ const navSections: NavSection[] = [
       { to: '/settings/chunker', label: '切分配置', icon: '⚙' },
       { to: '/settings/vector-store', label: '向量库', icon: '⚙' },
       { to: '/settings/retrieval', label: '检索配置', icon: '⚙' },
-      { to: '/faqs', label: '问答库', icon: '◇' }
     ]
   }
 ]

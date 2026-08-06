@@ -460,6 +460,11 @@ def _score_text_visual_candidate_v2(
     elif text_len < 10:
         base -= 0.10  # too short to be meaningful
 
+    # Body-text paragraphs near images are not deliberate descriptions;
+    # penalise them to avoid false-positive ambiguous bindings (DCP11 VI-09).
+    if semantic_role in {"body_text", "paragraph", "text"}:
+        base *= 0.75
+
     # Sparse dense layout suggests deliberate placement
     if node.normalized_bbox is not None and item.normalized_bbox is not None:
         text_area = (node.normalized_bbox[2] - node.normalized_bbox[0]) * (
@@ -636,7 +641,7 @@ def _text_relation(
                         score=best_score,
                         evidence=tuple(v2_evidence),
                     )
-                if best_score >= 0.50:
+                if best_score >= 0.60:
                     return VisualTextRelation(
                         relation_id=_stable_id(
                             "visual-text",
