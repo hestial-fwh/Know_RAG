@@ -1,7 +1,7 @@
 """Pure document-relation logic with no ORM dependency."""
 
 from .asset_group_resolver import build_member_edges, resolve_asset_groups
-from .materializer import materialize_figure_bindings, materialize_relation_summaries
+from .materializer import materialize_figure_bindings, materialize_relation_summaries, populate_relation_chunks
 from .models import CanonicalAssetGroup, CanonicalRelationEdge, CanonicalRelationGraph
 from .page_layout_graph import build_page_layout_graph
 from .relation_graph_merger import (
@@ -22,6 +22,7 @@ __all__ = [
     "graph_from_legacy_figure_links",
     "materialize_figure_bindings",
     "materialize_relation_summaries",
+    "populate_relation_chunks",
     "merge_group_relations",
     "merge_relation_edges",
     "resolve_asset_groups",

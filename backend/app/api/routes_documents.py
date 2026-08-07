@@ -1,6 +1,9 @@
+import asyncio
+import json
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -137,6 +140,66 @@ async def embed_document(
     current_user: User = Depends(get_current_user),
 ):
     return await embedding_service.embed_document(db, current_user, id)
+
+
+@router.post("/documents/{id}/embedding/stream")
+async def embed_document_stream(
+    id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Run document embedding and stream progress via Server-Sent Events."""
+
+    from app.db.session import SessionLocal
+
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def _on_progress(evt: dict) -> None:
+        try:
+            queue.put_nowait(evt)
+        except asyncio.QueueFull:
+            pass
+
+    async def _run_embedding():
+        bg_db = SessionLocal()
+        try:
+            result = await embedding_service.embed_document(
+                bg_db,
+                current_user,
+                id,
+                progress_callback=_on_progress,
+            )
+            payload = result if isinstance(result, dict) else {}
+            await queue.put({"type": "complete", **payload})
+        except Exception as exc:
+            await queue.put({"type": "error", "message": str(exc) or "向量生成失败"})
+        finally:
+            bg_db.close()
+
+    async def _event_generator():
+        task = asyncio.create_task(_run_embedding())
+
+        while True:
+            try:
+                evt = await asyncio.wait_for(queue.get(), timeout=30.0)
+                yield f"data: {json.dumps(evt, ensure_ascii=False, default=str)}\n\n"
+                if evt.get("type") in ("complete", "error"):
+                    break
+            except asyncio.TimeoutError:
+                # Keep-alive so the client doesn't close the connection.
+                yield ": keepalive\n\n"
+
+        await task
+
+    return StreamingResponse(
+        _event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/documents/{id}/embedding/status")

@@ -58,6 +58,7 @@ from app.services.pipeline_debug_artifacts import (
 from app.services.document_relation.materializer import (
     materialize_figure_bindings,
     materialize_relation_summaries,
+    populate_relation_chunks,
 )
 from app.services.document_relation.asset_group_resolver import (
     build_member_edges,
@@ -1555,6 +1556,11 @@ def _rebuild_canonical_weknora_parent_child(
     )
     if relation_graph is not None and settings.document_relation_materialization_enabled:
         new_chunks = materialize_relation_summaries(new_chunks, relation_graph)
+    # Phase 1: Populate relation_chunks from fully materialized metadata_json
+    # so downstream retrieval and context building can use exact chunk IDs
+    # instead of position-based guessing.
+    if settings.document_relation_materialization_enabled:
+        new_chunks = populate_relation_chunks(new_chunks)
     for chunk in new_chunks:
         meta = dict(chunk.metadata_json or {})
         meta["source_position_is_exact"] = True

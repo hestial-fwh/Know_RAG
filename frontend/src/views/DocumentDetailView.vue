@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { normalizeFileUrl } from '../utils/media'
 import { formatCountMap } from '../utils/contentAdmission'
 import {
-  embedDocument,
+  embedDocumentStream,
   getDocument,
   getDocumentEmbeddingStatus,
   getDocumentProcessingProfile,
@@ -13,6 +13,7 @@ import {
   type DocumentPageProfileV2,
   type DocumentProcessingProfileResponse,
   type DocumentItem,
+  type EmbeddingProgress,
   type EmbeddingStatus
 } from '../api/documents'
 import { getLatestParseTask, type ParseTask } from '../api/parseTasks'
@@ -25,6 +26,8 @@ const error = ref('')
 const message = ref('')
 const loading = ref(false)
 const embeddingLoading = ref(false)
+const embeddingProgress = ref<EmbeddingProgress | null>(null)
+const embeddingController = ref<AbortController | null>(null)
 const statusLoading = ref(false)
 const latestTask = ref<ParseTask | null>(null)
 const taskLoading = ref(false)
@@ -193,20 +196,55 @@ async function runParse(reparse = false) {
   }
 }
 
+const embeddingPercent = computed(() => {
+  const p = embeddingProgress.value
+  if (!p || !p.total_chunks) return 0
+  return Math.round(((p.embedded_chunks + (p.skipped_chunks || 0)) / p.total_chunks) * 100)
+})
+
+function cancelEmbedding() {
+  embeddingController.value?.abort()
+  embeddingController.value = null
+  embeddingLoading.value = false
+  embeddingProgress.value = null
+}
+
 async function runEmbedding() {
   if (!doc.value) return
   embeddingLoading.value = true
+  embeddingProgress.value = null
   error.value = ''
   message.value = ''
-  try {
-    const result = await embedDocument(doc.value.id)
-    embeddingStatus.value = result
-    message.value = '文档向量生成完成'
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : '向量生成失败'
-  } finally {
-    embeddingLoading.value = false
-  }
+
+  const controller = embedDocumentStream(
+    doc.value.id,
+    // onProgress
+    (evt) => {
+      embeddingProgress.value = evt
+    },
+    // onComplete
+    async (result) => {
+      embeddingLoading.value = false
+      embeddingProgress.value = null
+      embeddingController.value = null
+      // Reload status to get fresh numbers.
+      if (doc.value) {
+        try {
+          embeddingStatus.value = await getDocumentEmbeddingStatus(doc.value.id)
+        } catch { /* ignore */ }
+      }
+      message.value = `文档向量生成完成（${result.embedded_chunks ?? result.total_chunks ?? 0} 个切片）`
+    },
+    // onError
+    (msg) => {
+      embeddingLoading.value = false
+      embeddingProgress.value = null
+      embeddingController.value = null
+      error.value = msg
+    },
+  )
+
+  embeddingController.value = controller
 }
 
 onMounted(async () => {
@@ -245,6 +283,23 @@ onMounted(async () => {
           <button type="button" class="secondary" @click="router.push(`/documents/${doc.id}/chunks`)">查看切片</button>
           <button v-if="latestTask" type="button" class="secondary" :disabled="taskLoading" @click="openWorkbench">解析工作台</button>
           <button type="button" class="secondary" @click="router.push(`/parse-eval/documents/${doc.id}`)">解析评测</button>
+        </div>
+      </div>
+
+      <!-- Embedding progress bar -->
+      <div v-if="embeddingProgress" class="embedding-progress card subtle-card">
+        <div class="progress-header">
+          <span class="progress-title">正在生成向量…</span>
+          <span class="progress-stats">
+            {{ embeddingProgress.embedded_chunks + (embeddingProgress.skipped_chunks || 0) }} / {{ embeddingProgress.total_chunks }}
+            <template v-if="embeddingProgress.skipped_chunks">（跳过 {{ embeddingProgress.skipped_chunks }}）</template>
+            <template v-if="embeddingProgress.failed_chunks">（失败 {{ embeddingProgress.failed_chunks }}）</template>
+          </span>
+          <span class="progress-pct">{{ embeddingPercent }}%</span>
+          <button class="secondary" style="margin-left: 12px; padding: 2px 10px; font-size: 12px;" @click="cancelEmbedding">取消</button>
+        </div>
+        <div class="progress-bar-track">
+          <div class="progress-bar-fill" :style="{ width: embeddingPercent + '%' }"></div>
         </div>
       </div>
 
@@ -500,3 +555,51 @@ onMounted(async () => {
     </div>
   </section>
 </template>
+
+<style scoped>
+.embedding-progress {
+  margin-bottom: 16px;
+  padding: 12px 16px;
+}
+
+.progress-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.progress-title {
+  font-weight: 600;
+  color: var(--c-primary);
+}
+
+.progress-stats {
+  color: var(--t-secondary);
+  flex: 1;
+}
+
+.progress-pct {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--t-primary);
+  min-width: 36px;
+  text-align: right;
+}
+
+.progress-bar-track {
+  width: 100%;
+  height: 8px;
+  background: var(--c-border, #e0e0e0);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: var(--c-primary, #4a90d9);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+</style>

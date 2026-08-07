@@ -295,4 +295,59 @@ def materialize_relation_summaries(chunks: list[Any], graph: Any) -> list[Any]:
     return chunks
 
 
-__all__ = ["materialize_figure_bindings", "materialize_relation_summaries"]
+def populate_relation_chunks(chunks: list[Any]) -> list[Any]:
+    """Compute and write `relation_chunks` from fully materialized metadata_json.
+
+    Reads the deterministic binding fields written by materialize_figure_bindings
+    and materialize_relation_summaries, then produces a stable, deduplicated list
+    of directly related chunk IDs for each chunk.
+
+    Indirect relations (same-page, same-section) are NOT included here;
+    they will be written to indirect_relation_chunks separately.
+    """
+    for chunk in chunks:
+        metadata = getattr(chunk, "metadata_json", None) or {}
+        if not isinstance(metadata, dict):
+            chunk.relation_chunks = []
+            continue
+
+        related: list[str] = []
+        chunk_id = str(getattr(chunk, "id", ""))
+
+        # figure_references → image chunks this text references
+        for ref in metadata.get("figure_references") or []:
+            if isinstance(ref, dict):
+                for img_id in (ref.get("image_chunk_ids") or []):
+                    if isinstance(img_id, str) and img_id:
+                        related.append(img_id)
+
+        # outgoing_asset_chunk_ids → image/asset chunks linked via relation graph
+        for asset_id in metadata.get("outgoing_asset_chunk_ids") or []:
+            if isinstance(asset_id, str) and asset_id:
+                related.append(asset_id)
+
+        # image_bindings → text chunks that reference this image
+        for binding in metadata.get("image_bindings") or []:
+            if isinstance(binding, dict):
+                for ref_id in (binding.get("reference_chunk_ids") or []):
+                    if isinstance(ref_id, str) and ref_id:
+                        related.append(ref_id)
+
+        # incoming_reference_chunk_ids → text chunks referencing this chunk
+        for ref_id in metadata.get("incoming_reference_chunk_ids") or []:
+            if isinstance(ref_id, str) and ref_id:
+                related.append(ref_id)
+
+        # Deduplicate preserving declaration order, exclude self-reference.
+        chunk.relation_chunks = [
+            cid for cid in list(dict.fromkeys(related)) if cid != chunk_id
+        ]
+
+    return chunks
+
+
+__all__ = [
+    "materialize_figure_bindings",
+    "materialize_relation_summaries",
+    "populate_relation_chunks",
+]

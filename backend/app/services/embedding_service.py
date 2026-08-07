@@ -515,6 +515,7 @@ async def embed_document(
                 _revoke_chunk_embedding(db, chunk)
                 if progress_callback:
                     progress_callback({
+                        "type": "progress",
                         "document_id": document.id,
                         "chunk_id": chunk.id,
                         "embedded_chunks": embedded,
@@ -532,6 +533,7 @@ async def embed_document(
                 logger.exception("embed_document chunk=%s failed", chunk.id)
             if progress_callback:
                 progress_callback({
+                    "type": "progress",
                     "document_id": document.id,
                     "chunk_id": chunk.id,
                     "embedded_chunks": embedded,

@@ -381,6 +381,101 @@ export function embedDocument(id: string) {
   return api.post<EmbeddingResult>(`/api/v1/documents/${id}/embedding`, {})
 }
 
+export interface EmbeddingProgress {
+  type: 'progress' | 'complete' | 'error'
+  document_id?: string
+  chunk_id?: string
+  embedded_chunks: number
+  total_chunks: number
+  skipped_chunks: number
+  failed_chunks: number
+  // complete event carries the full result
+  success?: boolean
+  data?: EmbeddingResult
+  message?: string
+}
+
+/** Stream embedding progress via Server-Sent Events. */
+export function embedDocumentStream(
+  id: string,
+  onProgress: (evt: EmbeddingProgress) => void,
+  onComplete: (result: EmbeddingResult) => void,
+  onError: (message: string) => void,
+): AbortController {
+  const controller = new AbortController()
+  const token = localStorage.getItem('know_rag_token')
+
+  fetch(`/api/v1/documents/${id}/embedding/stream`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: '{}',
+    signal: controller.signal,
+  }).then(async (response) => {
+    if (!response.ok) {
+      const body = await response.text().catch(() => '')
+      let msg = `HTTP ${response.status}`
+      try {
+        const parsed = JSON.parse(body)
+        msg = parsed.message || parsed.detail || msg
+      } catch { /* use status text */ }
+      onError(msg)
+      return
+    }
+
+    const reader = response.body?.getReader()
+    if (!reader) {
+      onError('浏览器不支持流式读取')
+      return
+    }
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      // Parse SSE frames: "data: {...}\n\n"
+      const lines = buffer.split('\n')
+      // Keep the last incomplete line in the buffer.
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed || trimmed.startsWith(':')) continue // comment / keepalive
+        if (trimmed.startsWith('data: ')) {
+          try {
+            const evt = JSON.parse(trimmed.slice(6)) as EmbeddingProgress
+            if (evt.type === 'complete') {
+              onComplete((evt as any).data || evt)
+              return
+            }
+            if (evt.type === 'error') {
+              onError(evt.message || '向量生成失败')
+              return
+            }
+            onProgress(evt)
+          } catch {
+            // malformed frame, skip
+          }
+        }
+      }
+    }
+    // If stream ended without complete/error event
+    onError('连接意外中断')
+  }).catch((err) => {
+    if (err.name !== 'AbortError') {
+      onError(err.message || '网络请求失败')
+    }
+  })
+
+  return controller
+}
+
 export function getDocumentEmbeddingStatus(id: string) {
   return api.get<EmbeddingStatus>(`/api/v1/documents/${id}/embedding/status`)
 }

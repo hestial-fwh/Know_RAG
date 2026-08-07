@@ -369,6 +369,11 @@ OCR 或公式 child。
 - 关系读取或扩展失败时返回原始检索结果。
 - `binding_score` 经标注集校准前不得改名为 confidence。
 
+> **已知缺口**：P5 扩展和上下文构建器 `build_cloud_flat_chunks_payload()` 均未消费 P0-P4 产出的
+> 绑定数据。上下文构建仍基于同 parent 位置猜谜（`_cloud_needs_expansion`），而非读取
+> `figure_references` / `image_bindings` 做确定性扩展。改造方案见
+> [retrieval_context_building_plan.md](retrieval_context_building_plan.md)。
+
 ## 13. 历史数据、开关和回滚
 
 当前数据库已持久化规范化 Canonical Markdown、CanonicalAsset sidecar 和 source provenance，

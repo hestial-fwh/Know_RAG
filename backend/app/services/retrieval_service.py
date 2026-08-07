@@ -332,6 +332,7 @@ def _row_to_result(row, match_type: str, include_content: bool, score_key: str) 
         "chunk_metadata": metadata,
         "image_info": image_info,
         "image_url": _image_url_from_info(image_info, metadata),
+        "relation_chunks": getattr(row, "relation_chunks", None) or [],
         "preview": content[:300],
         "score": float(getattr(row, score_key) or 0),
         "rrf_score": 0.0,
@@ -372,6 +373,7 @@ def _base_select_sql(score_sql: str, extra_from: str = "", where_extra: str = ""
             c.content_hash,
             c.image_info,
             c.metadata_json,
+            c.relation_chunks,
             {score_sql}
         FROM chunks c
         JOIN documents d ON d.id = c.document_id
@@ -1144,6 +1146,7 @@ def _compact_child_from_result(item: dict) -> dict:
         "metadata_json": metadata,
         "image_info": image_info,
         "image_url": _image_url_from_info(image_info, metadata),
+        "relation_chunks": item.get("relation_chunks") or [],
     }
 
 
@@ -1322,6 +1325,113 @@ def attach_context(db, results: list[dict], options: SearchOptions | None = None
             item["parent_context"] = None
 
 
+def _attach_binding_related_chunks(
+    db: Session,
+    groups: list[dict],
+    *,
+    enabled: bool = True,
+    limit_per_group: int = 20,
+) -> None:
+    """Pre-fetch relation_chunks targets for each parent group.
+
+    Reads relation_chunks from matched children, batch-fetches the target
+    chunk content from DB, and attaches the results as ``binding_related_chunks``
+    on each group.  The context builder can then use these exact relations
+    instead of position-based guessing.
+
+    Fail-open: any DB error leaves ``binding_related_chunks`` absent and the
+    context builder falls back to rule-based expansion.
+    """
+    if not enabled or not groups:
+        return
+
+    # Step 1 — collect all unique related chunk IDs per group.
+    group_requests: dict[str, set[str]] = {}
+    all_related_ids: set[str] = set()
+
+    for group in groups:
+        matched = group.get("matched_children") or []
+        matched_ids = {c.get("chunk_id") for c in matched if c.get("chunk_id")}
+        parent_children_ids = {
+            c.get("chunk_id") for c in (group.get("parent_children") or []) if c.get("chunk_id")
+        }
+
+        related_ids: set[str] = set()
+        for child in matched:
+            rc = child.get("relation_chunks") or []
+            if isinstance(rc, list):
+                for cid in rc:
+                    if isinstance(cid, str) and cid:
+                        related_ids.add(cid)
+
+        # Exclude chunks already present in the group.
+        new_ids = related_ids - matched_ids - parent_children_ids
+        if new_ids:
+            group_requests[group["parent_key"]] = new_ids
+            all_related_ids.update(new_ids)
+
+    if not all_related_ids:
+        return
+
+    # Step 2 — batch fetch related chunk content.
+    try:
+        rows = (
+            db.execute(
+                text(
+                    """
+                    SELECT id, content, chunk_type, chunk_index, context_header,
+                           image_info, metadata_json
+                    FROM chunks
+                    WHERE id = ANY(:ids) AND is_enabled = true AND status = 'ready'
+                    """
+                ),
+                {"ids": list(all_related_ids)},
+            )
+            .mappings()
+            .all()
+        )
+    except Exception:
+        return  # fail-open
+
+    rows_by_id: dict[str, dict] = {}
+    for row in rows:
+        rows_by_id[str(row["id"])] = dict(row)
+
+    # Step 3 — distribute to groups.
+    for group in groups:
+        request_ids = group_requests.get(group["parent_key"])
+        if not request_ids:
+            continue
+        related = []
+        for cid in list(request_ids)[:limit_per_group]:
+            row = rows_by_id.get(cid)
+            if row is None:
+                continue
+            content = row.get("content") or ""
+            metadata = row.get("metadata_json") or {}
+            image_info = row.get("image_info") or {}
+            display_content = _clean_display_text(content, max_chars=600)
+            related.append(
+                {
+                    "chunk_id": row["id"],
+                    "chunk_type": row.get("chunk_type", "text"),
+                    "chunk_index": row.get("chunk_index"),
+                    "context_header": row.get("context_header") or "",
+                    "content_preview": content[:300],
+                    "display_preview": display_content[:300],
+                    "content_length": len(content),
+                    "content": content,
+                    "relation": "binding",
+                    "is_matched": False,
+                    "image_info": image_info,
+                    "image_url": _image_url_from_info(image_info, metadata),
+                    "metadata": metadata,
+                    "metadata_json": metadata,
+                }
+            )
+        group["binding_related_chunks"] = related
+
+
 def build_parent_groups(db, results: list[dict], options: SearchOptions) -> list[dict]:
     """Group child hits by parent_chunk_id and return configurable parent contexts.
 
@@ -1392,6 +1502,12 @@ def build_parent_groups(db, results: list[dict], options: SearchOptions) -> list
                 "is_orphan": parent_id is None,
             }
         )
+
+    _attach_binding_related_chunks(
+        db,
+        groups,
+        enabled=settings.document_relation_context_building_enabled,
+    )
 
     groups.sort(key=lambda group: group["score"], reverse=True)
     return groups[: options.max_parent_contexts]

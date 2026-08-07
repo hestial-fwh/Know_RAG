@@ -77,8 +77,12 @@ class Settings(BaseSettings):
         alias="DOCUMENT_RELATION_MATERIALIZATION_ENABLED",
     )
     document_relation_retrieval_expansion_enabled: bool = Field(
-        False,
+        True,
         alias="DOCUMENT_RELATION_RETRIEVAL_EXPANSION_ENABLED",
+    )
+    document_relation_context_building_enabled: bool = Field(
+        True,
+        alias="DOCUMENT_RELATION_CONTEXT_BUILDING_ENABLED",
     )
     document_asset_group_enabled: bool = Field(
         False,

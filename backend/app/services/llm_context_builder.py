@@ -1327,7 +1327,7 @@ def _cloud_build_window_for_parent(
     for h in hit_chunks:
         if _cloud_chunk_id(h):
             siblings_by_id[_cloud_chunk_id(h)] = h
-    # Determine whether any hit needs expansion.
+    # Determine whether any hit needs rule-based expansion.
     policies = [
         _cloud_needs_expansion(
             hit=h,
@@ -1338,33 +1338,9 @@ def _cloud_build_window_for_parent(
         for h in hit_chunks
     ]
     rules = sorted({r for p in policies for r in p.get("rules", [])})
-    if not any(p.get("expanded") for p in policies):
-        return {
-            "mode": "selective_child_aligned",
-            "parent_chunk_id": parent_id,
-            "max_chars": max_chars,
-            "soft_max_chars": soft_max,
-            "actual_chars": sum(len(_cloud_content(h)) for h in hit_chunks),
-            "hit_chunk_ids": hit_ids,
-            "included_chunk_ids": hit_ids,
-            "before_chunk_ids": [],
-            "between_chunk_ids": [],
-            "after_chunk_ids": [],
-            "media_chunk_ids": [],
-            "expanded": False,
-            "reason": "hit_chunk_is_self_contained",
-            "rules": [],
-        }
-    # Order siblings by chunk_index.
-    ordered = sorted(siblings_by_id.values(), key=lambda c: (c.get("chunk_index") is None, c.get("chunk_index") or 10**9))
-    index_by_id: dict[str, int] = {}
-    for pos, c in enumerate(ordered):
-        cid = _cloud_chunk_id(c)
-        if cid:
-            index_by_id[cid] = pos
-    hit_positions = [index_by_id[cid] for cid in hit_ids if cid in index_by_id]
-    min_pos = min(hit_positions) if hit_positions else None
-    max_pos = max(hit_positions) if hit_positions else None
+    any_rule_expanded = any(p.get("expanded") for p in policies)
+
+    # ── shared state ──
     included = set(hit_ids)
     before: list[str] = []
     between: list[str] = []
@@ -1403,6 +1379,91 @@ def _cloud_build_window_for_parent(
         included.add(cid)
         media.append(cid)
         actual_chars += len(_cloud_content(c))
+
+    # ── 0) Binding-aware expansion ──
+    # Uses exact chunk relations from P4 materialization
+    # (figure_references / image_bindings / outgoing_asset_chunk_ids /
+    # incoming_reference_chunk_ids).  Deterministic and takes priority
+    # over position-based guessing.
+    binding_related = parent_group.get("binding_related_chunks") or []
+    binding_by_id: dict[str, dict] = {}
+    for c in binding_related:
+        cid = _cloud_chunk_id(c)
+        if cid:
+            binding_by_id[cid] = c
+    binding_used = False
+    if binding_by_id:
+        # 0a) Exact figure/table/equation bindings → media.
+        for h in hit_chunks:
+            meta = _cloud_meta(h)
+            if not isinstance(meta, dict):
+                continue
+            for ref in meta.get("figure_references") or []:
+                if not isinstance(ref, dict):
+                    continue
+                for img_id in (ref.get("image_chunk_ids") or []):
+                    c = binding_by_id.get(img_id)
+                    if c and can_add(c, media_ok=True):
+                        add_media(c)
+                        binding_used = True
+            for asset_id in meta.get("outgoing_asset_chunk_ids") or []:
+                c = binding_by_id.get(str(asset_id))
+                if c and can_add(c, media_ok=True):
+                    add_media(c)
+                    binding_used = True
+
+        # 0b) Exact text bindings → before/after context.
+        for h in hit_chunks:
+            meta = _cloud_meta(h)
+            if not isinstance(meta, dict):
+                continue
+            for binding in meta.get("image_bindings") or []:
+                if not isinstance(binding, dict):
+                    continue
+                for ref_id in (binding.get("reference_chunk_ids") or []):
+                    c = binding_by_id.get(str(ref_id))
+                    if c and can_add(c, media_ok=False):
+                        add_text(c, before if not before else after)
+                        binding_used = True
+            for ref_id in meta.get("incoming_reference_chunk_ids") or []:
+                c = binding_by_id.get(str(ref_id))
+                if c and can_add(c, media_ok=False):
+                    add_text(c, before if not before else after)
+                    binding_used = True
+
+    strategy = "binding_aware" if binding_used else "rule_based"
+
+    # Early return when neither binding nor rules triggered expansion.
+    if not any_rule_expanded and not binding_used:
+        return {
+            "mode": "selective_child_aligned",
+            "parent_chunk_id": parent_id,
+            "max_chars": max_chars,
+            "soft_max_chars": soft_max,
+            "actual_chars": actual_chars,
+            "hit_chunk_ids": hit_ids,
+            "included_chunk_ids": list(included),
+            "before_chunk_ids": [],
+            "between_chunk_ids": [],
+            "after_chunk_ids": [],
+            "media_chunk_ids": [],
+            "expanded": False,
+            "reason": "hit_chunk_is_self_contained",
+            "rules": [],
+            "strategy": strategy,
+        }
+
+    # ── Rule-based expansion (fallback / supplement) ──
+    # Order siblings by chunk_index.
+    ordered = sorted(siblings_by_id.values(), key=lambda c: (c.get("chunk_index") is None, c.get("chunk_index") or 10**9))
+    index_by_id: dict[str, int] = {}
+    for pos, c in enumerate(ordered):
+        cid = _cloud_chunk_id(c)
+        if cid:
+            index_by_id[cid] = pos
+    hit_positions = [index_by_id[cid] for cid in hit_ids if cid in index_by_id]
+    min_pos = min(hit_positions) if hit_positions else None
+    max_pos = max(hit_positions) if hit_positions else None
 
     # 1) figure/table reference: add nearby media from same parent.
     if "figure_or_table_reference" in rules:
@@ -1459,6 +1520,7 @@ def _cloud_build_window_for_parent(
         "expanded": expanded,
         "reason": "rules_triggered: " + ",".join(rules) if expanded else "no_valid_context_chunks",
         "rules": rules if expanded else [],
+        "strategy": strategy,
     }
 
 
@@ -1569,14 +1631,15 @@ def build_cloud_flat_chunks_payload(retrieval_data: dict, options: dict | None =
         if role == "hit":
             parent_id = _cloud_parent_id(item)
             cw = context_window or windows_by_parent.get(parent_id)
+            _strategy = (cw or {}).get("strategy", "rule_based")
             if not parent_id:
-                flat["context_policy"] = {"expanded": False, "reason": "no_parent_chunk", "rules": [], "strategy": "rule_based"}
+                flat["context_policy"] = {"expanded": False, "reason": "no_parent_chunk", "rules": [], "strategy": _strategy}
             elif cw and cw.get("expanded"):
-                flat["context_policy"] = {"expanded": True, "reason": cw.get("reason") or "rules_triggered", "rules": cw.get("rules") or [], "strategy": "rule_based"}
+                flat["context_policy"] = {"expanded": True, "reason": cw.get("reason") or "rules_triggered", "rules": cw.get("rules") or [], "strategy": _strategy}
                 flat["context_window"] = cw
             else:
                 reason = (cw or {}).get("reason") if cw else "hit_chunk_is_self_contained"
-                flat["context_policy"] = {"expanded": False, "reason": reason or "hit_chunk_is_self_contained", "rules": [], "strategy": "rule_based"}
+                flat["context_policy"] = {"expanded": False, "reason": reason or "hit_chunk_is_self_contained", "rules": [], "strategy": _strategy}
         output_chunks.append(flat)
         next_rank += 1
 
@@ -1591,6 +1654,13 @@ def build_cloud_flat_chunks_payload(retrieval_data: dict, options: dict | None =
             for item in (group.get("parent_children") or []) + (group.get("matched_children") or []):
                 cid = _cloud_chunk_id(item)
                 if cid:
+                    sibling_lookup[cid] = item
+            # Phase 2A: also register binding_related_chunks so cross-parent
+            # media / text references emitted by the context window can be
+            # resolved to full chunk objects during emit.
+            for item in (group.get("binding_related_chunks") or []):
+                cid = _cloud_chunk_id(item)
+                if cid and cid not in sibling_lookup:
                     sibling_lookup[cid] = item
         for cw in windows_by_parent.values():
             if not cw.get("expanded"):

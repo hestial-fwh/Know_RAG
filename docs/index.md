@@ -28,6 +28,8 @@
 - `minio_storage.md`：MinIO 对象存储边界。
 - `mineru_docker.md`：MinerU 容器部署说明。
 - `image_chunk_binding_plan.md`：MinerU 主链路显式图文绑定 Current 契约，包含 P4 occurrence metadata、P5 scoped expansion 与双开关。
+- `retrieval_context_building_plan.md`：检索上下文构建绑定感知改造方案（Planned），覆盖 `relation_chunks` 落盘、
+  上下文构建器消费 binding 数据、拉取机制详述。Phase 1-4 分步实施。
 - `document_profile_parse_chunk_plan.md`：多模态文档融合的权威路线图，覆盖页面主视觉、页内多作品
   区域与文本归属、内容来源、多轴画像、MinerU block 级 OCR 生产投影、差异化切分、字段级索引
   准入、前端验收和自动 replay；
