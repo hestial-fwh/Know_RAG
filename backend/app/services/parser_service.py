@@ -93,6 +93,22 @@ def _maybe_preserve_pdf_page_visuals(
 ) -> ParsedDocument:
     if suffix != "pdf":
         return parsed
+
+    # Standard mode trusts MinerU exclusively — skip pdfplumber profiling
+    # and page visual enrichment entirely.  This prevents pdfplumber's
+    # false-positive "preserve" decisions (triggered by CJK embedded fonts,
+    # large embedded figures, etc.) from contaminating the parse output
+    # with spurious page_primary_visual tags.
+    _meta = getattr(document, "metadata_json", None)
+    processing_mode = (
+        _meta.get("parse_options", {}).get("processing_mode", "standard")
+        if isinstance(_meta, dict)
+        else "standard"
+    )
+    if processing_mode == "standard":
+        return parsed
+
+    # visual_art mode: full pdfplumber heuristic + page visual enrichment
     dominant_image_threshold = getattr(
         settings,
         "document_page_visual_min_coverage",

@@ -49,8 +49,8 @@ def _page_facts(*pages):
 
 
 def test_dcp3_scanned_pages_split_inside_authoritative_page_boundaries():
-    page_one = "Section ALPHA. " + ("Supplier delivery obligation. " * 35)
-    page_two = "Section BETA. " + ("Payment acceptance condition. " * 35)
+    page_one = "Section ALPHA. " + ("Supplier delivery obligation. " * 6)
+    page_two = "Section BETA. " + ("Payment acceptance condition. " * 6)
     markdown = page_one + "\n\n" + page_two
     canonical = CanonicalDocument(
         markdown_content=markdown,

@@ -158,6 +158,7 @@ export function uploadDocument(
     enable_ocr?: string
     enable_vlm?: boolean
     enable_media_crop?: boolean
+    processing_mode?: string
   },
   onProgress?: (pct: number) => void,
 ): Promise<DocumentItem> {
@@ -171,6 +172,7 @@ export function uploadDocument(
     if (payload.enable_ocr) form.append('enable_ocr', payload.enable_ocr)
     if (typeof payload.enable_vlm === 'boolean') form.append('enable_vlm', String(payload.enable_vlm))
     if (typeof payload.enable_media_crop === 'boolean') form.append('enable_media_crop', String(payload.enable_media_crop))
+    if (payload.processing_mode) form.append('processing_mode', payload.processing_mode)
     if (payload.title) form.append('title', payload.title)
 
     const xhr = new XMLHttpRequest()

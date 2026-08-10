@@ -26,6 +26,7 @@ const mineruProfile = ref('cpu')
 const enableOcr = ref('auto')
 const enableVlm = ref(true)
 const enableMediaCrop = ref(true)
+const processingMode = ref('standard')
 
 // ── batch item type ──────────────────────────────────────────────────────────
 
@@ -200,6 +201,7 @@ async function uploadOne(item: UploadFileItem): Promise<void> {
         enable_ocr: enableOcr.value,
         enable_vlm: enableVlm.value,
         enable_media_crop: enableMediaCrop.value,
+        processing_mode: processingMode.value,
       },
       (pct) => { item.uploadProgress = pct },
     )
@@ -400,6 +402,12 @@ onMounted(loadKnowledgeBases)
           <label>OCR 策略
             <select v-model="enableOcr">
               <option value="auto">自动 OCR</option><option value="force">强制 OCR</option><option value="off">关闭 OCR</option>
+            </select>
+          </label>
+          <label>文档类型
+            <select v-model="processingMode">
+              <option value="standard">📄 标准文档（专利、论文、报告等）</option>
+              <option value="visual_art">🎨 画册 / 书法（图片即正文）</option>
             </select>
           </label>
           <label class="check pretty-check"><input v-model="enableMediaCrop" type="checkbox" /><span>启用 PDF 图/表裁剪</span></label>

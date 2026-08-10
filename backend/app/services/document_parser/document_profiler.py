@@ -150,25 +150,80 @@ def _page_kind(
     continuous_prose: bool,
     native_text_chars: int,
     has_code: bool,
+    processing_mode: str = "visual_art",
 ) -> tuple[str, tuple[str, ...], float]:
+    """Classify a page into one of six kinds.
+
+    In ``"standard"`` mode the classifier trusts MinerU's signals
+    exclusively: ``visual_dominant`` is only triggered by an explicit
+    ``page_primary_visual`` marker.  pdfplumber's ``dominant_image_ratio``
+    and ``native_text_chars`` are NOT consulted.
+
+    In ``"visual_art"`` mode (default, backward-compatible) the full
+    heuristic with pdfplumber signals and escape branches is active.
+    """
     reasons: list[str] = []
     if table_dense:
         reasons.extend(("table_density_threshold_met", "table_boundary_is_structural"))
         return "table_dense", tuple(reasons), 1.0
-    visual_dominant = bool(
-        primary_visual_count or dominant_image_ratio >= 0.65
-    )
-    if visual_dominant:
-        reasons.append(
-            "page_primary_visual_present"
-            if primary_visual_count
-            else "dominant_embedded_image"
+
+    if processing_mode == "standard":
+        # Standard mode trusts MinerU exclusively.  pdfplumber is never
+        # invoked at parse time (parser_service skips the enricher), so
+        # primary_visual_count is reliably 0 for newly parsed documents.
+        #
+        # The guard below protects against two edge cases:
+        # 1. Legacy documents parsed before the enricher was gated by
+        #    processing_mode — their stored canonical data may still
+        #    carry spurious page_primary_visual tags.
+        # 2. Future MinerU versions that might emit their own
+        #    page_primary_visual signal for genuine full-page figures.
+        if primary_visual_count:
+            reasons.append("page_primary_visual_present")
+            if canonical_text_chars >= 300:
+                reasons.append("substantial_text_overrides_primary_visual")
+                # fall through → native_text
+            else:
+                reasons.append("visual_content_dominates_page")
+                return "visual_dominant", tuple(reasons), 1.0
+    else:
+        # visual_art mode: full heuristic with pdfplumber signals.
+        # dominant_image_ratio helps detect visual pages that MinerU
+        # did not explicitly mark (e.g. calligraphy, artwork).
+        visual_dominant = bool(
+            primary_visual_count or dominant_image_ratio >= 0.65
         )
-        if continuous_prose and native_text_chars == 0:
-            reasons.append("continuous_parser_prose_without_native_text")
-            return "scanned_prose", tuple(reasons), 1.0
-        reasons.append("visual_content_dominates_page")
-        return "visual_dominant", tuple(reasons), 1.0
+        if visual_dominant:
+            reasons.append(
+                "page_primary_visual_present"
+                if primary_visual_count
+                else "dominant_embedded_image"
+            )
+            if continuous_prose and native_text_chars == 0:
+                reasons.append("continuous_parser_prose_without_native_text")
+                if canonical_text_chars >= 300:
+                    # Parser produced substantial text — this is likely a
+                    # born-digital PDF whose text layer pdfplumber cannot read
+                    # (e.g. CJK fonts / embedded subsets), not a genuine scan.
+                    reasons.append("substantial_parser_text_despite_no_native_layer")
+                    visual_dominant = False  # fall through → native_text
+                else:
+                    return "scanned_prose", tuple(reasons), 1.0
+            elif continuous_prose and native_text_chars > 0:
+                # Has substantial continuous prose AND a native text layer
+                # (e.g. English patent page with a large embedded figure).
+                reasons.append("continuous_prose_with_visual_elements")
+                visual_dominant = False  # fall through → native_text
+            elif canonical_text_chars >= 300:
+                # Parser extracted enough text to treat this as a text page
+                # even though continuous_prose is False (e.g. Chinese patent
+                # page with fragmented figure captions / technical labels).
+                reasons.append("substantial_canonical_text_with_visual_elements")
+                visual_dominant = False  # fall through → native_text
+            if visual_dominant:
+                reasons.append("visual_content_dominates_page")
+                return "visual_dominant", tuple(reasons), 1.0
+
     if (
         image_count
         and heading_count
@@ -208,11 +263,25 @@ def profile_canonical_document(
     canonical: CanonicalDocument,
     *,
     provenance_nodes: Iterable[CanonicalSourceNode] | None = None,
+    processing_mode: str = "visual_art",
 ) -> DocumentProfile:
     """Build a deterministic, read-only document and page profile.
 
     The result is an explainable shadow decision. It does not mutate canonical
     content, chunks, assets, or index-admission metadata.
+
+    ``processing_mode`` controls both the parse-time enrichment and the
+    page classification heuristic:
+
+    - ``"standard"`` — pdfplumber is NOT invoked (neither for profiling nor
+      for page visual enrichment).  ``_page_kind`` trusts MinerU's
+      ``canonical_text_chars`` exclusively; ``visual_dominant`` only
+      triggers on explicit ``page_primary_visual`` markers (with a
+      ``>= 300`` char safety guard for legacy documents).  Best for
+      patents, papers, reports, and most born-digital PDFs.
+    - ``"visual_art"`` — full pdfplumber heuristic: page visual profiling,
+      ``dominant_image_ratio``, ``native_text_chars``, and escape
+      branches.  Best for calligraphy, art books, and visual collections.
     """
     nodes = list(
         provenance_nodes
@@ -349,6 +418,7 @@ def profile_canonical_document(
             continuous_prose=continuous_prose,
             native_text_chars=native_text_chars,
             has_code=code_block_count > 0,
+            processing_mode=processing_mode,
         )
         if page_kind == "scanned_prose":
             ocr_layout = "continuous_prose"

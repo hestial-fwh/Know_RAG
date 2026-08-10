@@ -1179,7 +1179,13 @@ def _rebuild_canonical_weknora_parent_child(
     active_policy_ids = (
         DCP3_ACTIVE_POLICY_IDS if adaptive_policy_active else frozenset()
     )
-    document_profile = profile_canonical_document(canonical)
+    _meta = getattr(document, "metadata_json", None)
+    processing_mode = (
+        _meta.get("parse_options", {}).get("processing_mode", "visual_art")
+        if isinstance(_meta, dict)
+        else "visual_art"
+    )
+    document_profile = profile_canonical_document(canonical, processing_mode=processing_mode)
     save_debug_page_profile(document_profile)
     binding_v2_enabled = bool(
         settings.document_image_text_binding_v2_enabled

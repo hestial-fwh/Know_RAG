@@ -53,8 +53,17 @@ relation type/status/method/score；完整 evidence 与 candidates 只保存在�
 
 ### 文档向量化
 
-- `POST /api/v1/documents/{id}/embedding`
+- `POST /api/v1/documents/{id}/embedding` — 同步向量化（阻塞直到完成）
+- `POST /api/v1/documents/{id}/embedding/stream` — **SSE 流式向量化**（实时推送每个切片进度）
 - `GET /api/v1/documents/{id}/embedding/status`
+
+SSE 流式端点返回 `text/event-stream`，每条事件格式：
+
+```json
+{"type":"progress", "embedded_chunks":5, "total_chunks":66, "skipped_chunks":0, "failed_chunks":0}
+```
+
+最终事件 `type: "complete"` 包含完整 `EmbeddingResult`；错误事件 `type: "error"` 包含 `message`。
 
 返回字段包含：
 

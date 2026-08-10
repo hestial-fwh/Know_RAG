@@ -1,7 +1,7 @@
 # Know_RAG 文档索引
 
 > 状态：Current
-> 维护日期：2026-08-05
+> 维护日期：2026-08-10（standard 模式 enricher 隔离完成）
 > 适用范围：当前 `know_rag` 主分支
 
 ## 权威阅读顺序
@@ -28,6 +28,7 @@
 - `minio_storage.md`：MinIO 对象存储边界。
 - `mineru_docker.md`：MinerU 容器部署说明。
 - `image_chunk_binding_plan.md`：MinerU 主链路显式图文绑定 Current 契约，包含 P4 occurrence metadata、P5 scoped expansion 与双开关。
+- `document_processing_mode_plan.md`：文档处理模式双路径方案（Planned），标准模式信任 MinerU 信号、画册模式保留 pdfplumber 后处理，包含前端交互设计和完整测试矩阵。
 - `retrieval_context_building_plan.md`：检索上下文构建绑定感知改造方案（Planned），覆盖 `relation_chunks` 落盘、
   上下文构建器消费 binding 数据、拉取机制详述。Phase 1-4 分步实施。
 - `document_profile_parse_chunk_plan.md`：多模态文档融合的权威路线图，覆盖页面主视觉、页内多作品

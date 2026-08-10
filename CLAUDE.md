@@ -157,3 +157,36 @@ All config via `.env` (see `.env.example` for all options). Key env vars:
 ### RAGFlow Vendor
 
 `backend/ragflow_vendor/` contains vendored RAGFlow DeepDoc parser/vision code. The `entrypoint.sh` symlinks `/app/ragflow_vendor/rag/res/deepdoc` → `$DEEPDOC_MODEL_DIR` so models are shared via a Docker volume rather than downloaded per container. `PYTHONPATH` includes `/app/ragflow_vendor` for imports.
+
+## Code Change Checklist
+
+**After every code change**, proactively complete all three — do not wait for the user to ask:
+
+### 1. Documentation Maintenance
+
+| Change Type | Docs to Update |
+|-------------|----------------|
+| API endpoint added/modified | `docs/api.md` |
+| Frontend page/component changed | `docs/frontend.md` |
+| Architecture / data flow changed | `docs/architecture.md` |
+| Database schema / migration | `docs/database.md` |
+| Security boundary changed | `docs/security.md` |
+| New command or project convention | `CLAUDE.md` |
+| Any functional change | `docs/index.md` (update date) |
+| Daily work summary | `docs/daily_report_YYYY-MM-DD.md` |
+
+### 2. Targeted Tests
+
+Write unit tests for the code paths that were changed, covering core logic and edge cases. Place backend tests in `backend/tests/` and frontend tests alongside the changed module as `*.test.ts`.
+
+### 3. Full Test Suite
+
+```bash
+# Backend
+docker compose exec backend python -m pytest tests/ -v
+
+# Frontend (type-check + lint + vitest)
+cd frontend && npm run check
+```
+
+Add "文档维护"、"针对性测试"、"全量测试" items to the todo list before completing the task. Mark each done only after completion.

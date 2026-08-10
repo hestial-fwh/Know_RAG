@@ -36,6 +36,7 @@ async def upload_document(
     enable_ocr: str | None = Form(default=None),
     enable_vlm: bool | None = Form(default=None),
     enable_media_crop: bool | None = Form(default=None),
+    processing_mode: str = Form(default="standard"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -52,6 +53,7 @@ async def upload_document(
         enable_ocr=enable_ocr,
         enable_vlm=enable_vlm,
         enable_media_crop=enable_media_crop,
+        processing_mode=processing_mode,
     )
 
 

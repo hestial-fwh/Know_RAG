@@ -1,4 +1,4 @@
-import hashlib
+﻿import hashlib
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -202,6 +202,7 @@ async def upload_document(
     enable_ocr: str | None = None,
     enable_vlm: bool | None = None,
     enable_media_crop: bool | None = None,
+    processing_mode: str = "standard",
 ):
     kb = db.get(KnowledgeBase, knowledge_base_id)
     if kb is None:
@@ -229,6 +230,7 @@ async def upload_document(
         "enable_ocr": (enable_ocr or "auto").strip().lower(),
         "enable_vlm": True if enable_vlm is None else bool(enable_vlm),
         "enable_media_crop": True if enable_media_crop is None else bool(enable_media_crop),
+        "processing_mode": processing_mode if processing_mode in ("standard", "visual_art") else "standard",
     }
     if parse_options["parser_engine"] == "deepdoc":
         parse_options["parser_engine"] = "ragflow"
