@@ -1,7 +1,7 @@
 # Know_RAG 文档索引
 
 > 状态：Current
-> 维护日期：2026-08-10（standard 模式 enricher 隔离完成）
+> 维护日期：2026-08-10（Final Media Parent Assignment 修复 DCP3.1 覆盖）
 > 适用范围：当前 `know_rag` 主分支
 
 ## 权威阅读顺序

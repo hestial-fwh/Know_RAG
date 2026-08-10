@@ -156,11 +156,17 @@ def _page_kind(
 
     In ``"standard"`` mode the classifier trusts MinerU's signals
     exclusively: ``visual_dominant`` is only triggered by an explicit
-    ``page_primary_visual`` marker.  pdfplumber's ``dominant_image_ratio``
-    and ``native_text_chars`` are NOT consulted.
+    ``page_primary_visual`` marker (with a ``>= 300`` char safety guard
+    for legacy documents).  pdfplumber's ``dominant_image_ratio`` and
+    ``native_text_chars`` are NOT consulted.  Best for patents, papers,
+    reports, and most born-digital PDFs.
 
-    In ``"visual_art"`` mode (default, backward-compatible) the full
-    heuristic with pdfplumber signals and escape branches is active.
+    In ``"visual_art"`` mode (default, backward-compatible) the
+    classifier uses the 255ca0d-aligned heuristic:
+    ``visual_dominant = primary_visual_count OR dominant_image_ratio >= 0.65``.
+    The only escape is ``continuous_prose + native_text_chars == 0``
+    → ``scanned_prose``.  There are NO patent/text-page escapes.
+    Best for calligraphy, art books, and visual collections.
     """
     reasons: list[str] = []
     if table_dense:
@@ -187,9 +193,10 @@ def _page_kind(
                 reasons.append("visual_content_dominates_page")
                 return "visual_dominant", tuple(reasons), 1.0
     else:
-        # visual_art mode: full heuristic with pdfplumber signals.
-        # dominant_image_ratio helps detect visual pages that MinerU
-        # did not explicitly mark (e.g. calligraphy, artwork).
+        # visual_art mode: 255ca0d-aligned heuristic.
+        # dominant_image_ratio >= 0.65 triggers visual_dominant.
+        # Only escape: continuous_prose + zero native_text → scanned_prose.
+        # No patent/document escape branches — those belong in standard mode.
         visual_dominant = bool(
             primary_visual_count or dominant_image_ratio >= 0.65
         )
@@ -201,28 +208,9 @@ def _page_kind(
             )
             if continuous_prose and native_text_chars == 0:
                 reasons.append("continuous_parser_prose_without_native_text")
-                if canonical_text_chars >= 300:
-                    # Parser produced substantial text — this is likely a
-                    # born-digital PDF whose text layer pdfplumber cannot read
-                    # (e.g. CJK fonts / embedded subsets), not a genuine scan.
-                    reasons.append("substantial_parser_text_despite_no_native_layer")
-                    visual_dominant = False  # fall through → native_text
-                else:
-                    return "scanned_prose", tuple(reasons), 1.0
-            elif continuous_prose and native_text_chars > 0:
-                # Has substantial continuous prose AND a native text layer
-                # (e.g. English patent page with a large embedded figure).
-                reasons.append("continuous_prose_with_visual_elements")
-                visual_dominant = False  # fall through → native_text
-            elif canonical_text_chars >= 300:
-                # Parser extracted enough text to treat this as a text page
-                # even though continuous_prose is False (e.g. Chinese patent
-                # page with fragmented figure captions / technical labels).
-                reasons.append("substantial_canonical_text_with_visual_elements")
-                visual_dominant = False  # fall through → native_text
-            if visual_dominant:
-                reasons.append("visual_content_dominates_page")
-                return "visual_dominant", tuple(reasons), 1.0
+                return "scanned_prose", tuple(reasons), 1.0
+            reasons.append("visual_content_dominates_page")
+            return "visual_dominant", tuple(reasons), 1.0
 
     if (
         image_count
@@ -279,9 +267,11 @@ def profile_canonical_document(
       triggers on explicit ``page_primary_visual`` markers (with a
       ``>= 300`` char safety guard for legacy documents).  Best for
       patents, papers, reports, and most born-digital PDFs.
-    - ``"visual_art"`` — full pdfplumber heuristic: page visual profiling,
-      ``dominant_image_ratio``, ``native_text_chars``, and escape
-      branches.  Best for calligraphy, art books, and visual collections.
+    - ``"visual_art"`` — 255ca0d-aligned heuristic: pdfplumber runs
+      normally; ``visual_dominant`` is triggered by ``primary_visual_count``
+      OR ``dominant_image_ratio >= 0.65`` with a single ``scanned_prose``
+      escape.  No patent/text-page escape branches.  Best for calligraphy,
+      art books, and visual collections.
     """
     nodes = list(
         provenance_nodes

@@ -346,7 +346,65 @@ def populate_relation_chunks(chunks: list[Any]) -> list[Any]:
     return chunks
 
 
+def link_same_parent_media(chunks: list[Any]) -> list[Any]:
+    """Ensure same-parent text children and image/table children are linked
+    via ``relation_chunks``.
+
+    This is a safety net for documents whose images lack explicit figure
+    references (no "图 X"/"Figure X" in body text) or parser captions that
+    resolve to distinct text nodes.  Without this step, structurally valid
+    parent-child groupings produce images that are invisible to the context
+    builder because ``relation_chunks`` is empty and the rule-based fallback
+    only triggers when the hit text itself contains a figure/table reference
+    pattern.
+    """
+    parent_groups: dict[str, list[Any]] = {}
+    for chunk in chunks:
+        parent_id = str(getattr(chunk, "parent_chunk_id", "") or "")
+        if parent_id:
+            parent_groups.setdefault(parent_id, []).append(chunk)
+
+    for _pid, siblings in parent_groups.items():
+        text_ids: list[str] = []
+        media_ids: list[str] = []
+        for c in siblings:
+            cid = str(getattr(c, "id", ""))
+            if not cid:
+                continue
+            if getattr(c, "chunk_type", "") in {"image", "table"}:
+                media_ids.append(cid)
+            elif getattr(c, "chunk_type", "") == "text":
+                text_ids.append(cid)
+        if not text_ids or not media_ids:
+            continue
+
+        # Order siblings by chunk_index so "adjacent" semantics are preserved.
+        ordered = sorted(
+            siblings,
+            key=lambda c: (c.chunk_index is None, c.chunk_index or 10**9),
+        )
+        for c in siblings:
+            cid = str(getattr(c, "id", ""))
+            if not cid:
+                continue
+            existing = list(getattr(c, "relation_chunks", []) or [])
+            if getattr(c, "chunk_type", "") == "text":
+                # Each text child links to same-parent media once.
+                for mid in media_ids:
+                    if mid != cid and mid not in existing:
+                        existing.append(mid)
+            elif getattr(c, "chunk_type", "") in {"image", "table"}:
+                # Media child links to text children (exclude self, keep order).
+                for tid in text_ids:
+                    if tid != cid and tid not in existing:
+                        existing.append(tid)
+            c.relation_chunks = existing
+
+    return chunks
+
+
 __all__ = [
+    "link_same_parent_media",
     "materialize_figure_bindings",
     "materialize_relation_summaries",
     "populate_relation_chunks",

@@ -422,3 +422,75 @@ text/table/image chunk 检索，不影响文档基础可用性。
 - 围栏代码以及 `content_kind=code_block` 保留 XML/配置标签，避免把真实源码当作展示标签删除。
 - 一句话短尾只在来源范围重叠且存在至少 16 字符精确后缀/前缀重叠时并回前块；不启用
   `merge_short_text_siblings()` 通用合并。
+
+## 15. Media Parent Assignment（2026-08-10）
+
+### 15.1 问题
+
+Parent-Child 切分后，图片可能成为 singleton image parent 的唯一 child 或彻底 orphan：
+
+- **Standard 模式**：`_flatten_underfilled_parent_links()` 删除 child 数 < 2 的 parent。
+  Singleton image parent 被删除 → image orphan → `_rehome_single_overlapping_orphans()`
+  依赖严格 overlap，经常不够 → orphan 永久保持。
+- **Visual_art 模式**：`_build_visual_page_parents()` 为每页创建 1 个 parent。
+  单图页面变成 1 parent : 1 image。
+
+两种情况下 `relation_chunks` 都无法生成，因为 image 没有 text sibling。
+
+### 15.2 方案
+
+新增统一阶段 `_reassign_singleton_image_parents()`，在 Standard 和 Visual_art 两个
+路径的 parent 归一化**之后**执行。对于每个 orphan 或 singleton-parent image，
+按证据优先级尝试重新归属到 text-bearing parent：
+
+| 优先级 | 策略 | 证据 |
+|--------|------|------|
+| P1 | `explicit_binding` | FigureLink 明确连接 text↔image |
+| P2 | `same_section` | 同 page + 同 section/heading |
+| P3 | `same_page_proximity` | 同 page + 位置邻近（最大 6000 chars） |
+| P4 | `cross_page_reference` | 跨页但 FigureLink 明确 |
+| P5 | `independent_visual` | 无可靠证据 → 保留原状 |
+
+### 15.3 关键约束
+
+- 纯视觉页、书法、画册、独立图版不绑定（无同页 text、无 FigureLink）
+- 跨 section 必须有显式 FigureLink 才绑定
+- 跨 page 必须有 FigureLink 才绑定
+- 设置 6000 char 同页距离上限
+
+### 15.4 执行位置
+
+**重要变更（2026-08-10 续三）**：`_reassign_singleton_image_parents` 已从
+`build_canonical_parent_child_plan()` 内部移除。Media Parent Assignment 现由
+`finalize_media_parent_assignment()` 在 `chunk_service.py` 中统一执行，
+位于 **所有** parent policy 之后：
+
+```
+build_canonical_parent_child_plan()
+→ apply_visual_item_parent_policy(plan)      ← DCP3.1 per-visual-item regroup
+→ finalize_media_parent_assignment(plan)     ← 唯一 authoritative 阶段
+→ _rebuild_parents_after_assignment()        ← 删除空 parent、重编号、更新计数
+→ relation_chunks materialization
+```
+
+这一变更修复了 DCP3.1 覆盖前置 media parent assignment 的问题。
+
+### 15.5 metadata
+
+重新归属的 image child 携带 `media_parent_assignment` metadata：
+
+```json
+{
+  "assigned": true,
+  "strategy": "explicit_binding|same_section|same_page_proximity|cross_page_reference",
+  "source_parent_index": null,
+  "target_parent_index": 3,
+  "confidence": 0.92,
+  "evidence": { ... }
+}
+```
+
+### 15.6 测试
+
+- 15 个专项测试覆盖 10 个必测场景 + 5 个边界场景
+- 全量 899 passed / 3 既存失败 / 0 新增回归

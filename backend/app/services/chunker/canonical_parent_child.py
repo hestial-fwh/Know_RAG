@@ -84,6 +84,7 @@ class CanonicalChunkPlan:
     provenance_nodes: list[CanonicalSourceNode] = field(default_factory=list)
     figure_links: FigureLinkResult = field(default_factory=FigureLinkResult)
     suppressed_assets_by_page: dict[int, set[str]] = field(default_factory=dict)
+    page_ranges: list[tuple[int, int, int]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -2229,6 +2230,535 @@ def _dedup_source_node_ids(children: list[CanonicalChildDraft]) -> list:
     )
 
 
+# ---------------------------------------------------------------------------
+# Unified Media Parent Assignment
+# ---------------------------------------------------------------------------
+
+# Maximum character distance for P3 same-page proximity binding.
+# Images farther than this from the nearest text parent on the same page
+# will not be bound by proximity alone.
+_MAX_SAME_PAGE_PROXIMITY_CHARS = 6000
+
+
+def _child_page_no(
+    child: CanonicalChildDraft,
+    page_ranges: list[tuple[int, int, int]],
+) -> int | None:
+    """Determine the page number for a child using metadata or position overlap."""
+    raw = child.metadata.get("page_no")
+    try:
+        if raw is not None:
+            return int(raw)
+    except (TypeError, ValueError):
+        pass
+    # Fallback: position overlap against page_ranges
+    if not page_ranges:
+        return None
+    best = max(
+        (
+            (max(0, min(child.end, end) - max(child.start, start)), pn)
+            for pn, start, end in page_ranges
+        ),
+        default=(0, None),
+        key=lambda x: x[0],
+    )
+    return best[1] if best[0] > 0 else None
+
+
+def _parent_has_text_children(
+    parent_index: int | None,
+    parent_to_children: dict[int | None, list[CanonicalChildDraft]],
+) -> bool:
+    """Check whether a parent group contains at least one text child."""
+    if parent_index is None:
+        return False
+    group = parent_to_children.get(parent_index, [])
+    return any(c.chunk_type == "text" for c in group)
+
+
+def _child_position_center(child: CanonicalChildDraft) -> float:
+    """Return the centre position of a child in canonical markdown."""
+    return (child.start + child.end) / 2.0
+
+
+def _distance_between(a: CanonicalChildDraft, b: CanonicalChildDraft) -> int:
+    """Character distance between the closest edges of two children."""
+    if a.end <= b.start:
+        return b.start - a.end
+    if b.end <= a.start:
+        return a.start - b.end
+    return 0  # overlapping
+
+
+def _best_figure_link_for_image(
+    asset_id: str,
+    figure_links: FigureLinkResult,
+) -> Any | None:
+    """Return the highest-scoring bound FigureLink that targets *asset_id*."""
+    best = None
+    best_score = -1.0
+    for link in figure_links.links:
+        if link.status != "bound":
+            continue
+        if asset_id not in link.asset_ids:
+            continue
+        score = link.binding_score
+        if score > best_score:
+            best_score = score
+            best = link
+    return best
+
+
+def _find_text_parent_for_figure_reference(
+    link: Any,
+    parent_to_children: dict[int | None, list[CanonicalChildDraft]],
+) -> int | None:
+    """Find a text-bearing parent whose text child contains the reference span."""
+    ref_start = link.reference.start
+    ref_end = link.reference.end
+    for parent_index, group in parent_to_children.items():
+        if parent_index is None:
+            continue
+        for child in group:
+            if child.chunk_type != "text":
+                continue
+            if child.start <= ref_start and child.end >= ref_end:
+                return parent_index
+    # Fallback: nearest text child by centre distance
+    best_parent = None
+    best_dist = 1_000_000_000
+    ref_centre = (ref_start + ref_end) / 2.0
+    for parent_index, group in parent_to_children.items():
+        if parent_index is None:
+            continue
+        for child in group:
+            if child.chunk_type != "text":
+                continue
+            d = abs(_child_position_center(child) - ref_centre)
+            if d < best_dist:
+                best_dist = d
+                best_parent = parent_index
+    return best_parent
+
+
+def _extract_heading_key(context_header: str) -> str:
+    """Extract a normalised heading key for section matching.
+
+    Strips heading markers and trailing whitespace, e.g.
+    ``## 发明内容`` → ``发明内容``.
+    """
+    if not context_header:
+        return ""
+    # Take the last heading level (most specific).
+    parts = [p.strip() for p in context_header.split(">") if p.strip()]
+    if not parts:
+        return ""
+    last = parts[-1]
+    return _HEADING_LINE_RE.sub(r"\2", last).strip()
+
+
+def _reassign_singleton_image_parents(
+    children: list[CanonicalChildDraft],
+    parents: list[CanonicalParentDraft],
+    figure_links: FigureLinkResult,
+    *,
+    page_ranges: list[tuple[int, int, int]] | None = None,
+) -> tuple[list[CanonicalChildDraft], list[CanonicalParentDraft]]:
+    """Unified Media Parent Assignment.
+
+    After both standard and visual_art parent normalisation, images that are
+    either orphaned (no parent) or the sole child of their parent are
+    candidates for reassignment.  Each candidate is evaluated against a
+    priority-ordered evidence ladder; only images with reliable text-ownership
+    evidence are moved.  Pure visual pages, calligraphy, and standalone
+    figures without any text reference are intentionally left alone.
+
+    Evidence priority
+    -----------------
+    P1  Explicit FigureLink binding (bound link targets the image's asset_id
+        and a text parent contains the reference span).
+    P2  Same page + same section / heading context.
+    P3  Same page position proximity (within *_MAX_SAME_PAGE_PROXIMITY_CHARS*).
+    P4  Cross-page explicit reference (FigureLink connects across pages).
+    P5  No reliable evidence — keep original assignment.
+
+    Returns ``(children, parents)`` with reassignments applied.  Parents that
+    become empty after reassignment are removed.
+    """
+    _page_ranges = list(page_ranges or [])
+
+    # ── Build lookup structures ──────────────────────────────────────────
+    parent_to_children: dict[int | None, list[CanonicalChildDraft]] = {}
+    for child in children:
+        parent_to_children.setdefault(child.parent_index, []).append(child)
+
+    asset_to_image: dict[str, CanonicalChildDraft] = {}
+    for child in children:
+        if child.chunk_type != "image":
+            continue
+        aid = child.metadata.get("asset_id")
+        if aid:
+            asset_to_image[str(aid)] = child
+
+    parent_index_to_parent: dict[int, CanonicalParentDraft] = {
+        p.parent_index: p for p in parents
+    }
+
+    # ── Identify candidates ──────────────────────────────────────────────
+    # Candidates: image children that are orphaned OR the sole child of their parent.
+    candidate_images: list[CanonicalChildDraft] = []
+    for child in children:
+        if child.chunk_type != "image":
+            continue
+        group = parent_to_children.get(child.parent_index, [])
+        if child.parent_index is None or len(group) == 1:
+            candidate_images.append(child)
+
+    if not candidate_images:
+        return children, parents
+
+    # ── P1–P5 evaluation per candidate ───────────────────────────────────
+    # Collect reassignment decisions first, then apply them atomically.
+    reassignments: dict[str, tuple[int, str, dict[str, Any]]] = {}
+    # asset_id → (target_parent_index, strategy, evidence_metadata)
+
+    for image in candidate_images:
+        asset_id = str(image.metadata.get("asset_id") or "")
+        image_page = _child_page_no(image, _page_ranges)
+        image_heading = _extract_heading_key(image.context_header)
+
+        # --- P1: Explicit FigureLink ----------------------------------
+        if asset_id:
+            best_link = _best_figure_link_for_image(asset_id, figure_links)
+            if best_link is not None:
+                target_parent = _find_text_parent_for_figure_reference(
+                    best_link, parent_to_children
+                )
+                if (
+                    target_parent is not None
+                    and target_parent != image.parent_index
+                    and _parent_has_text_children(target_parent, parent_to_children)
+                ):
+                    reassignments[asset_id] = (
+                        target_parent,
+                        "explicit_binding",
+                        {
+                            "media_parent_assignment": {
+                                "assigned": True,
+                                "strategy": "explicit_binding",
+                                "source_parent_index": image.parent_index,
+                                "target_parent_index": target_parent,
+                                "confidence": best_link.binding_score,
+                                "evidence": {
+                                    "figure_id": best_link.reference.figure_id,
+                                    "binding_method": best_link.binding_method,
+                                    "asset_ids": list(best_link.asset_ids),
+                                },
+                            }
+                        },
+                    )
+                    continue
+
+        # --- P2: Same page + same section -----------------------------
+        if image_page is not None and image_heading:
+            candidates_p2: list[tuple[int, float]] = []
+            for pidx, group in parent_to_children.items():
+                if pidx is None or pidx == image.parent_index:
+                    continue
+                if not _parent_has_text_children(pidx, parent_to_children):
+                    continue
+                # Check page match
+                text_page = None
+                for tc in group:
+                    if tc.chunk_type == "text":
+                        text_page = _child_page_no(tc, _page_ranges)
+                        break
+                if text_page is not None and text_page != image_page:
+                    continue
+                # Check heading match
+                for tc in group:
+                    if tc.chunk_type != "text":
+                        continue
+                    text_heading = _extract_heading_key(tc.context_header)
+                    if text_heading and text_heading == image_heading:
+                        dist = _distance_between(image, tc)
+                        candidates_p2.append((pidx, float(dist)))
+                        break
+            if candidates_p2:
+                candidates_p2.sort(key=lambda x: x[1])
+                target_parent = candidates_p2[0][0]
+                reassignments[asset_id] = (
+                    target_parent,
+                    "same_section",
+                    {
+                        "media_parent_assignment": {
+                            "assigned": True,
+                            "strategy": "same_section",
+                            "source_parent_index": image.parent_index,
+                            "target_parent_index": target_parent,
+                            "confidence": 0.85,
+                            "evidence": {
+                                "page_no": image_page,
+                                "heading": image_heading,
+                            },
+                        }
+                    },
+                )
+                continue
+
+        # --- P3: Same page position proximity --------------------------
+        if image_page is not None:
+            candidates_p3: list[tuple[int, int]] = []
+            for pidx, group in parent_to_children.items():
+                if pidx is None or pidx == image.parent_index:
+                    continue
+                if not _parent_has_text_children(pidx, parent_to_children):
+                    continue
+                text_page = None
+                best_dist = 1_000_000_000
+                for tc in group:
+                    if tc.chunk_type != "text":
+                        continue
+                    tp = _child_page_no(tc, _page_ranges)
+                    if tp is not None:
+                        if text_page is None:
+                            text_page = tp
+                        if tp != image_page:
+                            continue
+                    d = _distance_between(image, tc)
+                    if d < best_dist:
+                        best_dist = d
+                if text_page is not None and text_page != image_page:
+                    continue
+                if best_dist <= _MAX_SAME_PAGE_PROXIMITY_CHARS:
+                    candidates_p3.append((pidx, best_dist))
+            if candidates_p3:
+                candidates_p3.sort(key=lambda x: x[1])
+                target_parent = candidates_p3[0][0]
+                reassignments[asset_id] = (
+                    target_parent,
+                    "same_page_proximity",
+                    {
+                        "media_parent_assignment": {
+                            "assigned": True,
+                            "strategy": "same_page_proximity",
+                            "source_parent_index": image.parent_index,
+                            "target_parent_index": target_parent,
+                            "confidence": max(
+                                0.5,
+                                1.0
+                                - candidates_p3[0][1]
+                                / max(_MAX_SAME_PAGE_PROXIMITY_CHARS, 1),
+                            ),
+                            "evidence": {
+                                "page_no": image_page,
+                                "distance_chars": candidates_p3[0][1],
+                            },
+                        }
+                    },
+                )
+                continue
+
+        # --- P4: Cross-page explicit reference -------------------------
+        if asset_id and image_page is not None:
+            best_link = _best_figure_link_for_image(asset_id, figure_links)
+            if best_link is not None:
+                target_parent = _find_text_parent_for_figure_reference(
+                    best_link, parent_to_children
+                )
+                if (
+                    target_parent is not None
+                    and target_parent != image.parent_index
+                    and _parent_has_text_children(target_parent, parent_to_children)
+                ):
+                    # Verify it's actually cross-page
+                    text_page = None
+                    for tc in parent_to_children.get(target_parent, []):
+                        if tc.chunk_type == "text":
+                            text_page = _child_page_no(tc, _page_ranges)
+                            break
+                    if text_page is not None and text_page != image_page:
+                        reassignments[asset_id] = (
+                            target_parent,
+                            "cross_page_reference",
+                            {
+                                "media_parent_assignment": {
+                                    "assigned": True,
+                                    "strategy": "cross_page_reference",
+                                    "source_parent_index": image.parent_index,
+                                    "target_parent_index": target_parent,
+                                    "confidence": best_link.binding_score,
+                                    "evidence": {
+                                        "figure_id": best_link.reference.figure_id,
+                                        "binding_method": best_link.binding_method,
+                                        "image_page": image_page,
+                                        "text_page": text_page,
+                                    },
+                                }
+                            },
+                        )
+                        continue
+
+        # --- P5: No reliable evidence — keep as-is --------------------
+        # (No reassignment entry; image stays orphan or singleton.)
+
+    # ── Apply reassignments ──────────────────────────────────────────────
+    if not reassignments:
+        return children, parents
+
+    for child in children:
+        if child.chunk_type != "image":
+            continue
+        aid = str(child.metadata.get("asset_id") or "")
+        decision = reassignments.get(aid)
+        if decision is None:
+            continue
+        target_parent_index, strategy, evidence_meta = decision
+
+        # Record original state
+        evidence_meta["media_parent_assignment"]["source_parent_index"] = (
+            child.parent_index
+        )
+
+        # Apply reassignment
+        child.parent_index = target_parent_index
+        child.metadata.update(evidence_meta)
+        child.metadata["parent_materialized"] = True
+        child.metadata["parent_materialization_rule"] = f"media_parent_assignment_{strategy}"
+        child.flags["parent_materialized"] = True
+        child.flags["media_parent_reassigned"] = True
+
+        # Update parent children_count
+        if target_parent_index in parent_index_to_parent:
+            tp = parent_index_to_parent[target_parent_index]
+            prev = tp.metadata.get("children_count_planned", 0)
+            tp.metadata["children_count_planned"] = prev + 1
+
+    # ── Remove empty parents ────────────────────────────────────────────
+    # Rebuild parent_to_children after reassignment
+    parent_to_children.clear()
+    for child in children:
+        parent_to_children.setdefault(child.parent_index, []).append(child)
+
+    # A parent is empty when no child references it after reassignment.
+    empty_parents: set[int] = set()
+    for p in parents:
+        group = parent_to_children.get(p.parent_index)
+        if group is None or len(group) == 0:
+            empty_parents.add(p.parent_index)
+
+    if empty_parents:
+        parents = [p for p in parents if p.parent_index not in empty_parents]
+        # Clear parent_index on children that still reference removed parents
+        # (shouldn't happen since we moved the only child, but be safe)
+        for child in children:
+            if child.parent_index in empty_parents:
+                child.parent_index = None
+                child.metadata["parent_materialized"] = False
+                child.metadata["parent_removed_after_media_reassignment"] = True
+
+    return children, parents
+
+
+def _rebuild_parents_after_assignment(
+    children: list[CanonicalChildDraft],
+    parents: list[CanonicalParentDraft],
+) -> list[CanonicalParentDraft]:
+    """Rebuild parent list after media reassignment.
+
+    After ``_reassign_singleton_image_parents`` moves images between parents,
+    some parents may become empty.  This function:
+
+    * Drops parents with zero children.
+    * Renumbers remaining parents to a dense 0‑based sequence.
+    * Updates every child's ``parent_index`` to match the new numbering.
+    * Recomputes ``children_count_planned`` and ``start``/``end`` bounds.
+    * Preserves all other parent metadata (DCP3.1 tags, materialization rules,
+      visual_item ids, etc.).
+
+    Returns a fresh ``parents`` list; **mutates** ``children`` in place to
+    reflect the new ``parent_index`` values.
+    """
+    # ── Group children by current parent_index ────────────────────────
+    parent_to_children: dict[int, list[CanonicalChildDraft]] = {}
+    for child in children:
+        if child.parent_index is not None:
+            parent_to_children.setdefault(child.parent_index, []).append(child)
+
+    old_index_to_parent = {p.parent_index: p for p in parents}
+
+    # Only keep parents that still have children.
+    surviving_old_indexes = sorted(parent_to_children.keys())
+
+    new_parents: list[CanonicalParentDraft] = []
+    old_to_new: dict[int, int] = {}
+    for new_index, old_index in enumerate(surviving_old_indexes):
+        old_to_new[old_index] = new_index
+        group = parent_to_children[old_index]
+        old_parent = old_index_to_parent.get(old_index)
+
+        if old_parent is not None:
+            metadata = dict(old_parent.metadata or {})
+            content = old_parent.content
+            context_header = old_parent.context_header
+        else:
+            metadata = {}
+            content = "\n\n".join(c.content for c in group)
+            context_header = next(
+                (c.context_header for c in group if c.context_header), ""
+            )
+
+        metadata["children_count_planned"] = len(group)
+
+        new_parents.append(
+            CanonicalParentDraft(
+                parent_index=new_index,
+                content=content,
+                context_header=context_header,
+                start=min(c.start for c in group),
+                end=max(c.end for c in group),
+                metadata=metadata,
+            )
+        )
+
+    # ── Update child parent_index references ──────────────────────────
+    for child in children:
+        if child.parent_index is not None and child.parent_index in old_to_new:
+            child.parent_index = old_to_new[child.parent_index]
+
+    return new_parents
+
+
+def finalize_media_parent_assignment(
+    plan: CanonicalChunkPlan,
+) -> CanonicalChunkPlan:
+    """Authoritative Final Media Parent Assignment.
+
+    Runs after **all** parent policies (standard flatten, visual-page rebuild,
+    DCP3.1 visual-item regrouping) have been applied.  Images that are
+    orphaned or the sole child of their parent are re-evaluated against
+    explicit FigureLinks and page/section proximity evidence.  When a
+    reliable text-bearing parent is found the image is reassigned.
+
+    Parents are then rebuilt (empties dropped, indexes renumbered, counts
+    updated) so that downstream persistence and ``relation_chunks``
+    materialization operate on the final authoritative structure.
+
+    This is the **only** point where media parent reassignment occurs in
+    the production pipeline.  The low-level ``_reassign_singleton_image_parents``
+    helper remains available for direct callers (e.g. tests).
+    """
+    children, parents = _reassign_singleton_image_parents(
+        plan.children,
+        plan.parents,
+        plan.figure_links,
+        page_ranges=plan.page_ranges or None,
+    )
+    plan.parents = _rebuild_parents_after_assignment(children, parents)
+    plan.children = children
+    return plan
+
+
 def _stamp_child_binding(
     child: CanonicalChildDraft,
     *,
@@ -3289,6 +3819,7 @@ def build_canonical_parent_child_plan(
         provenance_nodes=provenance_nodes,
         figure_links=figure_links,
         suppressed_assets_by_page=dict(suppressed_assets_by_page or {}),
+        page_ranges=page_ranges,
     )
 
 
@@ -3297,6 +3828,7 @@ __all__ = [
     "CanonicalChildDraft",
     "CanonicalChunkPlan",
     "build_canonical_parent_child_plan",
+    "finalize_media_parent_assignment",
     "compose_image_child_content",
     "is_structural_only",
     "split_oversize_fenced_blocks",

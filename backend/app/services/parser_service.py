@@ -101,9 +101,9 @@ def _maybe_preserve_pdf_page_visuals(
     # with spurious page_primary_visual tags.
     _meta = getattr(document, "metadata_json", None)
     processing_mode = (
-        _meta.get("parse_options", {}).get("processing_mode", "standard")
+        _meta.get("parse_options", {}).get("processing_mode", "visual_art")
         if isinstance(_meta, dict)
-        else "standard"
+        else "visual_art"
     )
     if processing_mode == "standard":
         return parsed

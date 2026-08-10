@@ -1,8 +1,8 @@
 # 检索上下文构建：绑定感知改造方案
 
 > 状态：In Progress（Phase 1-2 已实施，Phase 3-4 待定）
-> 维护日期：2026-08-06
-> 前置依赖：[image_chunk_binding_plan.md](image_chunk_binding_plan.md) (P0-P5 已完成，开关默认关闭)
+> 维护日期：2026-08-10
+> 前置依赖：[image_chunk_binding_plan.md](image_chunk_binding_plan.md) (P0-P5 已完成，Final Media Parent Assignment 已实施)
 > 关联文档：[pipeline_audit.md](pipeline_audit.md)、[document_relation_graph_phased_plan.md](document_relation_graph_phased_plan.md)
 
 ## 1. 问题陈述

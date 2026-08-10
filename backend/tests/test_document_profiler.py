@@ -67,11 +67,21 @@ class TestPageKindClassification:
         )
         assert kind == "visual_dominant"
 
-    # ── The bug fix: English patent pages ──
+    # ── Large-image pages in visual_art mode: 255ca0d-aligned ──
+    #
+    # visual_art mode has only ONE escape from visual_dominant:
+    #   continuous_prose + native_text_chars == 0 → scanned_prose.
+    # There are NO patent/document escapes — those belong in standard mode.
+    # Pages with large embedded images are classified as visual_dominant
+    # regardless of text volume.  This is the intended behavior for
+    # calligraphy, art books, and visual collections.
 
     def test_patent_page_with_large_figure(self):
-        """English patent page: large embedded figure + substantial continuous
-        prose + native text layer → native_text (NOT visual_dominant)."""
+        """Page resembling an English patent (large figure + substantial
+        continuous prose + native text layer) → visual_dominant in
+        visual_art mode.  visual_art does not try to second-guess
+        whether text or image is primary — the image wins.  Patent
+        users should select standard mode at upload time."""
         kind, reasons, score = _page_kind(
             table_dense=False,
             image_count=2,
@@ -84,14 +94,15 @@ class TestPageKindClassification:
             native_text_chars=800,
             has_code=False,
         )
-        assert kind == "native_text"
-        assert "continuous_prose_with_visual_elements" in reasons
-        assert "visual_content_dominates_page" not in reasons
+        assert kind == "visual_dominant"
+        assert "page_primary_visual_present" in reasons
+        assert "visual_content_dominates_page" in reasons
 
     def test_patent_page_no_primary_visual(self):
-        """Patent page where dominant_image_ratio triggers visual_dominant
-        but primary_visual_count=0 (no explicitly tagged page-primary visual
-        asset).  Should still escape to native_text."""
+        """Large embedded image (ratio=0.70) + substantial text but
+        no explicit primary_visual marker → visual_dominant in
+        visual_art mode.  dominant_image_ratio >= 0.65 alone is
+        sufficient to trigger."""
         kind, reasons, score = _page_kind(
             table_dense=False,
             image_count=1,
@@ -104,15 +115,17 @@ class TestPageKindClassification:
             native_text_chars=500,
             has_code=False,
         )
-        assert kind == "native_text"
-        assert "continuous_prose_with_visual_elements" in reasons
+        assert kind == "visual_dominant"
+        assert "dominant_embedded_image" in reasons
+        assert "visual_content_dominates_page" in reasons
 
-    # ── The second bug fix: Chinese patents / born-digital PDFs ──
+    # ── Scanned prose in visual_art mode ──
 
     def test_chinese_patent_born_digital_no_native_text(self):
         """Born-digital PDF where pdfplumber cannot extract text (e.g. CJK
-        embedded fonts) but parser produced substantial continuous prose →
-        native_text (NOT scanned_prose)."""
+        embedded fonts) + continuous prose + zero native_text_chars →
+        scanned_prose in visual_art mode.  This is the sole escape from
+        visual_dominant in the 255ca0d-aligned heuristic."""
         kind, reasons, score = _page_kind(
             table_dense=False,
             image_count=1,
@@ -125,13 +138,13 @@ class TestPageKindClassification:
             native_text_chars=0,
             has_code=False,
         )
-        assert kind == "native_text"
-        assert "substantial_parser_text_despite_no_native_layer" in reasons
-        assert "canonical_text_present" in reasons
+        assert kind == "scanned_prose"
+        assert "continuous_parser_prose_without_native_text" in reasons
 
     def test_chinese_patent_fragmented_text(self):
-        """Chinese patent page: fragmented parser text (continuous_prose=False)
-        but substantial canonical_text_chars → native_text."""
+        """Large image + fragmented parser text (continuous_prose=False) +
+        primary_visual marker → visual_dominant in visual_art mode.
+        No escape branch for fragmented text exists in visual_art."""
         kind, reasons, score = _page_kind(
             table_dense=False,
             image_count=2,
@@ -144,13 +157,14 @@ class TestPageKindClassification:
             native_text_chars=50,
             has_code=False,
         )
-        assert kind == "native_text"
-        assert "substantial_canonical_text_with_visual_elements" in reasons
-        assert "visual_content_dominates_page" not in reasons
+        assert kind == "visual_dominant"
+        assert "page_primary_visual_present" in reasons
+        assert "visual_content_dominates_page" in reasons
 
     def test_chinese_patent_no_native_text_fragmented(self):
-        """Chinese patent: no native text, no continuous prose, but
-        substantial canonical chars → native_text."""
+        """Large image + fragmented text + no native text layer →
+        visual_dominant in visual_art mode.  continuous_prose=False
+        so the scanned_prose escape does not apply."""
         kind, reasons, score = _page_kind(
             table_dense=False,
             image_count=1,
@@ -163,8 +177,35 @@ class TestPageKindClassification:
             native_text_chars=0,
             has_code=False,
         )
-        assert kind == "native_text"
-        assert "substantial_canonical_text_with_visual_elements" in reasons
+        assert kind == "visual_dominant"
+        assert "dominant_embedded_image" in reasons
+        assert "visual_content_dominates_page" in reasons
+
+    def test_calligraphy_page_not_escaped_by_continuous_prose(self):
+        """Calligraphy page in visual_art mode: large embedded image,
+        short descriptive text (~150 chars), native text layer present,
+        continuous prose passes → must stay visual_dominant.
+
+        Escape branch 2 (continuous_prose + native_text_chars > 0)
+        requires canonical_text_chars >= 300.  A 150-char calligraphy
+        label should NOT trigger the escape — the image IS the content.
+        This is the regression test for the 2026-08-10 fix."""
+        kind, reasons, score = _page_kind(
+            table_dense=False,
+            image_count=1,
+            primary_visual_count=0,
+            dominant_image_ratio=1.0,
+            canonical_text_chars=150,
+            heading_count=0,
+            non_heading_text_count=3,
+            continuous_prose=True,
+            native_text_chars=145,
+            has_code=False,
+        )
+        assert kind == "visual_dominant"
+        assert "dominant_embedded_image" in reasons
+        assert "visual_content_dominates_page" in reasons
+        assert "continuous_prose_with_visual_elements" not in reasons
 
     # ── Other page kinds ──
 

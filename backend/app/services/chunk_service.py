@@ -40,7 +40,10 @@ from app.services.chunker.dcp31_parent_policy import (
     apply_visual_item_parent_policy,
 )
 from app.services.chunker.parent_child_splitter import split_parent_child_result
-from app.services.chunker.canonical_parent_child import build_canonical_parent_child_plan
+from app.services.chunker.canonical_parent_child import (
+    build_canonical_parent_child_plan,
+    finalize_media_parent_assignment,
+)
 from app.services.document_parser.canonical_document import build_canonical_document
 from app.services.document_parser.document_profiler import profile_canonical_document
 from app.services.document_parser.document_profiler_v2 import (
@@ -56,6 +59,7 @@ from app.services.pipeline_debug_artifacts import (
     save_debug_resolved_policies,
 )
 from app.services.document_relation.materializer import (
+    link_same_parent_media,
     materialize_figure_bindings,
     materialize_relation_summaries,
     populate_relation_chunks,
@@ -1316,6 +1320,13 @@ def _rebuild_canonical_weknora_parent_child(
         visual_layout_payload,
         enabled=policy_v2_enabled,
     )
+    # ── Final Media Parent Assignment ──────────────────────────────────
+    # Runs after ALL parent policies (standard flatten, visual-page rebuild,
+    # DCP3.1 visual-item regrouping).  Images that are orphaned or the sole
+    # child of their parent are re-evaluated and reassigned to a reliable
+    # text-bearing parent when evidence exists.
+    plan = finalize_media_parent_assignment(plan)
+    # ── End Final Media Parent Assignment ──────────────────────────────
     # v2: semantic completeness diagnostics (non-blocking)
     completeness_report: dict[str, Any] = {}
     if binding_v2_enabled:
@@ -1567,6 +1578,7 @@ def _rebuild_canonical_weknora_parent_child(
     # instead of position-based guessing.
     if settings.document_relation_materialization_enabled:
         new_chunks = populate_relation_chunks(new_chunks)
+        new_chunks = link_same_parent_media(new_chunks)
     for chunk in new_chunks:
         meta = dict(chunk.metadata_json or {})
         meta["source_position_is_exact"] = True

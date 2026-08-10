@@ -225,3 +225,161 @@ enricher 在 standard 和 visual_art 模式下行为完全一致。
 | `backend/app/services/parser_service.py` | standard 模式跳过 enricher |
 | `backend/app/services/document_parser/document_profiler.py` | 更新注释 |
 | `docs/document_processing_mode_plan.md` | 补充 enricher 隔离记录 |
+
+---
+
+## 日报 2026-08-10（续）：修复 standard 模式图片孤立问题
+
+### 背景
+
+standard 模式（专利/论文）下，部分文档的图片被正确切分为 image chunk
+且挂载在正确的 parent 下，但在检索上下文中无法被引用——`relation_chunks` 为空，
+图片对相邻文本块不可见。
+
+### 根因
+
+图片↔文本绑定依赖两条路径，在无显式 "图X"/"Figure X" 引用时都会失效：
+
+1. **`materialize_figure_bindings()`**（显式引用匹配）：缺少
+   `_has_explicit_cue()` 上下文提示（如 "as shown in"、"see"）→
+   `FigureLink` 不生成 → `figure_references` 为空。
+
+2. **`materialize_relation_summaries()`**（关系图 caption_of 边）：
+   MinerU 提供的 caption 来自图片自身的 block，relation edge 的
+   `source_node_ids` 指向图片自己的 provenance node → 边是自引用的，
+   不连接任何文本节点。
+
+3. **上下文构建器规则过严**（`_cloud_needs_expansion()`）：
+   `figure_or_table_reference` 规则仅在命中文本包含 "图X"/"Figure X"
+   模式时才触发，不会因为同父块有图片而主动拉取。
+
+级联后果：`populate_relation_chunks()` → `relation_chunks` 空 →
+`binding_related_chunks` 预拉取无数据 → 上下文构建器 binding-aware
+路径无图可取 → rule-based 回退也不触发 → 图片在检索结果中不可见。
+
+### 修复
+
+新增 `link_same_parent_media()` 函数（[materializer.py](../backend/app/services/document_relation/materializer.py)），
+在 `populate_relation_chunks()` 之后执行：
+
+- 按 `parent_chunk_id` 分组所有 chunk
+- 对同一 parent 下的 text chunk ↔ image/table chunk 双向写入 `relation_chunks`
+- 保留已有 `relation_chunks`（去重追加）
+- 孤儿 chunk（无 parent）不受影响
+- 受 `DOCUMENT_RELATION_MATERIALIZATION_ENABLED` 开关控制
+
+### 变更文件
+
+| 文件 | 变更 |
+|------|------|
+| `backend/app/services/document_relation/materializer.py` | 新增 `link_same_parent_media()` |
+| `backend/app/services/chunk_service.py` | 导入并在 `populate_relation_chunks` 后调用 |
+| `backend/tests/test_materializer.py` | **新增** 7 个测试覆盖所有边界场景 |
+
+### 测试
+
+- 新增 7 个测试全部通过
+- 全量 877 passed / 3 既存失败 / 0 新增回归
+
+---
+
+## 日报 2026-08-10（续二）：统一 Media Parent Assignment — 修复 singleton image parent/orphan 问题
+
+### 背景
+
+`link_same_parent_media` 修复（同日早前）只能在 text 与 image **已经共享 parent** 时生效。
+但实际执行链路中，大量图片在 parent 归一化阶段就已经变成 orphan 或 1:1 image-only parent：
+
+- **Standard 模式**：`_flatten_underfilled_parent_links()` 删除 child 数 < 2 的 parent，
+  singleton image parent 被删除 → image orphan。`_rehome_single_overlapping_orphans()`
+  依赖严格 overlap，经常不够 → orphan 永久保持。
+- **Visual_art 模式**：`_build_visual_page_parents()` 为每页创建 1 个 parent，
+  单图页面变成 1 parent : 1 image → `relation_chunks` 无法生成。
+
+两个路径的**根因相同**：parent 归一化阶段缺少统一的图片归属校正。
+
+### 方案
+
+新增统一阶段 `_reassign_singleton_image_parents()`，在两个路径的 parent 归一化
+**之后**执行，评估每个 orphan/singleton-parent image 是否应归属到某个 text-bearing
+parent。
+
+### 证据优先级
+
+| 优先级 | 策略 | 条件 |
+|--------|------|------|
+| P1 | `explicit_binding` | FigureLink 明确连接 text↔image |
+| P2 | `same_section` | 同 page + 同 section/heading |
+| P3 | `same_page_proximity` | 同 page + 位置邻近（≤6000 chars） |
+| P4 | `cross_page_reference` | 跨页但 FigureLink 明确 |
+| P5 | `independent_visual` | 无可靠证据 → 保留原状 |
+
+### 关键 Guard
+
+- 纯视觉页（无 FigureLink、无同页 text、无 section 证据）不做任何改动
+- 跨 section 必须有显式 FigureLink 才绑定
+- 跨 page 必须有 FigureLink 才绑定
+- 书法页、画册、独立图版不受影响
+
+### 变更文件
+
+| 文件 | 变更 |
+|------|------|
+| `backend/app/services/chunker/canonical_parent_child.py` | 新增 `_reassign_singleton_image_parents()` 及 6 个辅助函数；在 `build_canonical_parent_child_plan()` 中两个路径归一化之后调用 |
+| `backend/tests/test_media_parent_assignment.py` | **新增** 15 个测试覆盖 10 个必测场景 + 5 个边界场景 |
+
+### 测试
+
+- 新增 15 个测试全部通过
+- 全量 899 passed / 3 既存失败 / 0 新增回归
+- 55 个相关既有测试（canonical_parent_child_unified / visual_page_section_scope / page_visual_preservation）全部通过
+
+### relation_chunks 影响
+
+Media Parent Assignment 在 parent 归一化之后执行，将 orphan/singleton 图片重新归属到
+text-bearing parent。下游 `link_same_parent_media()` 随后执行时，text 与 image 已
+处于同一 parent → `relation_chunks` 自然生成 → `binding_related_chunks` 预拉取有数据 →
+`context_policy.strategy = "binding_aware"` 生效。
+
+---
+
+## 日报 2026-08-10（续三）：Final Media Parent Assignment — 修复 DCP3.1 覆盖前置 assignment
+
+### 背景
+
+`_reassign_singleton_image_parents` 在 `build_canonical_parent_child_plan()` 内部执行，
+但 `apply_visual_item_parent_policy()` 在 plan 返回后再次重建 parent，覆盖了已完成的
+media parent reassignment。
+
+### 根因
+
+DCP3.1 policy（`dcp31_parent_policy.py`）按 visual_item 重新分组 children，每个
+visual_item 单独创建 parent。单图 visual_item → singleton image parent，覆盖前置
+assignment。实测数据：`parent_materialization_rule = dcp3.1_visual_item_boundary`，
+`media_parent_assignment = None`。
+
+### 方案
+
+将 Media Parent Assignment 从 `build_canonical_parent_child_plan` 内部移除，
+改为在 `chunk_service.py` 中所有 parent policy（standard flatten / visual-page
+rebuild / DCP3.1）执行**之后**统一执行：
+
+```
+build_canonical_parent_child_plan()
+→ apply_visual_item_parent_policy(plan)      ← DCP3.1
+→ finalize_media_parent_assignment(plan)     ← 新增：唯一 authoritative 阶段
+→ relation_chunks materialization
+```
+
+### 变更文件
+
+| 文件 | 变更 |
+|------|------|
+| `backend/app/services/chunker/canonical_parent_child.py` | `CanonicalChunkPlan` 新增 `page_ranges` 字段；移除内部 `_reassign_singleton_image_parents` 调用；新增 `finalize_media_parent_assignment()` + `_rebuild_parents_after_assignment()` |
+| `backend/app/services/chunk_service.py` | 导入 `finalize_media_parent_assignment`，在 `apply_visual_item_parent_policy` 之后调用 |
+| `backend/tests/test_media_parent_assignment.py` | 新增 10 个 DCP3.1 覆盖场景测试 |
+
+### 测试
+
+- 25 个专项测试全部通过（15 个原始 + 10 个 DCP3.1）
+- 全量 909 passed / 3 既存失败 / 0 新增回归
