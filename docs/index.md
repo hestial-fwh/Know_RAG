@@ -1,7 +1,7 @@
 # Know_RAG 文档索引
 
 > 状态：Current
-> 维护日期：2026-08-10（Final Media Parent Assignment 修复 DCP3.1 覆盖）
+> 维护日期：2026-08-11（Standalone Root 四态互斥模型 + structural_role 统一 API）
 > 适用范围：当前 `know_rag` 主分支
 
 ## 权威阅读顺序

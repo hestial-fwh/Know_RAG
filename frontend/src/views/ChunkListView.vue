@@ -10,7 +10,9 @@ const documentId = ref((route.params.docId as string) || (route.query.doc_id as 
 const items = ref<ChunkItem[]>([])
 const treeItems = ref<ChunkTreeParent[]>([])
 const orphanItems = ref<ChunkItem[]>([])
-const treeStats = ref<{ total_chunks?: number; parent_count?: number; orphan_count?: number; chunk_type_counts?: Record<string, number> } | null>(null)
+const standaloneRootItems = ref<ChunkItem[]>([])
+const skippedNoiseItems = ref<ChunkItem[]>([])
+const treeStats = ref<{ total_chunks?: number; parent_count?: number; orphan_count?: number; standalone_root_count?: number; skipped_noise_count?: number; chunk_type_counts?: Record<string, number>; structural_role_counts?: Record<string, number> } | null>(null)
 const error = ref('')
 const loading = ref(false)
 const treeLoading = ref(false)
@@ -93,6 +95,29 @@ function typeLabel(type?: string) {
   return '文本'
 }
 
+function structuralRoleLabel(item: ChunkItem) {
+  const role = item.structural_role || ''
+  if (role === 'parent') return '父块'
+  if (role === 'child') return '子块'
+  if (role === 'standalone_root') return '独立块'
+  if (role === 'skipped_noise') return '低质量块'
+  if (role === 'true_orphan') return '孤立子块（异常）'
+  // Fallback: legacy data without structural_role
+  if (item.chunk_type === 'parent_text') return '父块'
+  if (item.parent_chunk_id) return '子块'
+  return '子块（无父块）'
+}
+
+function structuralRoleClass(item: ChunkItem) {
+  const role = item.structural_role || ''
+  if (role === 'parent') return 'tag'
+  if (role === 'child') return 'tag tag-muted'
+  if (role === 'standalone_root') return 'tag tag-ok'
+  if (role === 'skipped_noise') return 'tag tag-muted'
+  if (role === 'true_orphan') return 'tag tag-warn'
+  return 'tag tag-muted'
+}
+
 function typeClass(type?: string) {
   return `tag type-${type || 'text'}`
 }
@@ -146,6 +171,8 @@ async function loadTree() {
     const result = await getChunkTree(documentId.value)
     treeItems.value = result.items
     orphanItems.value = result.orphans || []
+    standaloneRootItems.value = result.standalone_roots || []
+    skippedNoiseItems.value = result.skipped_noise || []
     treeStats.value = result.stats || null
     const nextExpanded: Record<string, boolean> = {}
     result.items.forEach((node, index) => {
@@ -282,7 +309,7 @@ onMounted(load)
         <button class="secondary" :disabled="page >= pageCount || loading" @click="nextPage">下一页</button>
       </div>
       <div v-else class="pager">
-        <span v-if="treeStats">父块 {{ treeStats.parent_count || 0 }} · 孤儿 {{ treeStats.orphan_count || 0 }}</span>
+        <span v-if="treeStats">父块 {{ treeStats.parent_count || 0 }} · 独立 {{ treeStats.standalone_root_count || 0 }} · 噪声 {{ treeStats.skipped_noise_count || 0 }} · 异常孤儿 {{ treeStats.orphan_count || 0 }}</span>
       </div>
     </div>
 
@@ -300,6 +327,7 @@ onMounted(load)
             <div>
               <span class="chunk-index">#{{ node.parent.chunk_index }}</span>
               <span :class="typeClass(node.parent.chunk_type)">{{ typeLabel(node.parent.chunk_type) }}</span>
+              <span :class="structuralRoleClass(node.parent)">{{ structuralRoleLabel(node.parent) }}</span>
               <strong>{{ node.parent.context_header || '父块上下文' }}</strong>
               <span class="tag tag-muted">{{ node.child_count }} 个子块</span>
               <span v-if="node.has_image_child" class="tag">含图片</span>
@@ -321,6 +349,7 @@ onMounted(load)
                     <span class="chunk-index">#{{ child.chunk_index }}</span>
                     <span :class="typeClass(child.chunk_type)">{{ isEquation(child) ? '公式' : typeLabel(child.chunk_type) }}</span>
                     <span v-if="chunkSubtype(child)" class="tag tag-muted">{{ chunkSubtype(child) }}</span>
+                    <span :class="structuralRoleClass(child)">{{ structuralRoleLabel(child) }}</span>
                     <span :class="['tag', indexedClass(child)]">{{ indexedText(child) }}</span>
                   </div>
                   <div class="actions slim-actions">
@@ -336,13 +365,42 @@ onMounted(load)
           </div>
         </article>
 
+        <article v-if="standaloneRootItems.length" class="card parent-node-card standalone-card">
+          <div class="parent-node-header"><strong>独立块（无父块，内容完整）</strong><span class="tag tag-ok">{{ standaloneRootItems.length }}</span></div>
+          <div class="child-node-list">
+            <article v-for="child in standaloneRootItems" :key="child.id" class="child-node-row">
+              <div class="child-main">
+                <span class="chunk-index">#{{ child.chunk_index }}</span>
+                <span :class="typeClass(child.chunk_type)">{{ typeLabel(child.chunk_type) }}</span>
+                <span :class="structuralRoleClass(child)">{{ structuralRoleLabel(child) }}</span>
+                <pre class="chunk-full-content">{{ contentPreview(child) }}</pre>
+              </div>
+            </article>
+          </div>
+        </article>
+
+        <article v-if="skippedNoiseItems.length" class="card parent-node-card skipped-card">
+          <div class="parent-node-header"><strong>低质量块（已跳过索引）</strong><span class="tag tag-muted">{{ skippedNoiseItems.length }}</span></div>
+          <div class="child-node-list">
+            <article v-for="child in skippedNoiseItems" :key="child.id" class="child-node-row">
+              <div class="child-main">
+                <span class="chunk-index">#{{ child.chunk_index }}</span>
+                <span :class="typeClass(child.chunk_type)">{{ typeLabel(child.chunk_type) }}</span>
+                <span :class="structuralRoleClass(child)">{{ structuralRoleLabel(child) }}</span>
+                <pre class="chunk-full-content">{{ contentPreview(child) }}</pre>
+              </div>
+            </article>
+          </div>
+        </article>
+
         <article v-if="orphanItems.length" class="card parent-node-card orphan-card">
-          <div class="parent-node-header"><strong>未挂载父块的子块</strong><span class="tag tag-warn">{{ orphanItems.length }}</span></div>
+          <div class="parent-node-header"><strong>孤立子块（异常）</strong><span class="tag tag-warn">{{ orphanItems.length }}</span></div>
           <div class="child-node-list">
             <article v-for="child in orphanItems" :key="child.id" class="child-node-row">
               <div class="child-main">
                 <span class="chunk-index">#{{ child.chunk_index }}</span>
                 <span :class="typeClass(child.chunk_type)">{{ typeLabel(child.chunk_type) }}</span>
+                <span :class="structuralRoleClass(child)">{{ structuralRoleLabel(child) }}</span>
                 <pre class="chunk-full-content">{{ contentPreview(child) }}</pre>
               </div>
             </article>
@@ -369,6 +427,7 @@ onMounted(load)
                 <span class="chunk-index">#{{ item.chunk_index }}</span>
                 <span :class="typeClass(item.chunk_type)">{{ isEquation(item) ? '公式' : typeLabel(item.chunk_type) }}</span>
                 <span v-if="chunkSubtype(item)" class="tag tag-muted">{{ chunkSubtype(item) }}</span>
+                <span :class="structuralRoleClass(item)">{{ structuralRoleLabel(item) }}</span>
                 <span :class="['tag', indexedClass(item)]">{{ indexedText(item) }}</span>
                 <span class="tag tag-muted">{{ statusText[item.status] || item.status }}</span>
               </div>
@@ -456,6 +515,12 @@ onMounted(load)
   width: 48px;
   height: 48px;
   font-size: 14px;
+}
+.standalone-card {
+  border-left-color: #10b981;
+}
+.skipped-card {
+  border-left-color: #94a3b8;
 }
 .orphan-card {
   border-left-color: #f59e0b;

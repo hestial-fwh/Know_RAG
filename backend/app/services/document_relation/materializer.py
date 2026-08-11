@@ -280,7 +280,20 @@ def materialize_relation_summaries(chunks: list[Any], graph: Any) -> list[Any]:
             _append_ordered(metadata, "group_ids", list(edge.target_group_ids))
             chunk.metadata_json = metadata
 
+        # Write outgoing / incoming chunk IDs ONLY for edges with
+        # ``status == "bound"``.  Strong-relation fields
+        # (outgoing_asset_chunk_ids / incoming_reference_chunk_ids)
+        # feed into ``relation_chunks`` → ``binding_related_chunks`` →
+        # ``context_policy.strategy = "binding_aware"`` with NO downstream
+        # distinction between bound and ambiguous.  Writing ambiguous
+        # edges here would silently upgrade them to strong bindings.
+        #
+        # Ambiguous / unmatched edges are still recorded in
+        # ``relation_summaries`` (with full status / score / method) for
+        # diagnostic tooling and optional low-priority retrieval expansion.
         if edge.status != "bound":
+            continue
+        if not source_chunks or not target_chunks:
             continue
         target_chunk_ids = [str(chunk.id) for chunk in target_chunks]
         source_chunk_ids = [str(chunk.id) for chunk in source_chunks]

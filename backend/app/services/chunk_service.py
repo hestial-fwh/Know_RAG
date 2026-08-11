@@ -43,6 +43,7 @@ from app.services.chunker.parent_child_splitter import split_parent_child_result
 from app.services.chunker.canonical_parent_child import (
     build_canonical_parent_child_plan,
     finalize_media_parent_assignment,
+    structural_role_for,
 )
 from app.services.document_parser.canonical_document import build_canonical_document
 from app.services.document_parser.document_profiler import profile_canonical_document
@@ -253,6 +254,11 @@ def chunk_to_dict(chunk: Chunk, include_content: bool = True) -> dict:
         "next_chunk_id": chunk.next_chunk_id,
         "chunk_type": chunk.chunk_type or "text",
         "parent_chunk_id": chunk.parent_chunk_id,
+        "structural_role": structural_role_for(
+            metadata,
+            parent_chunk_id=chunk.parent_chunk_id,
+            chunk_type=chunk.chunk_type or "text",
+        ),
         "metadata": metadata,
         "metadata_json": metadata,
         "image_info": _normalize_image_info(chunk.image_info or {}),
@@ -3079,7 +3085,10 @@ def get_chunk_tree(db: Session, doc_id: str):
     parent_nodes: list[dict] = []
     parent_map: dict[str, dict] = {}
     orphan_children: list[dict] = []
+    standalone_roots: list[dict] = []
+    skipped_noise_chunks: list[dict] = []
     type_counts: dict[str, int] = {}
+    role_counts: dict[str, int] = {}
 
     for chunk in chunks:
         ctype = chunk.chunk_type or "text"
@@ -3101,12 +3110,19 @@ def get_chunk_tree(db: Session, doc_id: str):
         item = chunk_to_dict(chunk, include_content=False)
         parent_id = chunk.parent_chunk_id or ""
         node = parent_map.get(parent_id)
-        if node is None:
+        srole = item.get("structural_role", "child")
+        role_counts[srole] = role_counts.get(srole, 0) + 1
+        if node is not None:
+            node["children"].append(item)
+            ctype = chunk.chunk_type or "text"
+            node["child_type_counts"][ctype] = node["child_type_counts"].get(ctype, 0) + 1
+        elif srole == "skipped_noise":
+            skipped_noise_chunks.append(item)
+        elif srole == "standalone_root":
+            standalone_roots.append(item)
+        else:
+            # true_orphan or anything else without a parent
             orphan_children.append(item)
-            continue
-        node["children"].append(item)
-        ctype = chunk.chunk_type or "text"
-        node["child_type_counts"][ctype] = node["child_type_counts"].get(ctype, 0) + 1
 
     for node in parent_nodes:
         node["children"].sort(key=lambda value: int(value.get("chunk_index") or 0))
@@ -3123,11 +3139,16 @@ def get_chunk_tree(db: Session, doc_id: str):
             "document_id": doc_id,
             "items": parent_nodes,
             "orphans": orphan_children,
+            "standalone_roots": standalone_roots,
+            "skipped_noise": skipped_noise_chunks,
             "stats": {
                 "total_chunks": len(chunks),
                 "parent_count": len(parent_nodes),
                 "orphan_count": len(orphan_children),
+                "standalone_root_count": len(standalone_roots),
+                "skipped_noise_count": len(skipped_noise_chunks),
                 "chunk_type_counts": type_counts,
+                "structural_role_counts": role_counts,
             },
         }
     )

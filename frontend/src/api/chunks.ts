@@ -20,6 +20,7 @@ export interface ChunkItem {
   next_chunk_id?: string | null
   chunk_type?: string
   parent_chunk_id?: string | null
+  structural_role?: string
   content_hash?: string
   image_info?: Record<string, unknown>
   relation_chunks?: unknown[]
@@ -101,11 +102,16 @@ export interface ChunkTreeResponse {
   document_id: string
   items: ChunkTreeParent[]
   orphans: ChunkItem[]
+  standalone_roots: ChunkItem[]
+  skipped_noise: ChunkItem[]
   stats: {
     total_chunks: number
     parent_count: number
     orphan_count: number
+    standalone_root_count: number
+    skipped_noise_count: number
     chunk_type_counts: Record<string, number>
+    structural_role_counts: Record<string, number>
   }
 }
 

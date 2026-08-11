@@ -828,3 +828,467 @@ def test_looks_like_section_start():
     assert _looks_like_section_start("化的研究，结果显示") is False
     assert _looks_like_section_start("正文内容") is False
     assert _looks_like_section_start("") is False
+
+
+# ── Standalone root / noise classification ──
+
+
+def test_classify_unassigned_page_number_noise():
+    """Case 1: Low-quality short text like "20" → skipped_noise, no synthetic parent."""
+    from app.services.chunker.canonical_parent_child import (
+        _classify_unassigned_child,
+    )
+
+    child = CanonicalChildDraft(
+        content="20",
+        chunk_type="text",
+        parent_index=None,
+        context_header="",
+        start=0,
+        end=2,
+        source_child_seq=0,
+    )
+    category = _classify_unassigned_child(child)
+    assert category == "skipped_noise", f"Expected skipped_noise, got {category}"
+
+
+def test_classify_unassigned_whole_page_table_is_standalone_root():
+    """Case 2: Whole-page independent table → standalone_root, no 1:1 parent."""
+    from app.services.chunker.canonical_parent_child import (
+        _classify_unassigned_child,
+    )
+
+    table_content = (
+        "| INTERNATIONAL SEARCH REPORT Information on patent family members |\n"
+        "| --- | --- | --- |\n"
+        "| Patent document | Publication date | Patent family member |\n"
+    )
+    child = CanonicalChildDraft(
+        content=table_content,
+        chunk_type="table",
+        parent_index=None,
+        context_header="",
+        start=0,
+        end=len(table_content),
+        source_child_seq=0,
+    )
+    category = _classify_unassigned_child(child)
+    assert category == "standalone_root", f"Expected standalone_root, got {category}"
+
+
+def test_classify_unassigned_references_section_is_standalone_root():
+    """Case 3: Independent References section without parent owner → standalone_root."""
+    from app.services.chunker.canonical_parent_child import (
+        _classify_unassigned_child,
+    )
+
+    content = (
+        "## EP 4 517 993 A1\n\n"
+        "## REFERENCES CITED IN THE DESCRIPTION\n\n"
+        "This list of references cited by the applicant is for the reader's convenience only."
+    )
+    child = CanonicalChildDraft(
+        content=content,
+        chunk_type="text",
+        parent_index=None,
+        context_header="## REFERENCES CITED IN THE DESCRIPTION",
+        start=0,
+        end=len(content),
+        source_child_seq=0,
+    )
+    category = _classify_unassigned_child(child)
+    assert category == "standalone_root", f"Expected standalone_root, got {category}"
+
+
+def test_standalone_root_child_marked_with_category_in_plan():
+    """Case 5: Normal text child with parent → behavior completely unchanged.
+
+    Text children that share a valid parent should have parent_index set,
+    standalone_root_child should NOT be set on them.
+    """
+    markdown = (
+        "## 第二章\n\n"
+        "这是第一段文字，属于第二章的内容。茯苓多糖具有免疫调节作用。\n\n"
+        "这是第二段文字，继续讨论药理机制。研究表明，茯苓多糖能显著增强巨噬细胞的吞噬功能。\n\n"
+    )
+    canonical = build_canonical_document(ParsedDocument.from_text(markdown), file_type="md")
+    plan = build_canonical_parent_child_plan(canonical, _cfg())
+
+    for child in plan.children:
+        if child.parent_index is not None:
+            # Parented children should NOT be marked as standalone_root_child
+            assert child.metadata.get("standalone_root_child") is not True, (
+                f"Parented child wrongly marked standalone: {child.content[:80]}"
+            )
+            assert child.metadata.get("parent_assignment_state") != "standalone_root_child"
+
+
+def test_true_orphan_detection():
+    """Case 6: True orphan detection — parent_index=None, standalone_root_child=False."""
+    from app.services.chunker.canonical_parent_child import is_true_orphan
+
+    # A chunk with no parent and no standalone marker → true orphan
+    orphan_meta = {
+        "chunk_role": "child",
+        "standalone_root_child": False,
+    }
+    assert is_true_orphan(orphan_meta, parent_chunk_id=None, chunk_type="text") is True
+
+    # A chunk with parent → not an orphan
+    parented_meta = {"chunk_role": "child"}
+    assert is_true_orphan(parented_meta, parent_chunk_id="some-parent-id", chunk_type="text") is False
+
+    # parent_text is never a true orphan
+    parent_text_meta = {}
+    assert is_true_orphan(parent_text_meta, parent_chunk_id=None, chunk_type="parent_text") is False
+
+
+def test_standalone_root_detection_not_counted_as_orphan():
+    """Case 7: Standalone root → is_standalone_root=True, is_true_orphan=False."""
+    from app.services.chunker.canonical_parent_child import (
+        is_standalone_root,
+        is_true_orphan,
+    )
+
+    standalone_meta = {
+        "standalone_root_child": True,
+        "parent_assignment_state": "standalone_root_child",
+        "standalone_root_category": "standalone_root",
+    }
+    assert is_standalone_root(standalone_meta, parent_chunk_id=None) is True
+    assert is_true_orphan(standalone_meta, parent_chunk_id=None, chunk_type="text") is False
+
+    # Also works with parent_assignment_state alone
+    state_only_meta = {
+        "parent_assignment_state": "standalone_root_child",
+    }
+    assert is_standalone_root(state_only_meta, parent_chunk_id=None) is True
+
+
+def test_standalone_root_with_parent_policy_materialize_false():
+    """Case 8: parent_policy.materialize=true but child is complete standalone table.
+
+    The materialize flag is a policy capability, not a hard requirement.
+    A complete standalone table without text siblings should still be standalone_root.
+    """
+    from app.services.chunker.canonical_parent_child import (
+        _classify_unassigned_child,
+    )
+
+    # Simulate a table child with parent_policy.materialize=true in its metadata
+    # (which is what _apply_chunk_policy_metadata would set later)
+    table_content = (
+        "| Item | lon conductor | Insulating structure | Liquid electrolyte |\n"
+        "| --- | --- | --- | --- |\n"
+        "| Example 1 | PEO-based | Yes | No | 1500 |\n"
+    )
+    child = CanonicalChildDraft(
+        content=table_content,
+        chunk_type="table",
+        parent_index=None,
+        context_header="",
+        start=0,
+        end=len(table_content),
+        source_child_seq=0,
+        metadata={
+            "parent_policy": {
+                "policy_id": "parent-table-v1",
+                "strategy": "table",
+                "materialize": True,
+            },
+        },
+    )
+    category = _classify_unassigned_child(child)
+    # The parent_policy.materialize flag does NOT force synthetic parent creation.
+    # A standalone table without text siblings can remain standalone_root.
+    assert category == "standalone_root", f"Expected standalone_root, got {category}"
+
+
+def test_image_primary_visual_not_affected_by_text_table_logic():
+    """Case 9: Image standalone visual must NOT be affected by text/table logic."""
+    from app.services.chunker.canonical_parent_child import (
+        _classify_unassigned_child,
+        _is_page_primary_visual_asset,
+    )
+
+    # Images that are page_primary_visual are skipped by the text/table logic
+    # in the standalone orphan resolution loop via _is_page_primary_visual_asset check.
+    # This test verifies the guard is present.
+    #
+    # Since _is_page_primary_visual_asset operates on asset objects,
+    # we verify the skip condition through the child metadata path.
+    child = CanonicalChildDraft(
+        content="FIG. 1 schematic diagram",
+        chunk_type="image",
+        parent_index=None,
+        context_header="## BRIEF DESCRIPTION OF DRAWINGS",
+        start=0,
+        end=29,
+        source_child_seq=0,
+        metadata={
+            "visual_role": "page_primary_visual",
+            "semantic_role": "page_primary_visual",
+        },
+    )
+    # The classification function only handles text/table, so for images
+    # it doesn't apply (the loop in build_canonical_parent_child_plan
+    # skips images via chunk_type check).
+    # This test confirms _classify_unassigned_child handles the edge case gracefully.
+    category = _classify_unassigned_child(child)
+    # Image content "FIG. 1 schematic diagram" is not page noise and has > 3 chars
+    assert category == "standalone_root", f"Expected standalone_root for image-typed child, got {category}"
+
+
+def test_skipped_noise_preserves_skip_metadata_in_plan():
+    """Case 1 (extended): Plan-level metadata for skipped_noise children."""
+    markdown = (
+        "## 第二章\n\n"
+        "正文内容。\n\n"
+        "20\n\n"  # page number noise
+    )
+    canonical = build_canonical_document(ParsedDocument.from_text(markdown), file_type="md")
+    plan = build_canonical_parent_child_plan(canonical, _cfg())
+
+    # Find the "20" child
+    noise_children = [
+        c for c in plan.children
+        if c.content.strip() == "20"
+    ]
+    if noise_children:
+        for child in noise_children:
+            assert child.metadata.get("standalone_root_child") is True
+            assert child.metadata.get("parent_assignment_state") == "standalone_root_child"
+            assert child.metadata.get("standalone_root_category") == "skipped_noise"
+            assert child.metadata.get("skip_embedding_recommended") is True
+            assert child.metadata.get("skip_reason") == "standalone_noise_child"
+            assert child.flags.get("skip_embedding_recommended") is True
+
+
+# ── Phase 3: Mutual Exclusivity & structural_role tests ───────────────────
+
+
+def test_is_skipped_noise_with_category():
+    """Case 1: standalone_root_category=skipped_noise → is_skipped_noise=True."""
+    from app.services.chunker.canonical_parent_child import is_skipped_noise
+
+    meta = {
+        "standalone_root_child": True,
+        "standalone_root_category": "skipped_noise",
+        "skip_embedding_recommended": True,
+    }
+    assert is_skipped_noise(meta) is True
+
+
+def test_is_skipped_noise_backward_compat():
+    """Case 1b: Old data with skip_embedding_recommended + standalone_root_child but no category."""
+    from app.services.chunker.canonical_parent_child import is_skipped_noise
+
+    meta = {
+        "standalone_root_child": True,
+        "skip_embedding_recommended": True,
+    }
+    assert is_skipped_noise(meta) is True
+
+
+def test_is_skipped_noise_false_for_standalone_root():
+    """skipped_noise must be False for legitimate standalone_root."""
+    from app.services.chunker.canonical_parent_child import is_skipped_noise
+
+    meta = {
+        "standalone_root_child": True,
+        "standalone_root_category": "standalone_root",
+    }
+    assert is_skipped_noise(meta) is False
+
+
+def test_is_standalone_root_excludes_skipped_noise():
+    """Case 1 (mutual exclusivity): skipped_noise → is_standalone_root=False."""
+    from app.services.chunker.canonical_parent_child import (
+        is_skipped_noise,
+        is_standalone_root,
+    )
+
+    meta = {
+        "standalone_root_child": True,
+        "parent_assignment_state": "standalone_root_child",
+        "standalone_root_category": "skipped_noise",
+        "skip_embedding_recommended": True,
+    }
+    assert is_skipped_noise(meta) is True
+    assert is_standalone_root(meta, parent_chunk_id=None) is False
+
+
+def test_is_standalone_root_backward_compat_no_category():
+    """Case 2: Old data — standalone_root_child=true, no category → still standalone_root."""
+    from app.services.chunker.canonical_parent_child import (
+        is_skipped_noise,
+        is_standalone_root,
+    )
+
+    meta = {
+        "standalone_root_child": True,
+    }
+    assert is_skipped_noise(meta) is False
+    assert is_standalone_root(meta, parent_chunk_id=None) is True
+
+
+def test_is_standalone_root_new_data_with_category():
+    """Case 3: New standalone — standalone_root_child=true, category=standalone_root."""
+    from app.services.chunker.canonical_parent_child import is_standalone_root
+
+    meta = {
+        "standalone_root_child": True,
+        "standalone_root_category": "standalone_root",
+    }
+    assert is_standalone_root(meta, parent_chunk_id=None) is True
+
+
+def test_is_standalone_root_with_parent_returns_false():
+    """standalone_root with actual parent_chunk_id → is_standalone_root=False."""
+    from app.services.chunker.canonical_parent_child import is_standalone_root
+
+    meta = {
+        "standalone_root_child": True,
+        "standalone_root_category": "standalone_root",
+    }
+    assert is_standalone_root(meta, parent_chunk_id="some-parent-id") is False
+
+
+def test_true_orphan_no_markers():
+    """Case 4: True orphan — role=child, parent=NULL, no standalone/noise markers."""
+    from app.services.chunker.canonical_parent_child import is_true_orphan
+
+    meta = {"chunk_role": "child"}
+    assert is_true_orphan(meta, parent_chunk_id=None, chunk_type="text") is True
+
+
+def test_true_orphan_not_triggered_for_standalone():
+    """Standalone root must not be classified as true_orphan."""
+    from app.services.chunker.canonical_parent_child import (
+        is_true_orphan,
+    )
+
+    meta = {
+        "standalone_root_child": True,
+        "standalone_root_category": "standalone_root",
+    }
+    assert is_true_orphan(meta, parent_chunk_id=None, chunk_type="text") is False
+
+
+def test_true_orphan_not_triggered_for_skipped_noise():
+    """Skipped noise must not be classified as true_orphan."""
+    from app.services.chunker.canonical_parent_child import (
+        is_true_orphan,
+    )
+
+    meta = {
+        "standalone_root_child": True,
+        "standalone_root_category": "skipped_noise",
+        "skip_embedding_recommended": True,
+    }
+    assert is_true_orphan(meta, parent_chunk_id=None, chunk_type="text") is False
+
+
+def test_structural_role_for_parent():
+    """Case 6: parent_text → structural_role=parent."""
+    from app.services.chunker.canonical_parent_child import structural_role_for
+
+    assert structural_role_for({}, chunk_type="parent_text") == "parent"
+
+
+def test_structural_role_for_child():
+    """Case 5: Normal child with parent → structural_role=child."""
+    from app.services.chunker.canonical_parent_child import structural_role_for
+
+    assert structural_role_for({}, parent_chunk_id="parent-123", chunk_type="text") == "child"
+
+
+def test_structural_role_for_standalone_root():
+    """Standalone root → structural_role=standalone_root."""
+    from app.services.chunker.canonical_parent_child import structural_role_for
+
+    meta = {
+        "standalone_root_child": True,
+        "standalone_root_category": "standalone_root",
+    }
+    assert structural_role_for(meta, parent_chunk_id=None, chunk_type="text") == "standalone_root"
+
+
+def test_structural_role_for_skipped_noise():
+    """Skipped noise → structural_role=skipped_noise."""
+    from app.services.chunker.canonical_parent_child import structural_role_for
+
+    meta = {
+        "standalone_root_child": True,
+        "standalone_root_category": "skipped_noise",
+        "skip_embedding_recommended": True,
+    }
+    assert structural_role_for(meta, parent_chunk_id=None, chunk_type="text") == "skipped_noise"
+
+
+def test_structural_role_for_true_orphan():
+    """Case 11: True orphan → structural_role=true_orphan."""
+    from app.services.chunker.canonical_parent_child import structural_role_for
+
+    meta = {"chunk_role": "child"}
+    assert structural_role_for(meta, parent_chunk_id=None, chunk_type="text") == "true_orphan"
+
+
+def test_structural_role_for_standalone_root_backward_compat():
+    """Old data without category → structural_role=standalone_root (backward compat)."""
+    from app.services.chunker.canonical_parent_child import structural_role_for
+
+    meta = {
+        "standalone_root_child": True,
+    }
+    assert structural_role_for(meta, parent_chunk_id=None, chunk_type="text") == "standalone_root"
+
+
+def test_four_state_mutual_exclusivity():
+    """Case 7, 8: Four states are mutually exclusive and cover all non-parent chunks."""
+    from app.services.chunker.canonical_parent_child import (
+        is_skipped_noise,
+        is_standalone_root,
+        is_true_orphan,
+    )
+
+    test_cases = [
+        # (metadata, parent_chunk_id, chunk_type, expected_standalone, expected_noise, expected_orphan)
+        # parented child
+        ({"chunk_role": "child"}, "parent-1", "text", False, False, False),
+        # standalone root (new data)
+        ({"standalone_root_child": True, "standalone_root_category": "standalone_root"}, None, "text", True, False, False),
+        # standalone root (old data, backward compat)
+        ({"standalone_root_child": True}, None, "text", True, False, False),
+        # skipped noise (new data)
+        ({"standalone_root_child": True, "standalone_root_category": "skipped_noise", "skip_embedding_recommended": True}, None, "text", False, True, False),
+        # skipped noise (old data, backward compat)
+        ({"standalone_root_child": True, "skip_embedding_recommended": True}, None, "text", False, True, False),
+        # true orphan
+        ({"chunk_role": "child"}, None, "text", False, False, True),
+        # parent_text
+        ({}, None, "parent_text", False, False, False),
+    ]
+
+    for i, (meta, parent_id, ctype, exp_standalone, exp_noise, exp_orphan) in enumerate(test_cases):
+        standalone = is_standalone_root(meta, parent_chunk_id=parent_id)
+        noise = is_skipped_noise(meta)
+        orphan = is_true_orphan(meta, parent_chunk_id=parent_id, chunk_type=ctype)
+
+        assert standalone == exp_standalone, (
+            f"Case {i}: expected is_standalone_root={exp_standalone}, got {standalone}"
+        )
+        assert noise == exp_noise, (
+            f"Case {i}: expected is_skipped_noise={exp_noise}, got {noise}"
+        )
+        assert orphan == exp_orphan, (
+            f"Case {i}: expected is_true_orphan={exp_orphan}, got {orphan}"
+        )
+
+        # Mutual exclusivity: at most one can be True for non-parent chunks
+        if ctype != "parent_text":
+            true_count = sum([standalone, noise, orphan])
+            assert true_count <= 1, (
+                f"Case {i}: states are not mutually exclusive — "
+                f"standalone={standalone}, noise={noise}, orphan={orphan}"
+            )

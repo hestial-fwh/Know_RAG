@@ -3393,6 +3393,172 @@ def _detect_floating_content_continuations(
 
 
 # ---------------------------------------------------------------------------
+# Standalone-root / noise classification
+# ---------------------------------------------------------------------------
+
+
+def _classify_unassigned_child(child: CanonicalChildDraft) -> str:
+    """Classify an unassigned (parent_index=None) text/table child.
+
+    Returns one of:
+      - ``"standalone_root"`` — content is substantial; may stand on its own
+      - ``"skipped_noise"``  — low-quality noise that should not be indexed
+
+    This classification is recorded in ``standalone_root_category`` so
+    downstream persistence, API, UI, and retrieval layers can distinguish
+    legitimate standalone root chunks from true anomalies (missing parent
+    without the standalone_root_child marker).
+    """
+    content = (child.content or "").strip()
+
+    # ── 1. Already flagged for skip ────────────────────────────────
+    if child.metadata.get("skip_embedding_recommended"):
+        return "skipped_noise"
+
+    # ── 2. Pure page-noise patterns ─────────────────────────────────
+    #    "20", "Page 1 of 10", "第 1 页", etc.
+    if is_page_noise_text(content):
+        return "skipped_noise"
+
+    # ── 3. Ultra-short numeric / whitespace fragments ───────────────
+    if len(content) <= 3:
+        return "skipped_noise"
+    if content.isdigit() and len(content) <= 5:
+        return "skipped_noise"
+
+    # ── 4. Substantial content → legitimate standalone root ─────────
+    return "standalone_root"
+
+
+def is_skipped_noise(metadata: dict[str, Any] | None) -> bool:
+    """Check whether a chunk is classified as **skipped noise**.
+
+    A skipped-noise chunk is an unassigned child whose content was
+    determined to be low-quality noise (page numbers, ultra-short
+    fragments, etc.) during standalone orphan resolution.  It should not
+    be indexed and is **not** a standalone root.
+
+    Detection rule:
+      ``metadata.standalone_root_category == "skipped_noise"``
+      **or** explicitly ``skip_embedding_recommended == True`` combined
+      with the standalone_root_child marker (backward-compatible).
+    """
+    meta = metadata or {}
+    if meta.get("standalone_root_category") == "skipped_noise":
+        return True
+    # Backward-compatible: old data may have skip_embedding_recommended
+    # without standalone_root_category but still be marked standalone_root_child.
+    if (
+        meta.get("skip_embedding_recommended") is True
+        and (
+            meta.get("standalone_root_child") is True
+            or meta.get("parent_assignment_state") == "standalone_root_child"
+        )
+    ):
+        return True
+    return False
+
+
+def is_standalone_root(metadata: dict[str, Any] | None, parent_chunk_id: str | None = None) -> bool:
+    """Check whether a chunk is a legitimate **standalone root**.
+
+    A standalone root is a child chunk whose parent was intentionally not
+    materialized because the content is self-contained and a 1:1 parent
+    would add no retrieval context.  This is **not** an anomaly.
+
+    **Skipped-noise chunks are excluded** — they have the standalone_root_child
+    marker but are classified as low-quality noise, not legitimate standalone
+    roots.  Use :func:`is_skipped_noise` to identify those.
+
+    Detection rule:
+      ``parent_chunk_id IS NULL`` **and**
+      ``metadata.standalone_root_child == True`` (or
+      ``metadata.parent_assignment_state == "standalone_root_child"``)
+      **and not** :func:`is_skipped_noise`
+    """
+    meta = metadata or {}
+    has_parent = bool(parent_chunk_id) if parent_chunk_id is not None else bool(meta.get("parent_chunk_id"))
+    if has_parent:
+        return False
+    # Must have the standalone marker …
+    if not (
+        meta.get("standalone_root_child") is True
+        or meta.get("parent_assignment_state") == "standalone_root_child"
+    ):
+        return False
+    # … but must NOT be skipped noise.
+    if is_skipped_noise(meta):
+        return False
+    # Backward-compatible: old data without standalone_root_category but
+    # with the standalone marker → still a standalone root.
+    return True
+
+
+def is_true_orphan(metadata: dict[str, Any] | None, parent_chunk_id: str | None = None, chunk_type: str = "text") -> bool:
+    """Check whether a chunk is a **true orphan** — a structural anomaly.
+
+    A true orphan is a child-type chunk whose parent is missing AND which
+    is NOT classified as either a legitimate standalone root or skipped
+    noise.  This indicates a potential bug in parent assignment or
+    materialization.
+
+    Detection rule:
+      ``parent_chunk_id IS NULL`` **and**
+      ``chunk_type != "parent_text"`` **and**
+      ``NOT is_standalone_root(...)`` **and**
+      ``NOT is_skipped_noise(...)``
+    """
+    meta = metadata or {}
+    if chunk_type == "parent_text":
+        return False
+    has_parent = bool(parent_chunk_id) if parent_chunk_id is not None else bool(meta.get("parent_chunk_id"))
+    if has_parent:
+        return False
+    if is_standalone_root(meta, parent_chunk_id=parent_chunk_id if parent_chunk_id is not None else None):
+        return False
+    if is_skipped_noise(meta):
+        return False
+    return True
+
+
+def structural_role_for(
+    metadata: dict[str, Any] | None,
+    parent_chunk_id: str | None = None,
+    chunk_type: str = "text",
+) -> str:
+    """Return the unified **structural role** for a chunk.
+
+    This is the **single source of truth** for downstream API, UI, and
+    retrieval layers.  It combines chunk_type, parent_chunk_id, and
+    standalone/skip metadata into a five-way classification:
+
+    ==================== ==================================================
+    Value                 Meaning
+    ==================== ==================================================
+    ``"parent"``          ``chunk_type == "parent_text"``
+    ``"child"``           Has a real parent (``parent_chunk_id is not None``)
+    ``"standalone_root"`` No parent, content is self-contained and indexable
+    ``"skipped_noise"``   No parent, content is low-quality noise / skipped
+    ``"true_orphan"``     No parent, no standalone/skip marker — anomaly
+    ==================== ==================================================
+
+    Backward-compatible: old data without ``standalone_root_category``
+    but with ``standalone_root_child == True`` maps to ``"standalone_root"``.
+    """
+    if chunk_type == "parent_text":
+        return "parent"
+    meta = metadata or {}
+    has_parent = bool(parent_chunk_id) if parent_chunk_id is not None else bool(meta.get("parent_chunk_id"))
+    if has_parent:
+        return "child"
+    if is_skipped_noise(meta):
+        return "skipped_noise"
+    if is_standalone_root(meta, parent_chunk_id=parent_chunk_id):
+        return "standalone_root"
+    return "true_orphan"
+
+
+# ---------------------------------------------------------------------------
 # Public plan builder
 # ---------------------------------------------------------------------------
 
@@ -3748,9 +3914,16 @@ def build_canonical_parent_child_plan(
 
         # ── Targeted stand-alone orphan resolution ──────────────────────
         # Only reachable AFTER continuation recovery and expanded-orphan
-        # handling.  Remaining truly standalone text children are explicitly
-        # marked as standalone_root_child rather than given a 1:1 synthetic
-        # parent — a 1:1 parent provides no additional retrieval context.
+        # handling.  Remaining text/table children without a parent_index
+        # are classified as either:
+        #
+        #   standalone_root  — content is substantial, legitimate independent chunk
+        #   skipped_noise    — low-quality noise that should not be indexed
+        #
+        # Neither case gets a 1:1 synthetic parent because a 1:1 parent
+        # provides no additional retrieval context.  The distinction is
+        # recorded in standalone_root_category so downstream systems
+        # (persistence, API, UI, retrieval) can treat them correctly.
         if getattr(cfg, "enable_parent_child", False):
             for child in children:
                 if child.parent_index is not None:
@@ -3759,11 +3932,16 @@ def build_canonical_parent_child_plan(
                     continue
                 if _is_page_primary_visual_asset(child):
                     continue
-                # Mark as genuine stand-alone root — not a lost orphan
+                category = _classify_unassigned_child(child)
                 child.metadata["standalone_root_child"] = True
                 child.metadata["parent_materialized"] = False
                 child.metadata["parent_assignment_state"] = "standalone_root_child"
+                child.metadata["standalone_root_category"] = category
                 child.flags["standalone_root_child"] = True
+                if category == "skipped_noise":
+                    child.metadata["skip_embedding_recommended"] = True
+                    child.metadata["skip_reason"] = "standalone_noise_child"
+                    child.flags["skip_embedding_recommended"] = True
 
         for child in children:
             if (
@@ -3838,4 +4016,9 @@ __all__ = [
     "deduplicate_overlap_shadow_children",
     "merge_overlap_tail_text_children",
     "merge_short_text_siblings",
+    "is_skipped_noise",
+    "is_standalone_root",
+    "is_true_orphan",
+    "structural_role_for",
+    "_classify_unassigned_child",
 ]
