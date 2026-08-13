@@ -36,7 +36,7 @@ _RANGE_ENDPOINT_PATTERN = (
 )
 _LABELED_FIGURE_RANGE_RE = re.compile(
     rf"{_FIGURE_LABEL_PATTERN}\s*(?P<first>{_RANGE_ENDPOINT_PATTERN})"
-    rf"\s*(?:-|–|—|‑|~|～|至|到)\s*"
+    rf"\s*(?:-|–|—|‑|~|～|至|到|to)\s*"
     rf"(?:{_FIGURE_LABEL_PATTERN}\s*)?(?P<last>{_RANGE_ENDPOINT_PATTERN})",
     re.IGNORECASE,
 )
@@ -51,12 +51,12 @@ _INLINE_CODE_RE = re.compile(r"(?<!`)`[^`\n]+`(?!`)")
 _ZH_PREFIX_CUE_RE = re.compile(
     r"(?:如|见|参见|详见|参考|根据|由)[^。；;！？!?\n]{0,24}$"
 )
-_ZH_SUFFIX_CUE_RE = re.compile(r"^\s*(?:所示|可见|中|给出|显示|表明|说明|展示|列出|比较|对比)")
+_ZH_SUFFIX_CUE_RE = re.compile(r"^\s*(?:所示|可见|中|给出|显示|表明|说明|展示|列出|比较|对比|为|是)")
 _EN_PREFIX_CUE_RE = re.compile(
     r"(?:as\s+shown\s+in|shown\s+in|see|refer(?:ring)?\s+to)\s*$",
     re.IGNORECASE,
 )
-_EN_SUFFIX_CUE_RE = re.compile(r"^\s*(?:shows?|illustrates?|depicts?)\b", re.IGNORECASE)
+_EN_SUFFIX_CUE_RE = re.compile(r"^\s*(?:shows?|illustrates?|depicts?|is\s+a|presents?|represents?)\b", re.IGNORECASE)
 _NON_PROSE_ROLES = {"caption", "image_caption", "figure_caption", "footnote", "code", "code_block"}
 
 

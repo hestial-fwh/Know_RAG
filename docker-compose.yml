@@ -76,6 +76,8 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
       JWT_SECRET: ${JWT_SECRET:-dev-only-change-me}
       KNOW_RAG_SERVICE_TOKEN: ${KNOW_RAG_SERVICE_TOKEN:-}
+      MCP_CLIENT_SECRET_ENCRYPTION_KEY: ${MCP_CLIENT_SECRET_ENCRYPTION_KEY:-dev-only-mcp-secret-encryption-key}
+      MCP_SIGNATURE_MAX_AGE_SECONDS: ${MCP_SIGNATURE_MAX_AGE_SECONDS:-300}
       LOGIN_CAPTCHA_ENABLED: ${LOGIN_CAPTCHA_ENABLED:-true}
       LOGIN_CAPTCHA_TTL_SECONDS: ${LOGIN_CAPTCHA_TTL_SECONDS:-300}
       DEEPDOC_MODEL_DIR: ${DEEPDOC_MODEL_DIR:-/data/models/deepdoc}
@@ -167,6 +169,25 @@ services:
       - "8010:8010"
     depends_on:
       - backend
+    networks:
+      - know-rag-net
+  mcp-gateway:
+    build:
+      context: ./backend
+    container_name: know-rag-mcp-gateway
+    entrypoint: ["python", "scripts/mcp_signing_gateway.py"]
+    environment:
+      PYTHONPATH: /app:/app/ragflow_vendor
+      GATEWAY_HOST: 0.0.0.0
+      GATEWAY_PORT: 8011
+      GATEWAY_TOKEN: ${MCP_GATEWAY_TOKEN:-}
+      CLIENT_ID: ${MCP_GATEWAY_CLIENT_ID:-}
+      CLIENT_SECRET: ${MCP_GATEWAY_CLIENT_SECRET:-}
+      MCP_URL: http://mcp:8010
+    ports:
+      - "127.0.0.1:8011:8011"
+    depends_on:
+      - mcp
     networks:
       - know-rag-net
   gateway:

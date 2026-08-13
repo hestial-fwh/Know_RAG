@@ -1,7 +1,7 @@
 # Database
 
 > 状态：Current（后续 Phase 小节为历史增量记录）
-> 维护日期：2026-08-05
+> 维护日期：2026-08-13
 
 执行迁移：
 
@@ -197,3 +197,18 @@ Phase 0013 将 `rerank_model_id` 替换为：
 
 执行 `alembic upgrade head` 会通过 `0007_retrieval_rrf_phase_d.py` 和
 `0013_rerank_enabled.py` 增量添加/修改字段。
+
+## mcp_clients（MCP 接入认证，0015）
+
+`0015_mcp_clients.py` 新增 `mcp_clients` 表：
+
+- `id` VARCHAR(36) PK
+- `name` VARCHAR(255) NOT NULL
+- `client_id` VARCHAR(64) NOT NULL UNIQUE（`kr_` + 32 hex）
+- `client_secret_encrypted` VARCHAR(512) NOT NULL（AES-256-GCM，`v1:` 前缀）
+- `is_enabled` BOOLEAN NOT NULL DEFAULT true
+- `expires_at` TIMESTAMPTZ NULL（NULL=永久）
+- `scopes` JSON NOT NULL DEFAULT `'[]'::json`
+- `description` TEXT NOT NULL DEFAULT ''
+- `last_used_at` TIMESTAMPTZ NULL
+- `created_at` / `updated_at` TIMESTAMPTZ

@@ -288,3 +288,147 @@ def test_links_spaced_chinese_figure_range_after_intervening_table_reference():
         ("image-1",),
         ("image-2",),
     ]
+
+
+def test_extracts_english_figure_is_a_pattern():
+    """Patent-style "FIG. 3 is a ..." should be detected."""
+    markdown = (
+        "FIG. 3 is a schematic diagram of a sodium ion battery.\n\n"
+        "Fig. 4 is a cross-sectional view of the device.\n\n"
+        "FIG. 5 is a flowchart illustrating the method."
+    )
+
+    references = extract_explicit_figure_references(markdown)
+
+    assert [reference.figure_id for reference in references] == [
+        "figure:3",
+        "figure:4",
+        "figure:5",
+    ]
+
+
+def test_extracts_english_figure_presents_and_represents():
+    markdown = (
+        "FIG. 6 presents an exploded view of the cell.\n\n"
+        "Fig. 7 represents a block diagram of the controller."
+    )
+
+    references = extract_explicit_figure_references(markdown)
+
+    assert [reference.figure_id for reference in references] == [
+        "figure:6",
+        "figure:7",
+    ]
+
+
+def test_extracts_chinese_figure_wei_and_shi():
+    """Chinese "图3为..." and "图3是..." should be detected."""
+    markdown = (
+        "图3为钠离子电池的结构示意图。\n\n"
+        "图4是本发明的流程图。"
+    )
+
+    references = extract_explicit_figure_references(markdown)
+
+    assert [reference.figure_id for reference in references] == [
+        "figure:3",
+        "figure:4",
+    ]
+
+
+def test_english_is_a_binds_figure_asset():
+    """End-to-end: "FIG. 3 is a ..." should produce a bound link."""
+    markdown = (
+        "FIG. 3 is a schematic diagram of the battery.\n\n"
+        "![FIG. 3](asset://image-3)"
+    )
+    result = link_figure_references(
+        markdown,
+        {"image-3": _asset("image-3", "figure:3", source_order=1)},
+    )
+
+    assert len(result.links) == 1
+    assert result.links[0].status == "bound"
+    assert result.links[0].asset_ids == ("image-3",)
+    assert result.links[0].binding_method == "figure_id_exact"
+
+
+def test_chinese_wei_binds_figure_asset():
+    """End-to-end: "图3为..." should produce a bound link."""
+    markdown = (
+        "图3为钠离子电池结构示意图。\n\n"
+        "![图3 结构](asset://image-3)"
+    )
+    result = link_figure_references(
+        markdown,
+        {"image-3": _asset("image-3", "figure:3", source_order=1)},
+    )
+
+    assert len(result.links) == 1
+    assert result.links[0].status == "bound"
+    assert result.links[0].asset_ids == ("image-3",)
+    assert result.links[0].binding_method == "figure_id_exact"
+
+
+def test_bare_is_a_without_figure_prefix_is_not_falsely_matched():
+    """'is a' near regular numbers without FIG prefix should not produce references."""
+    markdown = "The value of parameter 3 is a critical threshold for the system."
+
+    references = extract_explicit_figure_references(markdown)
+
+    assert references == []
+
+
+def test_extracts_figure_to_figure_range():
+    """'FIG. 1 to FIG. 3' should be detected as a labeled range."""
+    markdown = (
+        "As shown in FIG. 1 to FIG. 3, the sodium-ion battery 5 "
+        "may be a rechargeable battery or a storage battery."
+    )
+
+    references = extract_explicit_figure_references(markdown)
+
+    assert [reference.figure_id for reference in references] == [
+        "figure:1",
+        "figure:3",
+    ]
+    assert all(r.reference_type == "explicit_range" for r in references)
+
+
+def test_extracts_figure_to_figure_range_without_second_label():
+    """'FIG. 1 to 3' should also work without the second FIG. label."""
+    markdown = "See FIG. 1 to 3 for details."
+
+    references = extract_explicit_figure_references(markdown)
+
+    assert [reference.figure_id for reference in references] == [
+        "figure:1",
+        "figure:3",
+    ]
+
+
+def test_figure_to_range_binds_both_endpoints():
+    """End-to-end: range with 'to' should bind both endpoints to their assets."""
+    markdown = (
+        "As shown in FIG. 1 to FIG. 3, the system operates.\n\n"
+        "![FIG. 1](asset://img-1)\n\n"
+        "![FIG. 3](asset://img-3)"
+    )
+
+    result = link_figure_references(
+        markdown,
+        {
+            "img-1": _asset("img-1", "figure:1", source_order=1),
+            "img-3": _asset("img-3", "figure:3", source_order=2),
+        },
+    )
+
+    assert [link.reference.figure_id for link in result.links] == [
+        "figure:1",
+        "figure:3",
+    ]
+    assert [link.asset_ids for link in result.links] == [
+        ("img-1",),
+        ("img-3",),
+    ]
+    assert all(link.status == "bound" for link in result.links)

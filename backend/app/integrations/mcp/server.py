@@ -59,6 +59,12 @@ def _create_mcp() -> FastMCP:
     if "port" in params:
         kwargs["port"] = _env_int("MCP_PORT", 8010)
 
+    # Where the Streamable HTTP endpoint is mounted inside the Starlette app
+    # built by mcp.streamable_http_app().  The auth middleware protects the
+    # same path.
+    if "streamable_http_path" in params:
+        kwargs["streamable_http_path"] = (os.getenv("MCP_MOUNT_PATH") or "/mcp").strip() or "/mcp"
+
     # Do not pass unsupported kwargs.  Some SDK versions support more options,
     # but host/port are enough for this step.
     return FastMCP("know-rag", **kwargs)

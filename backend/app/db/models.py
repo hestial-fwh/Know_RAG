@@ -342,3 +342,25 @@ class ChunkEmbedding(Base):
     )
 
     chunk: Mapped[Chunk] = relationship(back_populates="embedding")
+
+
+class McpClient(Base):
+    """External MCP client credential for signed access to the MCP server."""
+
+    __tablename__ = "mcp_clients"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    client_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    client_secret_encrypted: Mapped[str] = mapped_column(String(512), nullable=False)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    scopes: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )

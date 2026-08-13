@@ -4,7 +4,7 @@
 
 解析工作台只临时展示阶段进度，不展示或长期保存解析 block/chunk 事件；任务结束后应通过
 文档详情和切片页面查看最终结果。上传选择器不设置文件大小限制。
-> 维护日期：2026-07-15
+> 维护日期：2026-08-13
 
 前端使用 Vue 3、Vue Router 和 Vite，用户可见文案保持中文。
 
@@ -120,3 +120,11 @@ DCP-3.1 开启后，同一页面继续展示生产投影结果：顶部汇总 Mi
 bbox、reasons 与原始 OCR。原始文本只在用户切到具体页面时懒加载。这里展示的是后端已执行的
 生产决策，不在浏览器中重新评分；“已隔离”表示未进入 reflow/Canonical/text child，而不是删除
 原始 PDF 或 debug artifact。
+
+## MCP 接入管理
+
+新增 `/settings/mcp-access`（侧栏「系统 → MCP 接入」）。表格展示应用名称 / Client ID / 权限 /
+状态 / 有效期 / 最后调用时间 / 创建时间；支持创建、编辑、启用/禁用、重置 Secret、删除。创建与
+重置后弹窗一次性展示 Client Secret（Client ID 与 Secret 均可复制），Secret 不长期保留在前端状态。
+状态 Badge 区分「启用中 / 已禁用 / 已过期」；删除、禁用、重置 Secret 均有确认；完整覆盖
+Loading / Error / Empty 状态。API 模块 `src/api/mcpClients.ts`，`client.ts` 新增 `PATCH`。

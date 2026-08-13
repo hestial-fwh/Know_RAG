@@ -3578,6 +3578,38 @@ def build_canonical_parent_child_plan(
         normalized_markdown,
         canonical.provenance_nodes,
     )
+    # ── Figure Sequence Resolution (shadow mode by default) ──
+    from app.services.document_parser.figure_sequence_resolver import (
+        apply_sequence_resolution,
+        is_figure_sequence_resolution_enabled,
+        is_figure_sequence_shadow_only,
+        resolve_figure_sequences,
+    )
+    if is_figure_sequence_resolution_enabled():
+        shadow = is_figure_sequence_shadow_only()
+        seq_result = resolve_figure_sequences(
+            list(canonical.assets.values()),
+            markdown=normalized_markdown,
+        )
+        _ = apply_sequence_resolution(
+            list(canonical.assets.values()),
+            seq_result,
+            shadow_only=shadow,
+        )
+        import logging
+        _seq_logger = logging.getLogger("know_rag.figure_sequence")
+        _seq_logger.info(
+            "figure_sequence_resolution document=%s explicit=%d unresolved_before=%d "
+            "inferred=%d ambiguous=%d conflict=%d unresolved=%d shadow=%s",
+            getattr(canonical.metadata, "document_id", "") if hasattr(canonical, "metadata") else "",
+            seq_result.total_explicit,
+            seq_result.stats.get("unresolved_before", 0),
+            seq_result.total_inferred_high_confidence,
+            seq_result.total_ambiguous,
+            seq_result.total_conflict,
+            seq_result.total_unresolved,
+            shadow,
+        )
     figure_links = link_figure_references(
         normalized_markdown,
         canonical.assets,

@@ -15,6 +15,7 @@ import RetrievalConfigView from '../views/RetrievalConfigView.vue'
 import ModelConfigView from '../views/ModelConfigView.vue'
 import ChunkerConfigView from '../views/ChunkerConfigView.vue'
 import VectorStoreConfigView from '../views/VectorStoreConfigView.vue'
+import McpAccessManagementView from '../views/McpAccessManagementView.vue'
 import SearchDebugView from '../views/SearchDebugView.vue'
 import ParseWorkbenchView from '../views/ParseWorkbenchView.vue'
 import parseEvalRoutes from '../plugins/parse-eval/routes'
@@ -49,6 +50,7 @@ const router = createRouter({
         { path: 'settings/chunker', component: ChunkerConfigView, meta: { title: '切分配置' } },
         { path: 'settings/vector-store', component: VectorStoreConfigView, meta: { title: '向量库配置' } },
         { path: 'settings/retrieval', component: RetrievalConfigView, meta: { title: '检索配置' } },
+        { path: 'settings/mcp-access', component: McpAccessManagementView, meta: { title: 'MCP 接入管理' } },
         { path: 'debug/search', component: SearchDebugView, meta: { title: '检索调试' } },
 
 

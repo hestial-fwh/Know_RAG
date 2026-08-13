@@ -14,6 +14,8 @@ from app.api import (
     routes_files,
     routes_initialization,
     routes_knowledge_base,
+    routes_mcp_access,
+    routes_mcp_clients,
     routes_mcp_placeholder,
     routes_parse_tasks,
     routes_model_config,
@@ -141,4 +143,6 @@ app.include_router(routes_initialization.router, prefix=API_PREFIX)
 app.include_router(routes_chat.router, prefix=API_PREFIX)
 app.include_router(routes_mcp_placeholder.router, prefix=API_PREFIX)
 app.include_router(routes_parse_tasks.router, prefix=API_PREFIX)
+app.include_router(routes_mcp_clients.router, prefix=API_PREFIX)
+app.include_router(routes_mcp_access.router, prefix=API_PREFIX)
 app.include_router(parse_eval_router, prefix=API_PREFIX)

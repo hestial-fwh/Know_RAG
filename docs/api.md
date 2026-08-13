@@ -1,7 +1,7 @@
 # API
 
 > 状态：Current（完整实时契约以 FastAPI `/docs` 为准）
-> 维护日期：2026-08-05
+> 维护日期：2026-08-13
 
 统一响应：
 
@@ -361,3 +361,21 @@ chunk 返回新增或补齐：
     evidence；
   - `legacy_pages` 返回同页 v1 画像用于对照；
   - 旧 artifact 未生成 v2 时返回 `available=false` 和原因，不触发重新解析。
+
+## MCP 接入管理
+
+管理 API（均需登录）：
+
+- `GET /api/v1/admin/mcp-clients` — 分页列表（page/page_size），含计算字段 `status`（enabled/disabled/expired）与 `is_expired`；永不返回 secret。
+- `POST /api/v1/admin/mcp-clients` — 创建。入参 `{name, description?, scopes[], expires_in_days?}`（null=永久）；响应一次性返回 `client_secret`。
+- `GET /api/v1/admin/mcp-clients/{id}` — 详情，不含 secret。
+- `PATCH /api/v1/admin/mcp-clients/{id}` — 编辑 name/description/scopes/expires_in_days。
+- `POST /api/v1/admin/mcp-clients/{id}/reset-secret` — 重置，旧 secret 立即失效，一次性返回新 secret。
+- `POST /api/v1/admin/mcp-clients/{id}/enable` / `/disable` — 启停。
+- `DELETE /api/v1/admin/mcp-clients/{id}` — 删除，凭证立即失效。
+
+内部校验（仅 service token，供 MCP auth middleware 调用）：
+
+- `POST /api/v1/internal/mcp-access/verify` — 入参 `{client_id, timestamp, nonce, signature, method, path, body_sha256, tool_name?}`；返回 `{allowed, client_id, name, scopes}` 或 401/403。
+
+scopes 取值：`know_rag_list_knowledge_bases`、`know_rag_search_context`。

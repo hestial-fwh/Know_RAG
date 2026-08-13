@@ -1,7 +1,7 @@
 # Know_RAG 文档索引
 
 > 状态：Current
-> 维护日期：2026-08-11（Standalone Root 四态互斥模型 + structural_role 统一 API）
+> 维护日期：2026-08-13（MCP 接入认证管理：Client Credential + HMAC-SHA256 签名鉴权）
 > 适用范围：当前 `know_rag` 主分支
 
 ## 权威阅读顺序

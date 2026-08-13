@@ -128,6 +128,14 @@ class Settings(BaseSettings):
         False,
         alias="DOCUMENT_PIPELINE_DEBUG_ARTIFACTS_ENABLED",
     )
+    document_figure_sequence_resolution_enabled: bool = Field(
+        False,
+        alias="DOCUMENT_FIGURE_SEQUENCE_RESOLUTION_ENABLED",
+    )
+    document_figure_sequence_shadow_only: bool = Field(
+        True,
+        alias="DOCUMENT_FIGURE_SEQUENCE_SHADOW_ONLY",
+    )
     document_page_visual_min_coverage: float = Field(
         0.70,
         alias="DOCUMENT_PAGE_VISUAL_MIN_COVERAGE",
@@ -234,6 +242,18 @@ class Settings(BaseSettings):
     admin_password: str = Field("change-me", alias="ADMIN_PASSWORD")
     jwt_secret: str = Field("dev-only-change-me", alias="JWT_SECRET")
     know_rag_service_token: str = Field("", alias="KNOW_RAG_SERVICE_TOKEN")
+
+    # ── MCP signed access (external client credentials) ─────────────────────
+    # Master key used to derive the AES-256-GCM key that encrypts client
+    # secrets at rest.  Change it only before any client is created.
+    mcp_client_secret_encryption_key: str = Field(
+        "dev-only-mcp-secret-encryption-key",
+        alias="MCP_CLIENT_SECRET_ENCRYPTION_KEY",
+    )
+    # Allowed clock skew for signed MCP requests (seconds).
+    mcp_signature_max_age_seconds: int = Field(
+        300, alias="MCP_SIGNATURE_MAX_AGE_SECONDS"
+    )
 
     # ── Login captcha ────────────────────────────────────────────────────
     login_captcha_enabled: bool = Field(True, alias="LOGIN_CAPTCHA_ENABLED")

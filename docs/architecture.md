@@ -1,7 +1,7 @@
 # Architecture
 
 > 状态：Current
-> 维护日期：2026-08-05
+> 维护日期：2026-08-13
 
 `know_rag` 是本地优先的 RAG 知识库构建、解析、切分、索引和检索系统。
 
@@ -215,5 +215,31 @@ Canonical artifact，页绑定 child 只保存紧凑 shadow metadata；现有 em
 
 ## MCP
 
-项目已提供独立的只读 MCP 服务，通过现有 HTTP API 调用统一 Context 服务。`mcp-placeholder`
+项目提供独立的只读 MCP 服务，通过现有 HTTP API 调用统一 Context 服务。`mcp-placeholder`
 路由仍是早期兼容占位接口，不代表实际 MCP 服务状态。
+
+### MCP 接入认证链路
+
+```text
+外部 MCP Client
+   X-Client-Id / X-Timestamp / X-Nonce / X-Signature
+        ↓
+MCP Auth Middleware（FastMCP Starlette app 之前的纯 ASGI 层）
+   → 提取签名头 + body SHA256 + JSON-RPC tool name
+        ↓ 携带 service token 调用
+POST /api/v1/internal/mcp-access/verify（后端集中校验）
+   → client 存在 / 启用 / 有效期 / timestamp ±300s / nonce 防重放 / HMAC 验签 / scope
+        ↓ 放行或 401/403
+现有 MCP Tools（know_rag_list_knowledge_bases / know_rag_search_context）
+        ↓
+Know_RAG Backend
+```
+
+Client Secret 只存在于后端（AES-256-GCM 加密入库）；MCP 容器不持有 client secret，也不直连
+数据库。canonicalization 只有一份实现（`app/services/mcp_access/signature.py`），测试客户端
+脚本复用同一实现。
+
+标准 MCP 客户端（MCP Inspector / Claude Desktop 等）只能配固定 header，无法逐请求计算 HMAC，
+因此接入时在它们与 MCP 之间放一个签名网关（`backend/scripts/mcp_signing_gateway.py`）：
+客户端用静态 `Authorization: Bearer <GATEWAY_TOKEN>` 连网关 `:8011`，网关持有 client_id +
+client_secret 注入四头签名后转发到 `:8010/mcp`。

@@ -18,6 +18,7 @@ COPY ragflow_vendor ./ragflow_vendor
 COPY tests ./tests
 COPY scripts ./scripts
 COPY alembic.ini .
+COPY pyproject.toml .
 COPY entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh
 

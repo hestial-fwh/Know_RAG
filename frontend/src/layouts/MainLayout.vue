@@ -43,6 +43,7 @@ const navSections: NavSection[] = [
       { to: '/settings/chunker', label: '切分配置', icon: '⚙' },
       { to: '/settings/vector-store', label: '向量库', icon: '⚙' },
       { to: '/settings/retrieval', label: '检索配置', icon: '⚙' },
+      { to: '/settings/mcp-access', label: 'MCP 接入', icon: '⚙' },
     ]
   }
 ]

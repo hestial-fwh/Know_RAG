@@ -1,7 +1,7 @@
 # Security
 
 > 状态：Current
-> 维护日期：2026-08-05
+> 维护日期：2026-08-13
 
 ## 本地知识资产
 
@@ -54,3 +54,24 @@
 
 只读 MCP 服务已实现，通过 token 或用户名密码访问后端，并复用 `KnowledgeContextService`。
 `mcp-placeholder` 是兼容路由。MCP 部署仍需限制监听地址、令牌权限、上下文长度、图片 URL 和审计范围。
+
+### MCP 接入认证（Client Credential + HMAC-SHA256 签名）
+
+外部 MCP Client 调用 `/mcp` 前必须携带 `X-Client-Id / X-Timestamp / X-Nonce / X-Signature`
+四头；签名 = `hex(HMAC-SHA256(client_secret, canonical_string))`，canonical 串覆盖
+client_id / timestamp / nonce / HTTP method / path / body SHA256。服务端校验顺序：client 存在 →
+is_enabled → expires_at → timestamp（±`MCP_SIGNATURE_MAX_AGE_SECONDS`，默认 300s）→ nonce
+防重放（Redis `SET NX`）→ HMAC 验签（constant-time）→ Tool Scope → 更新 last_used_at。MCP auth
+middleware 只在验签通过后放行，backend 不可达时 fail-closed 拒绝。
+
+- Client Secret 用 AES-256-GCM 加密入库（Master Key 来自 `MCP_CLIENT_SECRET_ENCRYPTION_KEY`），
+  明文仅在创建/重置时返回一次。
+- 两套认证分工：`KNOW_RAG_SERVICE_TOKEN` 负责 MCP→后端内部调用与 verify 端点保护；外部
+  Client Credential 负责客户端→MCP。二者不互相替代。
+- 开发默认 `:8010/mcp`；正式部署应 `Internet → HTTPS Gateway/Nginx → 127.0.0.1:8010/mcp`，
+  不要将 8010 公网裸暴露。生产必须轮换 `MCP_CLIENT_SECRET_ENCRYPTION_KEY` 与
+  `KNOW_RAG_SERVICE_TOKEN`。
+- 标准 MCP 客户端（MCP Inspector / Claude Desktop / Cursor 等）无法逐请求计算 HMAC，需在它们
+  与 MCP 之间放一个签名网关：`backend/scripts/mcp_signing_gateway.py`。客户端用静态
+  `Authorization: Bearer <GATEWAY_TOKEN>` 连网关（`:8011`），网关持有 client_id + client_secret，
+  注入四头签名后转发到 `:8010`。网关自身鉴权失败 fail-closed，secret 只存在网关内不落库。
