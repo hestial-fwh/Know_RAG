@@ -48,3 +48,17 @@ class LLMContextRequest(HybridSearchRequest):
     include_image_urls: bool | None = False
     include_tables: bool | None = True
     include_equations: bool | None = True
+    # ── Return / context-shaping params ──────────────────────────────
+    # These were previously dropped by the schema (Pydantic ignored unknown
+    # fields), making MCP's selective-context knobs inert.  Expose them so the
+    # context service can dispatch to legacy / cloud / evidence-group modes and
+    # honor the window-builder options.
+    return_mode: str | None = None
+    include_context_window: bool | None = None
+    context_expansion_strategy: str | None = None
+    parent_window_max_chars: int | None = None
+    parent_window_soft_overflow_ratio: float | None = None
+    max_extra_text_chunks_per_parent: int | None = None
+    include_media_chunks: bool | None = None
+    media_chunk_limit: int | None = None
+    include_context_text: bool | None = None

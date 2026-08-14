@@ -379,3 +379,54 @@ chunk 返回新增或补齐：
 - `POST /api/v1/internal/mcp-access/verify` — 入参 `{client_id, timestamp, nonce, signature, method, path, body_sha256, tool_name?}`；返回 `{allowed, client_id, name, scopes}` 或 401/403。
 
 scopes 取值：`know_rag_list_knowledge_bases`、`know_rag_search_context`。
+
+## MCP 上下文返回（Evidence Group）
+
+`POST /api/v1/knowledge-bases/{kb_id}/llm-context` 新增 `return_mode="evidence_groups"`，
+MCP 的 `know_rag_search_context` 默认走该模式，返回：
+
+```json
+{
+  "groups": [
+    {
+      "group_no": 1,
+      "group_id": "<parent_chunk_id 或 chunk_id>",
+      "parent_chunk_id": "...",
+      "document_id": "...",
+      "document_url": "http://<frontend>/documents/{id}/content",
+      "score": 0.91,
+      "direct_hit_count": 2,
+      "eligible_child_count": 6,
+      "hit_ratio": 0.333,
+      "chunks": [
+        { "item_no": "1-1", "chunk_id": "...", "direct_hit": true, "context_reason": "retrieval_hit" },
+        { "item_no": "1-2", "chunk_id": "...", "direct_hit": false, "context_reason": "neighbor" }
+      ],
+      "media": [
+        { "item_no": "1-M1", "asset_id": "...", "chunk_id": "...", "primary_reason": "figure_binding", "relation_sources": ["figure_binding", "same_parent"] }
+      ]
+    }
+  ],
+  "chunks": [],
+  "media": []
+}
+```
+
+- `group_no`/`item_no` 是展示编号，真实 `group_id`/`chunk_id`/`asset_id` 始终保留。
+- 文档归属在 **group 级**：`document_id` + `document_url`（一个 group 一个源文档，
+  `document_url` 指向前端 `/documents/{id}/content` 内容页，域名由 `FRONTEND_BASE_URL`
+  决定，`document_id` 为空时为 `""`）。chunk 与 media 条目仍带块级 `document_id`、
+  `document_title`、`file_name` 用于归属标识，但不重复 `document_url`。
+- 顶层 `chunks` 与 `media` 是两个**同构的扁平数组**：`chunks` 只含 chunk 条目（带
+  `direct_hit`），`media` 只含图片条目（带 `primary_reason`/`asset_id`）；它们与
+  `groups[]` 内容一一对应，供不需要分组结构的消费者使用。evidence_groups 模式不返回
+  `context_text`。
+- 图片 `primary_reason` 固定优先级 `direct_hit > figure_binding > same_parent`；同 asset
+  全局去重，去重后 `relation_sources` 合并全部证据、`related_group_nos` 保留跨组归属。
+- 图片 `content` 保留 `上下文：` 字段（nearby/OCR 正文），不会被当作包装标签剥除；
+  无描述/无 OCR 的占位图片仍按低信息过滤，不出现在 `media`。
+- 返回结构的机器可读契约由 `app/schemas/evidence_groups.py` 的
+  `EvidenceGroupsResponse`（含 `EvidenceChunkPayload` / `EvidenceMediaPayload` /
+  `EvidenceGroup` / `EvidenceGroupsMeta`）定义；`build_evidence_groups_payload` 返回前
+  会 `model_validate` 校验，保证 schema 与实际输出一致。`meta` 携带
+  `schema_version`（当前 `evidence_groups.v1`）。

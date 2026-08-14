@@ -51,7 +51,7 @@ async def search_context(
     query_text: str,
     knowledge_base_id: str,
     # ── Return mode ────────────────────────────────────────────────────────
-    return_mode: str = "chunks_with_selective_context",
+    return_mode: str = "evidence_groups",
     # ── Retrieval ──────────────────────────────────────────────────────────
     retrieval_mode: str = "hybrid",
     match_count: int = 10,
@@ -84,10 +84,12 @@ async def search_context(
     include_tables: bool = True,
     include_equations: bool = True,
 ) -> dict[str, Any]:
-    """Search Know_RAG and return cloud-ready flat chunks.
+    """Search Know_RAG and return structured evidence groups.
 
-    Default ``return_mode`` is ``chunks_with_selective_context``, which
-    returns a flat ``chunks[]`` array with rule-based context expansion.
+    Default ``return_mode`` is ``evidence_groups``, which returns a rankable
+    ``groups[]`` array where each group is a direct hit + neighbors + related
+    images (deduplicated by asset).  ``chunks[]`` remains as a flattened
+    fallback for backward compatibility.
     """
     query_text = (query_text or "").strip()
     knowledge_base_id = (knowledge_base_id or "").strip()
@@ -98,7 +100,7 @@ async def search_context(
 
     payload: dict[str, Any] = {
         "query_text": query_text,
-        "return_mode": return_mode or "chunks_with_selective_context",
+        "return_mode": return_mode or "evidence_groups",
         "retrieval_mode": retrieval_mode or "hybrid",
         "match_count": int(match_count or 10),
         "include_parent_context": bool(include_parent_context),
@@ -140,23 +142,28 @@ async def search_context(
         )
         data = _unwrap_data(response)
 
-        # Primary output: chunks[] for cloud flat-chunks mode.
+        # Primary output: groups[] for evidence-groups mode; chunks[]/media[]
+        # are flattened fallbacks for backward compatibility.
+        groups = data.get("groups") or []
         chunks = data.get("chunks") or []
+        media = data.get("media") or []
 
         result: dict[str, Any] = {
             "success": True,
             "query_text": data.get("query_text") or query_text,
+            "groups": groups,
             "chunks": chunks,
+            "media": media,
             "meta": data.get("meta") or {},
             "warnings": data.get("warnings") or [],
         }
 
-        # Backward-compat fields.
-        result["context_text"] = data.get("context_text") or ""
-        result["sources"] = data.get("sources") or []
-        result["images"] = data.get("images") or []
-        result["tables"] = data.get("tables") or []
-        result["equations"] = data.get("equations") or []
+        # Backward-compat fields, only when the backend actually populated them
+        # (legacy / chunks return modes). evidence_groups mode has none.
+        for key in ("context_text", "sources", "images", "tables", "equations"):
+            val = data.get(key)
+            if val:
+                result[key] = val
 
         return result
     except KnowRagMcpClientError as exc:

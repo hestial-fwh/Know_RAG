@@ -38,7 +38,7 @@ Gateway (:8483) ────────▶ FastAPI + MCP
 → Parent/Child 或 flat compatibility chunk
 → 同事务写 PostgreSQL chunks + document_canonical_artifacts
 → pgvector / 可选外部向量库 + Elasticsearch BM25
-→ Hybrid Retrieval / KnowledgeContextService / MCP
+→ Hybrid Retrieval / KnowledgeContextService（Evidence Group）/ MCP
 ```
 
 图片语义首期以 MinerU 主路径为可靠输入：MinerU adapter 将 caption、footnote、OCR、page
@@ -217,6 +217,31 @@ Canonical artifact，页绑定 child 只保存紧凑 shadow metadata；现有 em
 
 项目提供独立的只读 MCP 服务，通过现有 HTTP API 调用统一 Context 服务。`mcp-placeholder`
 路由仍是早期兼容占位接口，不代表实际 MCP 服务状态。
+
+### 上下文返回模式与 Evidence Group
+
+`KnowledgeContextService` 按 `return_mode` 分派：`legacy`（旧 prompt 构造）、
+`chunks` / `chunks_with_selective_context`（cloud 扁平块）、`debug`、
+`evidence_groups`（证据组）。MCP 的 `know_rag_search_context` 默认使用 `evidence_groups`：
+
+```text
+Hybrid Retrieval → Direct Hit Chunks → 按 Parent 聚合 → 局部 Context Window
+→ Evidence Group（direct hit + neighbors + related images）
+→ 图片按 asset 全局去重 → Group 确定性排序 → MCP response
+```
+
+关键约定：**Parent 只是结构边界，不等于必须整块返回**——每个 Evidence Group 只返回
+「直接命中的 child + 相邻 neighbor + 关联图片」，不返回整个父块。图片关联优先级固定为
+`direct_hit > figure_binding > same_parent`；同一物理图片资源（`metadata.asset_id`）跨
+image / image_ocr_text / VLM 派生块全局去重，去重后证据合并（`relation_sources`）并保留
+跨组归属（`related_group_nos`）。同 Parent 命中密度（`hit_ratio`）只用于 P3 same-parent
+图片排序，不改变 `direct > figure > same_parent` 的等级关系。
+
+图片 content 由 `compose_image_child_content` 以 `章节：/图片标题：/上下文：/图片描述：/
+图片文字：` 字段标签组装，其中 `上下文：` 承载 nearby/OCR 正文，是图片的一等内容字段而非
+包装标签。`_cloud_clean_content` 在清理时仅对非图片 chunk 剥除 `上下文：` 行，图片 chunk
+保留该字段，避免其内容被清空后被 `_cloud_is_low_information_chunk` 误判为低信息、从
+`media` 中过滤。
 
 ### MCP 接入认证链路
 

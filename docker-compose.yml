@@ -5,6 +5,7 @@ services:
     container_name: know-rag-backend
     environment:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:5174}
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://know_rag:know_rag@postgres:5432/know_rag}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       PYTHONPATH: /app:/app/ragflow_vendor

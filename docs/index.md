@@ -1,7 +1,7 @@
 # Know_RAG 文档索引
 
 > 状态：Current
-> 维护日期：2026-08-13（MCP 接入认证管理：Client Credential + HMAC-SHA256 签名鉴权）
+> 维护日期：2026-08-14（MCP 上下文返回 document_url 上移到 group 级）
 > 适用范围：当前 `know_rag` 主分支
 
 ## 权威阅读顺序
@@ -43,6 +43,7 @@
   PASS/FAIL 计划；Phase 3 已通过，Phase 4 的代码前置条件已满足，但按多模态融合 DCP-7 门禁暂缓。
 - `document_relation_graph_acceptance_tests.md`：18 类固定标注样例、关系状态/evidence 契约与分层验收矩阵；合成契约已冻结。
 - `document_relation_phase0_baseline.md`：160 页确定性生成语料、五层 replay 与覆盖率；现包含 Phase 3 group/shared 合成指标。
+- `mcp-client-guide.md`：**Agent 端 MCP 接入指南**，两种接入方式（签名网关 / 直连 HMAC）、签名算法、三步握手、两个工具入参返回、错误码与最小可跑示例。
 - `backend/app/integrations/mcp/README.md`：MCP 工具与传输层契约。
 - `backend/app/plugins/parse_eval/README.md`：解析质量评测插件。
 

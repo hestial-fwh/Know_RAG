@@ -84,9 +84,10 @@ async def know_rag_list_knowledge_bases(page: int = 1, page_size: int = 20) -> d
 @mcp.tool(
     name="know_rag_search_context",
     description=(
-        "Search a Know_RAG knowledge base and return clean LLM-ready context. "
-        "This returns context_text, sources and optional image/table/equation evidence; "
-        "it does not return raw chunks or debug scores."
+        "Search a Know_RAG knowledge base and return structured evidence groups. "
+        "Each group is a direct-hit chunk plus its nearby neighbors and related "
+        "images (deduplicated by asset), ranked by relevance. Returns groups[] "
+        "with item-level citations; does not return raw debug scores."
     ),
 )
 async def know_rag_search_context(

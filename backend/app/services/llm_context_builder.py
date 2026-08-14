@@ -27,6 +27,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from app.core.config import settings
+from app.schemas.evidence_groups import EvidenceGroupsResponse
 
 
 _IMAGE_KINDS = {"image", "chart", "graph", "plot", "figure", "fig"}
@@ -1025,10 +1026,14 @@ def _cloud_page_range(item: dict | None) -> str:
     return str(p) if p else ""
 
 
-def _cloud_clean_content(text: Any, *, max_chars: int | None = None) -> str:
+def _cloud_clean_content(text: Any, *, max_chars: int | None = None, kind: str = "text") -> str:
     text = _clean_llm_text(text or "")
     # Remove common wrapper labels and URLs that should not be embedded in content.
-    text = re.sub(r"(?m)^\s*(文档标题|上下文|正文|前文|后文|绑定标题|图片URL|图片地址|文件名)\s*[:：].*$", "", text)
+    text = re.sub(r"(?m)^\s*(文档标题|正文|前文|后文|绑定标题|图片URL|图片地址|文件名)\s*[:：].*$", "", text)
+    if kind != "image":
+        # For image chunks, "上下文：" is a first-class content field (nearby/OCR
+        # context injected by compose_image_child_content), not a wrapper label.
+        text = re.sub(r"(?m)^\s*上下文\s*[:：].*$", "", text)
     text = re.sub(r"https?://\S+", "", text)
     text = re.sub(r"/files/\S+", "", text)
     text = re.sub(r"kb/[0-9a-fA-F-]+/documents/[0-9a-fA-F-]+/media/\S+", "", text)
@@ -1069,7 +1074,7 @@ def _cloud_content(item: dict | None, *, max_chars: int | None = None) -> str:
                 if isinstance(val, str) and val.strip():
                     candidates.append(val)
     for cand in candidates:
-        cleaned = _cloud_clean_content(cand, max_chars=max_chars)
+        cleaned = _cloud_clean_content(cand, max_chars=max_chars, kind=kind)
         if cleaned:
             return cleaned
     return ""
@@ -1711,3 +1716,616 @@ def build_cloud_flat_chunks_payload(retrieval_data: dict, options: dict | None =
         payload.setdefault("tables", [])
         payload.setdefault("equations", [])
     return payload
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Evidence Group payload
+# ──────────────────────────────────────────────────────────────────────
+#
+# ``chunks_with_selective_context`` returns a flat chunk list.  ``evidence_groups``
+# upgrades that to a structured, rankable, deduplicable evidence-group schema:
+#
+#     Query → Hybrid Retrieval → Direct Hits
+#           → group by Parent (structural boundary, NOT a mandatory return unit)
+#           → local context window (hit + neighbors)
+#           → attach media by fixed priority (direct > figure > same_parent)
+#           → global media dedup by asset id (evidence merged)
+#           → deterministic group ranking
+#
+# The Parent is used only to *delimit* an evidence group; we never force the
+# whole parent into the response.
+
+# Hits more than this many child positions apart inside one parent are split
+# into separate evidence groups instead of being glued into one long group.
+_EVIDENCE_GROUP_MAX_INTER_HIT_GAP = 4
+
+_MEDIA_PRIORITY_RANK = {"direct_hit": 0, "figure_binding": 1, "same_parent": 2}
+
+
+def _cloud_asset_id(item: dict | None) -> str:
+    """Return the stable document-local asset id for an image chunk, if present.
+
+    image / image_ocr_text / VLM-derived chunks may all describe the same real
+    image resource and therefore share the same ``asset_id`` — this is the dedup
+    key used for global media dedup (preferred over the raw chunk id).
+    """
+    if not isinstance(item, dict):
+        return ""
+    meta = _cloud_meta(item)
+    image_info = _cloud_image_info(item)
+    for obj in (item, meta, image_info):
+        if not isinstance(obj, dict):
+            continue
+        for key in ("asset_id", "canonical_asset_id", "image_asset_id"):
+            val = obj.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    return ""
+
+
+def _evidence_parent_lookup(parent_groups: list[dict]) -> dict[str, dict]:
+    lookup: dict[str, dict] = {}
+    for group in parent_groups or []:
+        if not isinstance(group, dict):
+            continue
+        key = group.get("parent_chunk_id") or group.get("parent_key")
+        if key:
+            lookup[str(key)] = group
+    return lookup
+
+
+def _evidence_ordered_children(parent_group: dict | None) -> list[dict]:
+    if not isinstance(parent_group, dict):
+        return []
+    children = [c for c in (parent_group.get("parent_children") or []) if isinstance(c, dict)]
+    return sorted(children, key=lambda c: (c.get("chunk_index") is None, c.get("chunk_index") if c.get("chunk_index") is not None else 10**9))
+
+
+def _evidence_strong_relation_count(hits: list[dict]) -> int:
+    count = 0
+    for h in hits:
+        meta = _cloud_meta(h)
+        if not isinstance(meta, dict):
+            continue
+        if meta.get("figure_references"):
+            count += 1
+        if meta.get("outgoing_asset_chunk_ids"):
+            count += 1
+        if meta.get("image_bindings"):
+            count += 1
+    return count
+
+
+def _evidence_seed_groups(content_hits: list[dict], parent_lookup: dict[str, dict]) -> list[dict]:
+    """Group content hits by parent, splitting far-apart hits into segments."""
+    by_parent: dict[str, list[dict]] = {}
+    for h in content_hits:
+        by_parent.setdefault(_cloud_parent_id(h) or "", []).append(h)
+
+    seeds: list[dict] = []
+    for pid, hits in by_parent.items():
+        if not pid:
+            # Standalone root: each hit is its own evidence group.
+            for h in hits:
+                seeds.append(
+                    {
+                        "group_id": _cloud_chunk_id(h),
+                        "parent_chunk_id": None,
+                        "is_standalone": True,
+                        "hits": [h],
+                    }
+                )
+            continue
+
+        parent_group = parent_lookup.get(pid)
+        ordered = _evidence_ordered_children(parent_group)
+        pos_by_id = {_cloud_chunk_id(c): i for i, c in enumerate(ordered) if _cloud_chunk_id(c)}
+
+        hit_with_pos: list[tuple[dict, int | None]] = []
+        for h in hits:
+            hit_with_pos.append((h, pos_by_id.get(_cloud_chunk_id(h))))
+        hit_with_pos.sort(key=lambda t: (t[1] is None, t[1] if t[1] is not None else 10**9))
+
+        segments: list[list[tuple[dict, int | None]]] = []
+        cur: list[tuple[dict, int | None]] = []
+        for h, pos in hit_with_pos:
+            if not cur:
+                cur.append((h, pos))
+                continue
+            last_pos = cur[-1][1]
+            if last_pos is not None and pos is not None and (pos - last_pos) > _EVIDENCE_GROUP_MAX_INTER_HIT_GAP:
+                segments.append(cur)
+                cur = [(h, pos)]
+            else:
+                cur.append((h, pos))
+        if cur:
+            segments.append(cur)
+
+        for seg_idx, seg in enumerate(segments):
+            group_id = pid if seg_idx == 0 else f"{pid}#seg{seg_idx + 1}"
+            seeds.append(
+                {
+                    "group_id": group_id,
+                    "parent_chunk_id": pid,
+                    "is_standalone": False,
+                    "hits": [h for h, _ in seg],
+                }
+            )
+    return seeds
+
+
+def _evidence_fill_group(seed: dict, parent_lookup: dict[str, dict], include_context_window: bool) -> dict:
+    hits = seed["hits"]
+    hit_ids = {_cloud_chunk_id(h) for h in hits if _cloud_chunk_id(h)}
+    pid = seed["parent_chunk_id"]
+    parent_group = parent_lookup.get(pid) if pid else None
+    ordered = _evidence_ordered_children(parent_group)
+
+    eligible = [
+        c
+        for c in ordered
+        if _cloud_kind(c) in ("text", "table", "equation", "image")
+        and not _cloud_is_low_information_chunk(c)
+    ]
+    eligible_count = len(eligible)
+    hit_ratio = (len(hit_ids) / eligible_count) if eligible_count else 0.0
+
+    neighbors: list[dict] = []
+    if include_context_window and ordered:
+        hit_positions = [i for i, c in enumerate(ordered) if _cloud_chunk_id(c) in hit_ids]
+        if hit_positions:
+            min_pos, max_pos = min(hit_positions), max(hit_positions)
+            neighbor_indexes: set[int] = set()
+            for p in hit_positions:
+                neighbor_indexes.add(p - 1)
+                neighbor_indexes.add(p + 1)
+            for i, c in enumerate(ordered):
+                cid = _cloud_chunk_id(c)
+                if cid in hit_ids or _cloud_kind(c) not in ("text", "table", "equation"):
+                    continue
+                if _cloud_is_low_information_chunk(c):
+                    continue
+                if i in neighbor_indexes or (min_pos < i < max_pos):
+                    neighbors.append(c)
+
+    seed["hit_ids"] = hit_ids
+    seed["eligible_count"] = eligible_count
+    seed["hit_ratio"] = hit_ratio
+    seed["neighbors"] = neighbors
+    seed["base_score"] = max((_cloud_score(h) or 0.0 for h in hits), default=0.0)
+    seed["strong_relation_count"] = _evidence_strong_relation_count(hits)
+    return seed
+
+
+def _evidence_image_lookup(retrieval_data: dict) -> tuple[dict[str, dict], dict[str, dict]]:
+    """Build chunk-id → image chunk and asset-key → image chunk maps from all sources."""
+    by_chunk_id: dict[str, dict] = {}
+    by_asset: dict[str, dict] = {}
+
+    def register(c: Any) -> None:
+        if not isinstance(c, dict) or _cloud_kind(c) != "image":
+            return
+        cid = _cloud_chunk_id(c)
+        if cid and cid not in by_chunk_id:
+            by_chunk_id[cid] = c
+        asset_key = _cloud_asset_id(c) or cid
+        if asset_key and asset_key not in by_asset:
+            by_asset[asset_key] = c
+
+    for item in retrieval_data.get("results") or []:
+        register(item)
+    for group in retrieval_data.get("parent_groups") or []:
+        if not isinstance(group, dict):
+            continue
+        for field in ("parent_children", "matched_children", "binding_related_chunks"):
+            for c in group.get(field) or []:
+                register(c)
+    return by_chunk_id, by_asset
+
+
+def _evidence_figure_binding_images(
+    group: dict, image_lookup: dict[str, dict], parent_group: dict | None
+) -> list[dict]:
+    """Return P2 figure-binding media descriptors for one group's hits."""
+    descriptors: list[dict] = []
+    seen: set[str] = set()
+
+    def add(img: dict | None, *, figure_ids: list[str] | None = None, binding_score: float = 0.0, figure_id_source: Any = None) -> None:
+        if not isinstance(img, dict):
+            return
+        cid = _cloud_chunk_id(img)
+        if not cid or cid in seen:
+            return
+        seen.add(cid)
+        descriptors.append(
+            {
+                "chunk": img,
+                "figure_ids": list(figure_ids or []),
+                "binding_score": binding_score,
+                "figure_id_source": figure_id_source,
+            }
+        )
+
+    for h in group["hits"]:
+        meta = _cloud_meta(h)
+        if not isinstance(meta, dict):
+            continue
+        for ref in meta.get("figure_references") or []:
+            if not isinstance(ref, dict):
+                continue
+            figure_id = ref.get("figure_id")
+            binding_score = float(ref.get("binding_score") or 0)
+            source = ref.get("figure_id_source") or ref.get("source")
+            for img_id in ref.get("image_chunk_ids") or []:
+                add(image_lookup.get(str(img_id)), figure_ids=[figure_id] if figure_id else [], binding_score=binding_score, figure_id_source=source)
+        for asset_id in meta.get("outgoing_asset_chunk_ids") or []:
+            add(image_lookup.get(str(asset_id)))
+
+    if parent_group:
+        for c in parent_group.get("binding_related_chunks") or []:
+            if _cloud_kind(c) == "image":
+                add(c)
+    return descriptors
+
+
+def _evidence_same_parent_images(
+    parent_group: dict | None, hit_ids: set[str], direct_image_hit_ids: set[str]
+) -> list[dict]:
+    if not isinstance(parent_group, dict):
+        return []
+    images: list[dict] = []
+    for c in parent_group.get("parent_children") or []:
+        if _cloud_kind(c) != "image":
+            continue
+        cid = _cloud_chunk_id(c)
+        if cid in hit_ids or cid in direct_image_hit_ids or _cloud_is_low_information_chunk(c):
+            continue
+        images.append(c)
+    return images
+
+
+def _new_media_candidate(
+    chunk: dict,
+    reason: str,
+    group_index: int,
+    *,
+    group_score: float = 0.0,
+    binding_score: float = 0.0,
+    figure_ids: list[str] | None = None,
+    figure_id_source: Any = None,
+    hit_ratio: float = 0.0,
+) -> dict:
+    return {
+        "asset_key": _cloud_asset_id(chunk) or _cloud_chunk_id(chunk),
+        "chunk": chunk,
+        "primary_reason": reason,
+        "group_index": group_index,
+        "group_score": group_score,
+        "binding_score": binding_score,
+        "figure_ids": list(figure_ids or []),
+        "figure_id_source": figure_id_source,
+        "hit_ratio": hit_ratio,
+    }
+
+
+def _evidence_assign_media(candidates: list[dict]) -> dict[str, dict]:
+    """Global media dedup: one asset appears once, evidence merged.
+
+    Priority is fixed by relation rank (direct > figure > same_parent); ties are
+    broken by group score, figure-binding confidence, then parent hit ratio.
+    """
+    by_asset: dict[str, list[dict]] = {}
+    for c in candidates:
+        if c.get("asset_key"):
+            by_asset.setdefault(c["asset_key"], []).append(c)
+
+    assigned: dict[str, dict] = {}
+    for asset_key, cands in by_asset.items():
+        def sort_key(c: dict) -> tuple:
+            return (
+                _MEDIA_PRIORITY_RANK.get(c["primary_reason"], 9),
+                -float(c.get("group_score") or 0.0),
+                -float(c.get("binding_score") or 0.0),
+                -float(c.get("hit_ratio") or 0.0),
+            )
+
+        winner = min(cands, key=sort_key)
+        all_reasons = sorted({c["primary_reason"] for c in cands})
+        all_figure_ids: list[str] = []
+        for c in cands:
+            for fid in c.get("figure_ids") or []:
+                if fid not in all_figure_ids:
+                    all_figure_ids.append(fid)
+        related_groups = sorted({c["group_index"] for c in cands if c["group_index"] != winner["group_index"]})
+
+        winner = dict(winner)
+        winner["relation_sources"] = all_reasons
+        winner["figure_ids"] = all_figure_ids
+        winner["related_group_indices"] = related_groups
+        assigned[asset_key] = winner
+    return assigned
+
+
+def _evidence_chunk_payload(item: dict, *, item_no: str, group_no: int, direct_hit: bool, context_reason: str) -> dict:
+    score = _cloud_score(item)
+    document_id = _cloud_document_id(item)
+    payload: dict[str, Any] = {
+        "item_no": item_no,
+        "group_no": group_no,
+        "chunk_id": _cloud_chunk_id(item),
+        "parent_chunk_id": _cloud_parent_id(item) or None,
+        "document_id": document_id,
+        "document_title": _cloud_first_str(item, ("document_title", "doc_title", "title", "knowledge_title")),
+        "file_name": _cloud_first_str(item, ("file_name", "filename", "source_file", "knowledge_filename")),
+        "page_no": _cloud_page_no(item),
+        "page_range": _cloud_page_range(item),
+        "chunk_type": _cloud_kind(item),
+        "context_header": _cloud_context_header(item),
+        "content": _cloud_content(item, max_chars=5000),
+        "direct_hit": direct_hit,
+        "context_reason": context_reason,
+    }
+    if direct_hit:
+        payload["retrieval_score"] = score
+    return payload
+
+
+def _evidence_media_payload(
+    candidate: dict,
+    *,
+    item_no: str,
+    group_no: int,
+    include_image_urls: bool,
+    related_group_nos: list[int] | None = None,
+) -> dict:
+    chunk = candidate["chunk"]
+    asset_id = _cloud_asset_id(chunk)
+    document_id = _cloud_document_id(chunk)
+    payload: dict[str, Any] = {
+        "item_no": item_no,
+        "group_no": group_no,
+        "asset_id": asset_id or None,
+        "chunk_id": _cloud_chunk_id(chunk),
+        "parent_chunk_id": _cloud_parent_id(chunk) or None,
+        "document_id": document_id,
+        "document_title": _cloud_first_str(chunk, ("document_title", "doc_title", "title", "knowledge_title")),
+        "file_name": _cloud_first_str(chunk, ("file_name", "filename", "source_file", "knowledge_filename")),
+        "page_no": _cloud_page_no(chunk),
+        "chunk_type": _cloud_kind(chunk),
+        "context_header": _cloud_context_header(chunk),
+        "content": _cloud_content(chunk, max_chars=5000),
+        "primary_reason": candidate.get("primary_reason"),
+        "relation_sources": candidate.get("relation_sources") or [candidate.get("primary_reason")],
+    }
+    if candidate.get("figure_ids"):
+        payload["figure_ids"] = candidate["figure_ids"]
+    if candidate.get("figure_id_source"):
+        payload["figure_id_source"] = candidate["figure_id_source"]
+    if related_group_nos:
+        payload["related_group_nos"] = sorted(related_group_nos)
+    if include_image_urls:
+        image_url = _cloud_image_url(chunk, include_image_urls=True)
+        if image_url:
+            payload["image_url"] = image_url
+    return payload
+
+
+def build_evidence_groups_payload(retrieval_data: dict, options: dict | None = None) -> dict[str, Any]:
+    """Build structured evidence groups for the MCP/cloud Agent.
+
+    Parent is a structural boundary only — the response never returns a whole
+    parent, but a ``direct hit + neighbors + related images`` evidence group.
+    """
+    options = options or {}
+    query_text = str(
+        options.get("query_text")
+        or options.get("query")
+        or retrieval_data.get("query_text")
+        or retrieval_data.get("query")
+        or ""
+    ).strip()
+    retrieval_id = str(options.get("retrieval_id") or retrieval_data.get("retrieval_id") or f"ret_{_cloud_uuid.uuid4().hex[:10]}")
+    match_count = _as_int(options.get("match_count") or retrieval_data.get("match_count") or 10, 10, minimum=1, maximum=100)
+    include_context_window = _as_bool(options.get("include_context_window"), True)
+    include_media_chunks = _as_bool(options.get("include_media_chunks"), True)
+    include_image_urls = _as_bool(options.get("include_image_urls"), False)
+
+    parent_groups = retrieval_data.get("parent_groups") or []
+    parent_lookup = _evidence_parent_lookup(parent_groups)
+    image_lookup, _ = _evidence_image_lookup(retrieval_data)
+
+    hits = _cloud_collect_hits(retrieval_data, match_count)
+    image_hits = [h for h in hits if _cloud_kind(h) == "image"]
+    content_hits = [h for h in hits if _cloud_kind(h) != "image"]
+    direct_image_hit_ids = {_cloud_chunk_id(h) for h in image_hits if _cloud_chunk_id(h)}
+
+    # ── 1) Build text evidence groups (hit + neighbors) ──────────────
+    seeds = _evidence_seed_groups(content_hits, parent_lookup)
+    groups: list[dict] = []
+    for seed in seeds:
+        groups.append(_evidence_fill_group(seed, parent_lookup, include_context_window))
+
+    # Map parent → group index so direct image hits can attach to their parent.
+    parent_to_group: dict[str, int] = {}
+    for gi, g in enumerate(groups):
+        if g.get("parent_chunk_id"):
+            parent_to_group[g["parent_chunk_id"]] = gi
+
+    # ── 2) Collect media candidates across content groups ────────────
+    candidates: list[dict] = []
+    # Track which direct image hits have been attached to a content group.
+    attached_image_hit_ids: set[str] = set()
+    for gi, g in enumerate(groups):
+        pid = g.get("parent_chunk_id")
+        parent_group = parent_lookup.get(pid) if pid else None
+        base_score = g.get("base_score", 0.0)
+        hit_ratio = g.get("hit_ratio", 0.0)
+        if include_media_chunks:
+            for img in image_hits:
+                if _cloud_parent_id(img) == pid:
+                    candidates.append(
+                        _new_media_candidate(img, "direct_hit", gi, group_score=base_score, hit_ratio=hit_ratio)
+                    )
+                    attached_image_hit_ids.add(_cloud_chunk_id(img))
+            for desc in _evidence_figure_binding_images(g, image_lookup, parent_group):
+                candidates.append(
+                    _new_media_candidate(
+                        desc["chunk"],
+                        "figure_binding",
+                        gi,
+                        group_score=base_score,
+                        binding_score=desc["binding_score"],
+                        figure_ids=desc["figure_ids"],
+                        figure_id_source=desc["figure_id_source"],
+                        hit_ratio=hit_ratio,
+                    )
+                )
+            for img in _evidence_same_parent_images(parent_group, g["hit_ids"], direct_image_hit_ids):
+                candidates.append(
+                    _new_media_candidate(img, "same_parent", gi, group_score=base_score, hit_ratio=hit_ratio)
+                )
+
+    # ── 3) Direct image hits with no content group → their own image group ──
+    for img in image_hits:
+        cid = _cloud_chunk_id(img)
+        if cid in attached_image_hit_ids:
+            continue
+        pid = _cloud_parent_id(img)
+        # If the image already maps to a content group via parent, it was attached above.
+        groups.append(
+            {
+                "group_id": cid,
+                "parent_chunk_id": pid or None,
+                "is_standalone": not pid,
+                "hits": [],
+                "hit_ids": set(),
+                "eligible_count": 0,
+                "hit_ratio": 0.0,
+                "neighbors": [],
+                "base_score": _cloud_score(img) or 0.0,
+                "strong_relation_count": 0,
+            }
+        )
+        candidates.append(
+            _new_media_candidate(
+                img,
+                "direct_hit",
+                len(groups) - 1,
+                group_score=_cloud_score(img) or 0.0,
+            )
+        )
+
+    # ── 4) Global media dedup + assignment ───────────────────────────
+    assigned = _evidence_assign_media(candidates) if include_media_chunks else {}
+    assigned_by_group: dict[int, list[dict]] = {}
+    for c in assigned.values():
+        assigned_by_group.setdefault(c["group_index"], []).append(c)
+
+    # ── 5) Score + sort groups ───────────────────────────────────────
+    for gi, g in enumerate(groups):
+        g["_orig_index"] = gi
+        media_for_group = assigned_by_group.get(gi, [])
+        has_direct_image = any(m["primary_reason"] == "direct_hit" for m in media_for_group)
+        g["score"] = g.get("base_score", 0.0)
+        g["direct_hit_count"] = len(g.get("hit_ids") or set())
+        g["strong_relation_count"] = g.get("strong_relation_count", 0) or (
+            1 if any(m["primary_reason"] == "figure_binding" for m in media_for_group) else 0
+        )
+        g["has_direct_image"] = has_direct_image
+        g["_media"] = media_for_group
+
+    ordered_groups = sorted(
+        groups,
+        key=lambda g: (
+            -float(g.get("score") or 0.0),
+            -int(g.get("direct_hit_count") or 0),
+            -float(g.get("hit_ratio") or 0.0),
+            -int(g.get("strong_relation_count") or 0),
+        ),
+    )
+
+    # ── 6) Assemble output ───────────────────────────────────────────
+    orig_to_no = {g["_orig_index"]: rank for rank, g in enumerate(ordered_groups, start=1)}
+    output_groups: list[dict] = []
+    flat_chunks: list[dict] = []
+    flat_media: list[dict] = []
+
+    for rank, g in enumerate(ordered_groups, start=1):
+        chunks: list[dict] = []
+        for i, hit in enumerate(g["hits"], start=1):
+            item = _evidence_chunk_payload(hit, item_no=f"{rank}-{i}", group_no=rank, direct_hit=True, context_reason="retrieval_hit")
+            chunks.append(item)
+        for i, nb in enumerate(g["neighbors"], start=len(g["hits"]) + 1):
+            chunks.append(
+                _evidence_chunk_payload(nb, item_no=f"{rank}-{i}", group_no=rank, direct_hit=False, context_reason="neighbor")
+            )
+
+        media: list[dict] = []
+        for mi, candidate in enumerate(sorted(g.get("_media", []), key=lambda c: _MEDIA_PRIORITY_RANK.get(c["primary_reason"], 9)), start=1):
+            related_nos = [orig_to_no[oi] for oi in candidate.get("related_group_indices", []) if oi in orig_to_no]
+            media.append(
+                _evidence_media_payload(
+                    candidate,
+                    item_no=f"{rank}-M{mi}",
+                    group_no=rank,
+                    include_image_urls=include_image_urls,
+                    related_group_nos=related_nos,
+                )
+            )
+
+        # 主文档 = 第一个 direct hit 的 document；无 hit（孤立图片组）时回退到 media。
+        group_document_id = ""
+        for c in chunks:
+            if c.get("document_id"):
+                group_document_id = c["document_id"]
+                break
+        if not group_document_id:
+            for m in media:
+                if m.get("document_id"):
+                    group_document_id = m["document_id"]
+                    break
+
+        group_payload: dict[str, Any] = {
+            "group_no": rank,
+            "group_id": g.get("group_id"),
+            "parent_chunk_id": g.get("parent_chunk_id"),
+            "document_id": group_document_id,
+            "document_url": _frontend_document_url(group_document_id),
+            "score": round(float(g.get("score") or 0.0), 6),
+            "direct_hit_count": int(g.get("direct_hit_count") or 0),
+            "eligible_child_count": int(g.get("eligible_count") or 0),
+            "hit_ratio": round(float(g.get("hit_ratio") or 0.0), 6),
+            "strong_relation_count": int(g.get("strong_relation_count") or 0),
+            "has_direct_image": bool(g.get("has_direct_image")),
+            "chunks": chunks,
+            "media": media,
+        }
+        output_groups.append(group_payload)
+
+        for c in chunks:
+            flat_chunks.append(c)
+        for m in media:
+            flat_media.append(m)
+
+    meta = {
+        "schema_version": "evidence_groups.v1",
+        "top_k": match_count,
+        "group_count": len(output_groups),
+        "return_mode": "evidence_groups",
+        "include_context_window": include_context_window,
+        "include_media_chunks": include_media_chunks,
+        "hit_count": len(hits),
+    }
+    payload: dict[str, Any] = {
+        "success": True,
+        "query_text": query_text,
+        "retrieval_id": retrieval_id,
+        "return_mode": "evidence_groups",
+        "groups": output_groups,
+        "chunks": flat_chunks,
+        "media": flat_media,
+        "meta": meta,
+    }
+    # Validate against the response contract so the schema stays in sync with
+    # the actual payload; return the normalized dict.
+    return EvidenceGroupsResponse.model_validate(payload).model_dump()

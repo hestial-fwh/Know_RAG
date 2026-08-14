@@ -25,7 +25,11 @@ from sqlalchemy.orm import Session
 
 from app.core.response import success_response
 from app.db.models import User
-from app.services.llm_context_builder import build_cloud_flat_chunks_payload, build_llm_context_payload
+from app.services.llm_context_builder import (
+    build_cloud_flat_chunks_payload,
+    build_evidence_groups_payload,
+    build_llm_context_payload,
+)
 
 
 class KnowledgeContextService:
@@ -61,6 +65,13 @@ class KnowledgeContextService:
         # ── Legacy mode: full backward-compat with old builder ──────────
         if return_mode == "legacy":
             context_payload = build_llm_context_payload(retrieval_data, request_payload)
+            context_payload["retrieval_meta"] = retrieval_data.get("meta", {})
+            context_payload.setdefault("warnings", [])
+            return success_response(context_payload)
+
+        # ── Evidence groups mode ──────────────────────────────────────
+        if return_mode == "evidence_groups":
+            context_payload = build_evidence_groups_payload(retrieval_data, request_payload)
             context_payload["retrieval_meta"] = retrieval_data.get("meta", {})
             context_payload.setdefault("warnings", [])
             return success_response(context_payload)
