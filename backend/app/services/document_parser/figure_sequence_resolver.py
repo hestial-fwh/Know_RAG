@@ -1244,7 +1244,6 @@ def apply_sequence_resolution(
 __all__ = [
     "AssetFigureInfo",
     "FigureLabel",
-    "FigureSequenceGap",  # re-exported as SequenceGap
     "FigureSequenceResolver",
     "FigureSequenceResult",
     "SequenceGap",
