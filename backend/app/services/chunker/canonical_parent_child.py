@@ -3667,15 +3667,10 @@ def build_canonical_parent_child_plan(
 
     # Structure-first post-processing policy.
     #
-    # Keep only repairs backed by exact overlap evidence.  Generic short-sibling
-    # merging is enabled ONLY for ultra-short fragments (< 40 semantic chars) that
-    # are clearly not meaningful structural units (e.g. patent number lines,
-    # isolated metadata rows).  Sections, conclusions, and captioned notes are
-    # well above this threshold and are never merged.
+    # 只对精确来源/文本重叠做修复，保留独立短结论和补充说明的原始边界。
     children = deduplicate_repeated_asset_children(children)
     children = deduplicate_overlap_shadow_children(children)
     children = merge_overlap_tail_text_children(children, child_size=child_size)
-    children = merge_short_text_siblings(children, child_size=child_size, min_child_size=40)
     for child in children:
         child.metadata["runtime_postprocess_policy"] = "structure_first"
         child.flags["runtime_postprocess_policy"] = "structure_first"

@@ -319,11 +319,13 @@ class ChildBuilder:
             ntype = normalized_child_type(block)
 
             if ntype in {"text", "equation"}:
-                raw_text = clean_chunk_content_for_storage(getattr(block, "text", "") or getattr(block, "index_text", lambda: "")(), chunk_type="text")
-                if not raw_text or (ntype == "text" and is_low_information_text(raw_text)):
+                is_code = is_code_block_block(block)
+                raw_text = clean_chunk_content_for_storage(getattr(block, "text", "") or getattr(block, "index_text", lambda: "")(), chunk_type="code_block" if is_code else "text")
+                # 短代码仍有完整语义，交给专用分支处理，不按普通正文噪声过滤。
+                if not raw_text or (ntype == "text" and not is_code and is_low_information_text(raw_text)):
                     continue
 
-                if is_code_block_block(block):
+                if is_code:
                     flush_text_buffer()
                     code_content = compose_code_block_content(block)
                     if not code_content:

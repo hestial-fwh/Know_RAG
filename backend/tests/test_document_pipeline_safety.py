@@ -215,7 +215,8 @@ def test_keyword_sync_indexes_new_chunks_before_stale_cleanup():
         status="ready",
         is_enabled=True,
         chunk_type="text",
-        content="searchable committed content",
+        # 本测试验证索引先写后清；正文需通过现有的低信息文本准入规则。
+        content="searchable committed content with enough detail for keyword indexing",
         flags={},
         metadata_json={},
     )
