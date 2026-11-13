@@ -1,0 +1,8 @@
+# 与主文件、新实例覆盖文件一起加载，仅用于官方provider worker的run命令。
+# 主后端仍可用原镜像；单个worker同时处理native和官方社区任务。
+services:
+  backend:
+    image: know_rag_new-graphrag:2.7.0
+    build:
+      context: .
+      dockerfile: docker/graphrag-runtime.Dockerfile

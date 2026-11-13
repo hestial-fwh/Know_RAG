@@ -1,0 +1,6 @@
+# 独立 provider 环境，禁止安装到主后端解释器。
+graphrag==2.7.0
+# 2.7.0的graspologic约束NumPy<2；避免PyArrow26的运行时ABI冲突。
+numpy==1.26.4
+pandas==2.2.3
+pyarrow==17.0.0

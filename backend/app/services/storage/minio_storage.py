@@ -97,25 +97,34 @@ def _content_type(filename: str, fallback: str = "application/octet-stream") -> 
     return guessed or fallback
 
 
-def save_upload_file(upload: UploadFile, object_key: str) -> StoredObject:
-    ensure_bucket()
+def fingerprint_upload_file(upload: UploadFile) -> tuple[int, str]:
+    """流式计算原文件大小与 SHA-256；回到文件开头供查重后的上传复用。"""
     hasher = hashlib.sha256()
     size = 0
-    content_type = upload.content_type or _content_type(upload.filename or object_key)
-    # UploadFile already owns a seekable spooled stream. Reuse it instead of
-    # creating a second full-size temporary copy for large files.
     upload.file.seek(0)
-    while True:
-        chunk = upload.file.read(1024 * 1024)
-        if not chunk:
-            break
-        size += len(chunk)
-        hasher.update(chunk)
+    try:
+        while True:
+            chunk = upload.file.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            hasher.update(chunk)
+    finally:
+        upload.file.seek(0)
+    return size, hasher.hexdigest()
+
+
+def save_upload_file(
+    upload: UploadFile, object_key: str, *, fingerprint: tuple[int, str] | None = None,
+) -> StoredObject:
+    ensure_bucket()
+    # 查重入口可传入已计算的指纹，避免大文件重复读取；其他调用保持原行为。
+    size, digest = fingerprint if fingerprint is not None else fingerprint_upload_file(upload)
+    content_type = upload.content_type or _content_type(upload.filename or object_key)
     upload.file.seek(0)
     client = _minio_client()
     bucket = _bucket()
     client.put_object(bucket, object_key, upload.file, length=size, content_type=content_type)
-    digest = hasher.hexdigest()
     return StoredObject(bucket=bucket, object_key=object_key, uri=minio_uri(bucket, object_key), size=size, sha256=digest, content_type=content_type)
 
 

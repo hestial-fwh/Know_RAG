@@ -28,6 +28,8 @@ from urllib.parse import urlsplit
 
 from app.core.config import settings
 from app.schemas.evidence_groups import EvidenceGroupsResponse
+from app.services.retrieval_context_normalizer import SpanItem, normalize_spans
+from app.services.source_location import location_fields
 
 
 _IMAGE_KINDS = {"image", "chart", "graph", "plot", "figure", "fig"}
@@ -321,24 +323,6 @@ def _source_file(item: dict | None, parent: dict | None = None) -> str:
     return ""
 
 
-def _page_no(item: dict | None) -> int | None:
-    metadata = _metadata(item)
-    for key in ("page_no", "source_page", "page", "page_idx", "page_index"):
-        value = item.get(key) if isinstance(item, dict) else None
-        if value is None:
-            value = metadata.get(key)
-        try:
-            if value is None or value == "":
-                continue
-            parsed = int(value)
-            if key in {"page_idx", "page_index"}:
-                return parsed + 1 if parsed >= 0 else None
-            return parsed
-        except Exception:
-            continue
-    return None
-
-
 def _public_base_url() -> str:
     """Return the public gateway base URL used to expose local file resources.
 
@@ -526,12 +510,13 @@ def _format_child_evidence(
     kind = _chunk_kind(child)
     label = _semantic_label(kind)
     text = _child_text_for_llm(child, max_chars=max_chars)
-    page = _page_no(child)
     image_url = _image_url(child, include_image_urls=include_image_urls)
 
     meta_bits = [label]
-    if page:
-        meta_bits.append(f"第 {page} 页")
+    page_range = location_fields(child)["page_range"]
+    if page_range:
+        qualifier = "（来源不完整）" if location_fields(child)["page_location_status"] == "partial" else ""
+        meta_bits.append(f"第 {page_range} 页{qualifier}")
     if context_header:
         meta_bits.append(context_header[:100])
     prefix = " / ".join(meta_bits)
@@ -544,13 +529,14 @@ def _format_child_evidence(
 
     source = {
         "source_id": source_id,
+        "chunk_id": child.get("chunk_id") or child.get("id") or "",
         "document_title": document_title,
         "file_name": file_name,
         "context_header": context_header,
         "chunk_type": child.get("chunk_type") or "text",
         "semantic_type": kind,
         "semantic_label": label,
-        "page_no": page,
+        **location_fields(child),
         "content": text,
     }
     if image_url:
@@ -621,6 +607,125 @@ def _is_related_child_allowed(kind: str, *, include_images: bool, include_tables
     return True
 
 
+def _background_evidence_map(retrieval_data: dict) -> dict[str, str]:
+    contents: dict[str, str] = {}
+    for item in retrieval_data.get("results") or []:
+        if not isinstance(item, dict):
+            continue
+        chunk_id = item.get("chunk_id") or item.get("id")
+        if chunk_id:
+            contents[str(chunk_id)] = str(item.get("content") or "")
+    for group in retrieval_data.get("parent_groups") or []:
+        if not isinstance(group, dict):
+            continue
+        for field in ("matched_children", "parent_children"):
+            for chunk in group.get(field) or []:
+                if isinstance(chunk, dict):
+                    chunk_id = chunk.get("chunk_id") or chunk.get("id")
+                    if chunk_id:
+                        contents[str(chunk_id)] = str(chunk.get("content") or "")
+    return contents
+
+
+def _validate_background_against_contents(
+    background: list[dict], contents: dict[str, str],
+) -> tuple[list[dict], int]:
+    kept, withheld = [], 0
+    for summary in background:
+        evidence = summary.get("evidence") or []
+        valid = bool(evidence) and all(
+            str(cite.get("returned_chunk_id") or cite.get("chunk_id") or "") in contents
+            and str(cite.get("quote") or "") in contents[
+                str(cite.get("returned_chunk_id") or cite.get("chunk_id") or "")
+            ]
+            for cite in evidence
+        )
+        if not valid:
+            withheld += 1
+            continue
+        kept.append({
+            **summary,
+            "evidence_chunk_ids": [
+                str(cite.get("returned_chunk_id") or cite.get("chunk_id") or "")
+                for cite in evidence
+            ],
+            "derived": True,
+            "citation_allowed": False,
+        })
+    return kept, withheld
+
+
+def _validated_background(retrieval_data: dict) -> tuple[list[dict], int]:
+    """摘要只有在支持引文逐字存在于已返回原文时才交付，否则整条丢弃。"""
+    return _validate_background_against_contents(
+        list(retrieval_data.get("background") or []),
+        _background_evidence_map(retrieval_data),
+    )
+
+
+def _background_section_text(background: list[dict]) -> str:
+    if not background:
+        return ""
+    lines = ["【背景摘要（派生内容，不可作为原文引用）】"]
+    for index, summary in enumerate(background, 1):
+        lines.append(f"B{index}. {summary.get('text') or ''}")
+    return "\n".join(lines).strip() + "\n\n"
+
+
+def _event_line_section_text(event_lines: list[dict]) -> str:
+    if not event_lines:
+        return ""
+    lines = ["【事件线（派生内容，不可作为原文引用）】"]
+    for index, event in enumerate(event_lines, 1):
+        parts = [part for part in (event.get("time"), event.get("text")) if part]
+        lines.append(f"E{index}. " + " | ".join(parts))
+    return "\n".join(lines).strip() + "\n\n"
+
+
+def build_event_lines(results: list[dict], limit: int = 8) -> list[dict]:
+    """只从已返回证据的事件路径生成事件线；不引入未返回原文的事实。"""
+    returned = {
+        str(item.get("chunk_id") or item.get("id"))
+        for item in results or [] if isinstance(item, dict)
+    }
+    lines: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for item in results or []:
+        if not isinstance(item, dict):
+            continue
+        chunk_id = str(item.get("chunk_id") or item.get("id") or "")
+        for path in item.get("association_paths") or []:
+            if not isinstance(path, dict):
+                continue
+            for step in path.get("steps") or []:
+                if step.get("kind") not in {"event_seed", "shared_entity"}:
+                    continue
+                event_id = step.get("event_id")
+                text = step.get("event_text")
+                if not event_id or not text:
+                    continue
+                key = (str(event_id), chunk_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                support = [
+                    str(cid) for cid in path.get("support_chunk_ids") or []
+                    if str(cid) in returned
+                ]
+                lines.append({
+                    "event_id": str(event_id),
+                    "text": str(text),
+                    "time": str(step.get("event_time") or ""),
+                    "chunk_id": chunk_id,
+                    "support_chunk_ids": support,
+                    "derived": True,
+                    "citation_allowed": False,
+                })
+                if len(lines) >= limit:
+                    return lines
+    return lines
+
+
 def build_llm_context_payload(retrieval_data: dict, options: dict | None = None) -> dict[str, Any]:
     """Convert retrieval output into a clean context payload for LLM/MCP.
 
@@ -670,6 +775,18 @@ def build_llm_context_payload(retrieval_data: dict, options: dict | None = None)
     if clipped:
         sections.append(clipped)
     truncated = truncated or was_truncated
+
+    background, background_withheld = _validated_background(retrieval_data)
+    event_lines = list(retrieval_data.get("event_lines") or [])
+    background_section = _background_section_text(background)
+    event_section = _event_line_section_text(event_lines)
+    for block in (background_section, event_section):
+        if not block:
+            continue
+        clipped, was_truncated = budget.add(block)
+        if clipped:
+            sections.append(clipped)
+        truncated = truncated or was_truncated
 
     parent_groups = _iter_parent_groups(retrieval_data)
     used_source_keys: set[str] = set()
@@ -853,11 +970,21 @@ def build_llm_context_payload(retrieval_data: dict, options: dict | None = None)
     truncated = truncated or was_truncated
 
     context_text = "".join(sections).strip()
+    source_contents = {
+        str(source.get("chunk_id") or ""): str(source.get("content") or "")
+        for source in sources
+    }
+    background, extra_withheld = _validate_background_against_contents(background, source_contents)
+    background_withheld += extra_withheld
+    if extra_withheld and background_section:
+        context_text = context_text.replace(background_section.strip(), "").strip()
     return {
         "query": query,
         "context_text": context_text,
         "sources": sources,
         "images": images if include_images else [],
+        "background": background,
+        "event_lines": event_lines,
         "meta": {
             "context_chars": len(context_text),
             "max_context_chars": max_context_chars,
@@ -866,6 +993,7 @@ def build_llm_context_payload(retrieval_data: dict, options: dict | None = None)
             "image_count": len(images) if include_images else 0,
             "include_images": include_images,
             "include_image_urls": include_image_urls,
+            "background_withheld": background_withheld,
             "builder": "llm_context_builder.v2",
         },
     }
@@ -995,35 +1123,11 @@ def _cloud_first_str(item: dict | None, keys: tuple[str, ...]) -> str:
 
 
 def _cloud_page_no(item: dict | None) -> int | None:
-    if not isinstance(item, dict):
-        return None
-    meta = _cloud_meta(item)
-    image_info = _cloud_image_info(item)
-    for obj in (item, meta, image_info):
-        if not isinstance(obj, dict):
-            continue
-        for key in ("page_no", "source_page", "page"):
-            val = obj.get(key)
-            try:
-                if val is not None and val != "":
-                    parsed = int(val)
-                    return parsed if parsed > 0 else None
-            except Exception:
-                pass
-        for key in ("page_idx", "page_index"):
-            val = obj.get(key)
-            try:
-                if val is not None and val != "":
-                    parsed = int(val)
-                    return parsed + 1 if parsed >= 0 else None
-            except Exception:
-                pass
-    return None
+    return location_fields(item)["page_no"]
 
 
 def _cloud_page_range(item: dict | None) -> str:
-    p = _cloud_page_no(item)
-    return str(p) if p else ""
+    return location_fields(item)["page_range"]
 
 
 def _cloud_clean_content(text: Any, *, max_chars: int | None = None, kind: str = "text") -> str:
@@ -1130,6 +1234,11 @@ def _cloud_is_low_information_chunk(item: dict | None) -> bool:
     content = _cloud_content(item, max_chars=1000)
     if not content:
         return True
+    # 可靠图号+图题本身就是有效图片检索键，不能用正文的长度/标点阈值将其丢弃。
+    # 显式禁用/低质量标记仍在上面优先生效。
+    if (_cloud_kind(item) == "image" and meta.get("deterministic_binding_allowed") is True
+            and meta.get("figure_ids") and meta.get("caption") and not meta.get("caption_ambiguous")):
+        return False
     compact = re.sub(r"\s+", "", content)
     # Obvious title / header / footer / bibliography fragments.
     if _CLOUD_LOW_INFO_TITLE_RE.match(content.strip()):
@@ -1185,6 +1294,69 @@ def _cloud_score(item: dict | None) -> float | None:
     return None
 
 
+def _raw_display_content(item: dict | None) -> str:
+    """Return the raw (uncleaned) content string that `_cloud_content` would clean."""
+    if not isinstance(item, dict):
+        return ""
+    for key in ("content", "matched_content", "content_preview", "display_content", "display_preview"):
+        val = item.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    return ""
+
+
+def _normalize_overlap_for_items(items: list[tuple[dict, bool]]) -> dict[str, dict]:
+    """Normalize source-span overlap among display chunks in one group.
+
+    ``items`` is a list of ``(chunk_dict, is_direct_hit)``.  Text chunks with
+    exact ``start_at``/``end_at`` are trimmed so the same source span is not
+    shown twice; direct hits are anchors (never trimmed).  The chunk dict of a
+    trimmed item has its ``content`` field replaced with the trimmed string
+    (which ``_cloud_content`` then cleans).  Returns ``chunk_id -> marker``.
+    """
+    span_items: list[SpanItem] = []
+    by_key: dict[str, dict] = {}
+    for item, is_hit in items:
+        key = _cloud_chunk_id(item)
+        if not key:
+            continue
+        meta = _cloud_meta(item)
+        exact = meta.get("source_position_is_exact", True) if isinstance(meta, dict) else True
+        try:
+            order = int(item.get("chunk_index") or 0)
+        except (TypeError, ValueError):
+            order = 0
+        span_items.append(
+            SpanItem(
+                key=key,
+                start=item.get("start_at"),
+                end=item.get("end_at"),
+                content=_raw_display_content(item),
+                priority=0 if is_hit else 1,
+                score=_cloud_score(item) or 0.0,
+                source_order=order,
+                exact=bool(exact),
+                group_key=_cloud_parent_id(item) or f"orphan:{key}",
+                kind=_cloud_kind(item),
+            )
+        )
+        by_key[key] = item
+
+    norm = normalize_spans(span_items)
+    markers: dict[str, dict] = {}
+    for key, n in norm.items():
+        item = by_key.get(key)
+        if item is not None and n.overlap_trimmed:
+            # Replace the content string so `_cloud_content` returns the trimmed text.
+            item["content"] = n.content
+        markers[key] = {
+            "overlap_trimmed": n.overlap_trimmed,
+            "trimmed_chars": n.trimmed_chars,
+            "overlap_source_chunk_ids": n.overlap_source_keys,
+        }
+    return markers
+
+
 def _cloud_context_header(item: dict | None) -> str:
     try:
         return _context_header(item) or ""
@@ -1201,6 +1373,7 @@ def _cloud_flat_chunk(
     role: str,
     include_image_urls: bool,
     source_hit_chunk_ids: list[str] | None = None,
+    overlap_marker: dict | None = None,
 ) -> dict:
     kind = _cloud_kind(item)
     content = _cloud_content(item, max_chars=5000)
@@ -1218,8 +1391,7 @@ def _cloud_flat_chunk(
         "document_url": _frontend_document_url(_cloud_document_id(item)),
         "document_title": _cloud_first_str(item, ("document_title", "doc_title", "title", "knowledge_title")),
         "file_name": _cloud_first_str(item, ("file_name", "filename", "source_file", "knowledge_filename")),
-        "page_no": _cloud_page_no(item),
-        "page_range": _cloud_page_range(item),
+        **location_fields(item),
         "chunk_type": kind,
         "semantic_type": kind,
         "context_header": _cloud_context_header(item),
@@ -1249,6 +1421,10 @@ def _cloud_flat_chunk(
         latex = _cloud_first_str(item, ("latex", "equation")) or meta.get("latex") or meta.get("equation") or ""
         if latex:
             flat["latex"] = latex
+    if overlap_marker and overlap_marker.get("overlap_trimmed"):
+        flat["overlap_trimmed"] = True
+        flat["trimmed_chars"] = overlap_marker.get("trimmed_chars", 0)
+        flat["overlap_source_chunk_ids"] = overlap_marker.get("overlap_source_chunk_ids") or []
     return flat
 
 
@@ -1612,6 +1788,33 @@ def build_cloud_flat_chunks_payload(retrieval_data: dict, options: dict | None =
             )
             windows_by_parent[parent_id] = cw
 
+    # Resolve sibling chunk objects once (used both for overlap normalization
+    # and for emitting context chunks referenced by expanded windows).
+    sibling_lookup: dict[str, dict] = {}
+    for group in parent_groups:
+        for item in (group.get("parent_children") or []) + (group.get("matched_children") or []):
+            cid = _cloud_chunk_id(item)
+            if cid:
+                sibling_lookup[cid] = item
+        for item in (group.get("binding_related_chunks") or []):
+            cid = _cloud_chunk_id(item)
+            if cid and cid not in sibling_lookup:
+                sibling_lookup[cid] = item
+
+    # Normalize overlapping source spans per parent (hits + emitted text context).
+    overlap_markers: dict[str, dict] = {}
+    for parent_id, parent_hits in hits_by_parent.items():
+        cw = windows_by_parent.get(parent_id) or {}
+        context_ids = (
+            (cw.get("before_chunk_ids") or [])
+            + (cw.get("between_chunk_ids") or [])
+            + (cw.get("after_chunk_ids") or [])
+        )
+        items = [(h, True) for h in parent_hits] + [
+            (sibling_lookup[cid], False) for cid in context_ids if cid in sibling_lookup
+        ]
+        overlap_markers.update(_normalize_overlap_for_items(items))
+
     output_chunks: list[dict] = []
     emitted: set[str] = set()
     next_rank = 1
@@ -1632,6 +1835,7 @@ def build_cloud_flat_chunks_payload(retrieval_data: dict, options: dict | None =
             role=role,
             include_image_urls=include_image_urls,
             source_hit_chunk_ids=source_hit_ids,
+            overlap_marker=overlap_markers.get(cid),
         )
         if role == "hit":
             parent_id = _cloud_parent_id(item)
@@ -1654,19 +1858,6 @@ def build_cloud_flat_chunks_payload(retrieval_data: dict, options: dict | None =
 
     # Emit valid context chunks referenced by expanded windows.
     if return_mode in {"chunks_with_selective_context", "debug", "legacy"}:
-        sibling_lookup: dict[str, dict] = {}
-        for group in parent_groups:
-            for item in (group.get("parent_children") or []) + (group.get("matched_children") or []):
-                cid = _cloud_chunk_id(item)
-                if cid:
-                    sibling_lookup[cid] = item
-            # Phase 2A: also register binding_related_chunks so cross-parent
-            # media / text references emitted by the context window can be
-            # resolved to full chunk objects during emit.
-            for item in (group.get("binding_related_chunks") or []):
-                cid = _cloud_chunk_id(item)
-                if cid and cid not in sibling_lookup:
-                    sibling_lookup[cid] = item
         for cw in windows_by_parent.values():
             if not cw.get("expanded"):
                 continue
@@ -1703,8 +1894,20 @@ def build_cloud_flat_chunks_payload(retrieval_data: dict, options: dict | None =
         "chunks": output_chunks,
         "meta": meta,
     }
+    background, background_withheld = _validated_background(retrieval_data)
+    event_lines = list(retrieval_data.get("event_lines") or [])
+    background, extra_withheld = _validate_background_against_contents(
+        background,
+        {str(chunk.get("chunk_id") or ""): str(chunk.get("content") or "") for chunk in output_chunks},
+    )
+    background_withheld += extra_withheld
+    payload["background"] = background
+    payload["event_lines"] = event_lines
+    meta["background_withheld"] = background_withheld
     if include_context_text:
-        payload["context_text"] = "\n\n".join(c.get("content") or "" for c in output_chunks if c.get("content"))
+        prefix = _background_section_text(background) + _event_line_section_text(event_lines)
+        body = "\n\n".join(c.get("content") or "" for c in output_chunks if c.get("content"))
+        payload["context_text"] = (prefix + body).strip()
     else:
         payload["context_text"] = ""
     if return_mode in {"debug", "legacy"}:
@@ -1995,6 +2198,12 @@ def _new_media_candidate(
     figure_id_source: Any = None,
     hit_ratio: float = 0.0,
 ) -> dict:
+    # 图片直接命中时也透传其可靠图号，不能只在正文关联扩展时才携带图号。
+    meta = _cloud_meta(chunk)
+    if not figure_ids and meta.get("deterministic_binding_allowed") is True and not meta.get("caption_ambiguous"):
+        figure_ids = meta.get("figure_ids") or []
+        if figure_ids and figure_id_source is None:
+            figure_id_source = {"kind": "asset_caption", "method": meta.get("caption_method")}
     return {
         "asset_key": _cloud_asset_id(chunk) or _cloud_chunk_id(chunk),
         "chunk": chunk,
@@ -2046,7 +2255,7 @@ def _evidence_assign_media(candidates: list[dict]) -> dict[str, dict]:
     return assigned
 
 
-def _evidence_chunk_payload(item: dict, *, item_no: str, group_no: int, direct_hit: bool, context_reason: str) -> dict:
+def _evidence_chunk_payload(item: dict, *, item_no: str, group_no: int, direct_hit: bool, context_reason: str, overlap_marker: dict | None = None) -> dict:
     score = _cloud_score(item)
     document_id = _cloud_document_id(item)
     payload: dict[str, Any] = {
@@ -2057,8 +2266,7 @@ def _evidence_chunk_payload(item: dict, *, item_no: str, group_no: int, direct_h
         "document_id": document_id,
         "document_title": _cloud_first_str(item, ("document_title", "doc_title", "title", "knowledge_title")),
         "file_name": _cloud_first_str(item, ("file_name", "filename", "source_file", "knowledge_filename")),
-        "page_no": _cloud_page_no(item),
-        "page_range": _cloud_page_range(item),
+        **location_fields(item),
         "chunk_type": _cloud_kind(item),
         "context_header": _cloud_context_header(item),
         "content": _cloud_content(item, max_chars=5000),
@@ -2067,6 +2275,10 @@ def _evidence_chunk_payload(item: dict, *, item_no: str, group_no: int, direct_h
     }
     if direct_hit:
         payload["retrieval_score"] = score
+    if overlap_marker and overlap_marker.get("overlap_trimmed"):
+        payload["overlap_trimmed"] = True
+        payload["trimmed_chars"] = overlap_marker.get("trimmed_chars", 0)
+        payload["overlap_source_chunk_ids"] = overlap_marker.get("overlap_source_chunk_ids") or []
     return payload
 
 
@@ -2090,7 +2302,7 @@ def _evidence_media_payload(
         "document_id": document_id,
         "document_title": _cloud_first_str(chunk, ("document_title", "doc_title", "title", "knowledge_title")),
         "file_name": _cloud_first_str(chunk, ("file_name", "filename", "source_file", "knowledge_filename")),
-        "page_no": _cloud_page_no(chunk),
+        **location_fields(chunk),
         "chunk_type": _cloud_kind(chunk),
         "context_header": _cloud_context_header(chunk),
         "content": _cloud_content(chunk, max_chars=5000),
@@ -2251,13 +2463,31 @@ def build_evidence_groups_payload(retrieval_data: dict, options: dict | None = N
     flat_media: list[dict] = []
 
     for rank, g in enumerate(ordered_groups, start=1):
+        # Normalize overlapping source spans among this group's text chunks.
+        group_markers = _normalize_overlap_for_items(
+            [(h, True) for h in g["hits"]] + [(nb, False) for nb in g["neighbors"]]
+        )
         chunks: list[dict] = []
         for i, hit in enumerate(g["hits"], start=1):
-            item = _evidence_chunk_payload(hit, item_no=f"{rank}-{i}", group_no=rank, direct_hit=True, context_reason="retrieval_hit")
+            item = _evidence_chunk_payload(
+                hit,
+                item_no=f"{rank}-{i}",
+                group_no=rank,
+                direct_hit=True,
+                context_reason="retrieval_hit",
+                overlap_marker=group_markers.get(_cloud_chunk_id(hit)),
+            )
             chunks.append(item)
         for i, nb in enumerate(g["neighbors"], start=len(g["hits"]) + 1):
             chunks.append(
-                _evidence_chunk_payload(nb, item_no=f"{rank}-{i}", group_no=rank, direct_hit=False, context_reason="neighbor")
+                _evidence_chunk_payload(
+                    nb,
+                    item_no=f"{rank}-{i}",
+                    group_no=rank,
+                    direct_hit=False,
+                    context_reason="neighbor",
+                    overlap_marker=group_markers.get(_cloud_chunk_id(nb)),
+                )
             )
 
         media: list[dict] = []
@@ -2307,6 +2537,13 @@ def build_evidence_groups_payload(retrieval_data: dict, options: dict | None = N
         for m in media:
             flat_media.append(m)
 
+    background, background_withheld = _validated_background(retrieval_data)
+    event_lines = list(retrieval_data.get("event_lines") or [])
+    background, extra_withheld = _validate_background_against_contents(
+        background,
+        {str(chunk.get("chunk_id") or ""): str(chunk.get("content") or "") for chunk in flat_chunks},
+    )
+    background_withheld += extra_withheld
     meta = {
         "schema_version": "evidence_groups.v1",
         "top_k": match_count,
@@ -2315,6 +2552,7 @@ def build_evidence_groups_payload(retrieval_data: dict, options: dict | None = N
         "include_context_window": include_context_window,
         "include_media_chunks": include_media_chunks,
         "hit_count": len(hits),
+        "background_withheld": background_withheld,
     }
     payload: dict[str, Any] = {
         "success": True,
@@ -2324,6 +2562,8 @@ def build_evidence_groups_payload(retrieval_data: dict, options: dict | None = N
         "groups": output_groups,
         "chunks": flat_chunks,
         "media": flat_media,
+        "background": background,
+        "event_lines": event_lines,
         "meta": meta,
     }
     # Validate against the response contract so the schema stays in sync with

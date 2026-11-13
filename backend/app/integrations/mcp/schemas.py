@@ -9,6 +9,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.schemas.retrieval_strategy import RetrievalStrategy
+
 
 class McpKnowledgeBaseSummary(BaseModel):
     id: str
@@ -36,7 +38,9 @@ class McpSearchContextRequest(BaseModel):
     )
 
     # ── Retrieval params ─────────────────────────────────────────────────
-    retrieval_mode: str = "hybrid"
+    retrieval_mode: str | None = None
+    strategy: RetrievalStrategy | None = None
+    rerank_enabled: bool | None = None
     match_count: int = 10
     score_threshold: float | None = None
     vector_threshold: float | None = None

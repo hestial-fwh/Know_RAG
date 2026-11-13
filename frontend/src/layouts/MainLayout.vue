@@ -60,10 +60,10 @@ function handleLogout() {
 </script>
 
 <template>
-  <div class="app-layout">
+  <div class="app-layout" :class="{ 'graph-workspace-layout': route.meta.graphWorkspace }">
     <aside class="sidebar">
       <div class="sidebar-top">
-        <RouterLink to="/" class="brand">
+        <RouterLink to="/" class="brand" aria-label="Know RAG 控制台">
           <span class="brand-icon">◆</span>
           <span class="brand-text">know_rag</span>
         </RouterLink>
@@ -76,19 +76,21 @@ function handleLogout() {
             v-for="item in section.items"
             :key="item.to"
             :to="item.to"
+            :title="item.label"
+            :aria-label="item.label"
             class="nav-link"
             :class="{ active: isActive(item.to) }"
           >
             <span class="nav-icon">{{ item.icon }}</span>
-            {{ item.label }}
+            <span class="nav-label">{{ item.label }}</span>
           </RouterLink>
         </template>
       </nav>
 
       <div class="sidebar-footer">
-        <button class="nav-link logout-btn" @click="handleLogout">
+        <button class="nav-link logout-btn" title="退出登录" aria-label="退出登录" @click="handleLogout">
           <span class="nav-icon">↩</span>
-          退出登录
+          <span class="nav-label">退出登录</span>
         </button>
       </div>
     </aside>
@@ -291,5 +293,26 @@ function handleLogout() {
   .main-content {
     padding: 20px 16px;
   }
+}
+/* 图谱工作区使用窄导航，将可用宽度留给画布。 */
+.app-layout.graph-workspace-layout { grid-template-columns: 64px minmax(0, 1fr); }
+.graph-workspace-layout .sidebar { background: #fff; color: #52647b; box-shadow: none; border-right: 1px solid #e0e6ef; }
+.graph-workspace-layout .sidebar-top { padding: 18px 0; border-color: #edf0f5; }
+.graph-workspace-layout .brand { justify-content: center; }
+.graph-workspace-layout .brand-text, .graph-workspace-layout .nav-label, .graph-workspace-layout .nav-section-label { display: none; }
+.graph-workspace-layout .sidebar-nav { padding: 10px 7px; gap: 7px; }
+.graph-workspace-layout .nav-link { padding: 11px 8px; justify-content: center; min-height: 44px; color: #52647b; }
+.graph-workspace-layout .nav-link:hover { background: var(--c-primary-light); color: var(--c-primary); }
+.graph-workspace-layout .nav-link.active { background: var(--c-primary-light); color: var(--c-primary); }
+.graph-workspace-layout .nav-icon { font-size: 19px; opacity: 1; }
+.graph-workspace-layout .sidebar-footer { padding: 10px 7px; border-color: #edf0f5; }
+.graph-workspace-layout .top-header { display: none; }
+.graph-workspace-layout .main-column { background: var(--c-bg); }
+.graph-workspace-layout .main-content { padding: 14px 18px; }
+.graph-workspace-layout .main-content > :deep(*) { max-width: none; }
+@media (max-width: 820px) {
+  .app-layout.graph-workspace-layout { grid-template-columns: 1fr; }
+  .graph-workspace-layout .sidebar { display: none; }
+  .graph-workspace-layout .main-content { padding: 12px; }
 }
 </style>

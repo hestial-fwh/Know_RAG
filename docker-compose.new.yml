@@ -1,0 +1,112 @@
+# 独立新实例；Compose 项目名必须小写，容器名保留用户指定的 Know_RAG_new 前缀。
+# 使用：docker compose -p know_rag_new -f docker-compose.yml -f docker-compose.new.yml ...
+# 需要 Compose 2.24.4+ 的 !override / !reset 标签；不得只加载本文件。
+name: know_rag_new
+services:
+  backend:
+    image: know_rag_new-backend:local
+    build:
+      context: ./backend
+      dockerfile: ../docker/new-backend.Dockerfile
+    container_name: Know_RAG_new-backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://know_rag:know_rag@postgres:5432/know_rag
+      REDIS_URL: redis://redis:6379/0
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      MINIO_ENDPOINT: minio:9000
+      MINERU_BASE_URL: http://mineru-cpu:8000
+      MINERU_CPU_BASE_URL: http://mineru-cpu:8000
+      MINERU_GPU_BASE_URL: http://mineru-gpu:8000
+      PUBLIC_BASE_URL: http://localhost:5175
+      FRONTEND_BASE_URL: http://localhost:5175
+      CORS_ORIGINS: '["http://localhost:5175","http://127.0.0.1:5175"]'
+      DEEPDOC_AUTO_DOWNLOAD: "0"
+    ports: !override ["127.0.0.1:8003:8000"]
+    # cache 也使用新项目数据卷，避免与其他目录部署的解析任务共用缓存。
+    volumes: !override
+      - know-rag-cache:/data/cache
+      - know-rag-models:/data/models
+  index-worker:
+    image: know_rag_new-backend:local
+    build: !reset null
+    container_name: Know_RAG_new-index-worker
+    # 独立消费实体/关系/事件与社区任务；建库后无需手工启动 CLI。
+    command: ["python", "-m", "app.services.knowledge_index.cli"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://know_rag:know_rag@postgres:5432/know_rag
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_LLM_MODEL: ${OLLAMA_LLM_MODEL:-qwen2.5:3b}
+      DEEPDOC_AUTO_DOWNLOAD: "0"
+      PYTHONPATH: /app:/app/ragflow_vendor
+    depends_on:
+      - postgres
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - know-rag-cache:/data/cache
+      - know-rag-models:/data/models
+    networks:
+      - know-rag-net
+    restart: unless-stopped
+  frontend:
+    image: know_rag_new-frontend:local
+    build:
+      context: ./frontend
+      dockerfile: ../docker/new-frontend.Dockerfile
+    container_name: Know_RAG_new-frontend
+    ports: !override ["127.0.0.1:5175:5174"]
+  mcp:
+    image: know_rag_new-backend:local
+    build: !reset null
+    container_name: Know_RAG_new-mcp
+    ports: !override ["127.0.0.1:8013:8010"]
+  mcp-gateway:
+    image: know_rag_new-backend:local
+    build: !reset null
+    container_name: Know_RAG_new-mcp-gateway
+    # 新库没有旧库的 MCP 客户端，不自动使用旧签名网关配置对外服务。
+    profiles: ["signed-gateway"]
+    ports: !override ["127.0.0.1:8014:8011"]
+  gateway:
+    container_name: Know_RAG_new-gateway
+    ports: !override ["127.0.0.1:8484:8080"]
+  postgres:
+    container_name: Know_RAG_new-postgres
+    ports: !override ["127.0.0.1:5435:5432"]
+  redis:
+    container_name: Know_RAG_new-redis
+    ports: !override ["127.0.0.1:6381:6379"]
+  elasticsearch:
+    container_name: Know_RAG_new-elasticsearch
+    ports: !override ["127.0.0.1:9201:9200"]
+  minio:
+    container_name: Know_RAG_new-minio
+    ports: !override ["127.0.0.1:9010:9000", "127.0.0.1:9011:9001"]
+  milvus:
+    container_name: Know_RAG_new-milvus
+    ports: !override ["127.0.0.1:19531:19530"]
+  qdrant:
+    container_name: Know_RAG_new-qdrant
+    ports: !override ["127.0.0.1:6343:6333", "127.0.0.1:6344:6334"]
+  mineru-cpu:
+    image: know_rag_new-mineru:local
+    build:
+      context: ./docker/mineru
+      dockerfile: ../new-mineru.Dockerfile
+    container_name: Know_RAG_new-mineru-cpu
+    environment:
+      # 模型和配置保存在独立数据卷中，解析时只读取本地权重。
+      MINERU_MODEL_SOURCE: local
+      MINERU_TOOLS_CONFIG_JSON: /data/models/mineru.json
+    ports: !override ["127.0.0.1:8004:8000"]
+    volumes: !override
+      - know-rag-cache:/data/cache
+      - know-rag-mineru-models:/data/models
+  mineru-gpu:
+    image: know_rag_new-mineru:local
+    build: !reset null
+    container_name: Know_RAG_new-mineru-gpu
+    ports: !override ["127.0.0.1:8005:8000"]
+    volumes: !override
+      - know-rag-cache:/data/cache
+      - know-rag-mineru-models:/data/models

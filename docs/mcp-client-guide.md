@@ -96,7 +96,9 @@ business = json.loads(payload["result"]["content"][0]["text"])   # 业务对象
 | `query_text` | str | — | 查询文本（**必填**） |
 | `knowledge_base_id` | str | — | 知识库 ID（**必填**，来自 list 的 `id`） |
 | `match_count` | int | 10 | 命中数 |
-| `retrieval_mode` | str | `hybrid` | 检索模式 |
+| `retrieval_mode` | str | 空字符串 | 旧兼容参数，不自动选择检索路线；新调用使用 strategy |
+| `strategy` | object | `{}` | 空对象继承KB，支持tiered的semantic/hybrid/auto及graph-local/global/drift，还支持event_graph，能力未就绪会明确回退或失败 |
+| `rerank_enabled` | int | -1 | MCP 注册工具使用 -1 继承、0 关闭、1 开启；HTTP 请求对应可选 bool |
 | `include_images` | bool | `true` | 是否含图片 |
 | `include_image_urls` | bool | `false` | 是否带图片 URL |
 | `include_tables` | bool | `true` | 是否含表格 |
@@ -139,6 +141,7 @@ business = json.loads(payload["result"]["content"][0]["text"])   # 业务对象
 ```
 
 - `group.chunks[]` 关键：`chunk_id`、`content`、`chunk_type`、`direct_hit`、`context_reason`（`retrieval_hit`/`neighbor`）、`retrieval_score`
+- 相邻文本 chunk 有 source span 重叠时，后一个 chunk 只返回未重叠的 `content`，并带 `overlap_trimmed=true`、`trimmed_chars`、`overlap_source_chunk_ids`（未裁剪的 chunk 不带这三个字段）——同一段正文不会在 context 里重复出现
 - `group.media[]` 关键：`asset_id`、`chunk_id`、`content`、`primary_reason`（`direct_hit` > `figure_binding` > `same_parent`）、`relation_sources`、`image_url`
 - 文档归属在 **group 级**：`document_id` + `document_url`（一个 group 一个源文档，`document_url` 指向前端 `/documents/{id}/content` 内容页，域名由 `FRONTEND_BASE_URL` 决定）。chunk / media 条目仍带块级 `document_id`、`document_title`、`file_name` 用于归属标识，但不重复 `document_url`
 - `group_no`/`item_no` 只是展示编号，真实身份看 `group_id`/`chunk_id`/`asset_id`

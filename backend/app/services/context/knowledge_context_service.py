@@ -65,14 +65,14 @@ class KnowledgeContextService:
         # ── Legacy mode: full backward-compat with old builder ──────────
         if return_mode == "legacy":
             context_payload = build_llm_context_payload(retrieval_data, request_payload)
-            context_payload["retrieval_meta"] = retrieval_data.get("meta", {})
+            self._attach_retrieval_meta(context_payload, retrieval_data)
             context_payload.setdefault("warnings", [])
             return success_response(context_payload)
 
         # ── Evidence groups mode ──────────────────────────────────────
         if return_mode == "evidence_groups":
             context_payload = build_evidence_groups_payload(retrieval_data, request_payload)
-            context_payload["retrieval_meta"] = retrieval_data.get("meta", {})
+            self._attach_retrieval_meta(context_payload, retrieval_data)
             context_payload.setdefault("warnings", [])
             return success_response(context_payload)
 
@@ -93,15 +93,72 @@ class KnowledgeContextService:
                 context_payload["equations"] = legacy.get("equations") or []
                 context_payload["context_text"] = legacy.get("context_text") or ""
                 context_payload["parent_groups"] = legacy.get("parent_groups") or retrieval_data.get("parent_groups") or []
-            context_payload["retrieval_meta"] = retrieval_data.get("meta", {})
+                # 调试页一次查询同时取得召回与Context，避免Global/DRIFT为两种展示重复调用模型。
+                context_payload["retrieval_results"] = retrieval_data
+            self._attach_retrieval_meta(context_payload, retrieval_data)
             context_payload.setdefault("warnings", [])
             return success_response(context_payload)
 
         # ── Unknown mode → fallback ─────────────────────────────────────
         context_payload = build_llm_context_payload(retrieval_data, request_payload)
-        context_payload["retrieval_meta"] = retrieval_data.get("meta", {})
+        self._attach_retrieval_meta(context_payload, retrieval_data)
         context_payload.setdefault("warnings", [])
         return success_response(context_payload)
+
+    @staticmethod
+    def _attach_retrieval_meta(context_payload: dict, retrieval_data: dict) -> None:
+        # MCP 只透传 data.meta；保留旧字段投影，同时保证策略执行事实不会丢失。
+        meta = retrieval_data.get("meta", {})
+        retrieval = meta.get("retrieval")
+        if retrieval and retrieval.get("routing", {}).get("coverage_incomplete"):
+            context_payload.setdefault("warnings", []).append("自动路由识别到全量问题，当前Top K证据覆盖不支持完整枚举或精确统计")
+        if retrieval and retrieval.get("association", {}).get("paths"):
+            # Context 的限长可能丢掉检索命中；只标记实际返回完整的链，保留跨文档分组边界。
+            group_map = {}
+            returned = {item.get("chunk_id") for item in context_payload.get("chunks", [])}
+            for group in context_payload.get("groups", []):
+                for item in group.get("chunks", []):
+                    returned.add(item.get("chunk_id"))
+                    group_map[item.get("chunk_id")] = group.get("group_id")
+            paths = [{**path, "context_complete": set(path["support_chunk_ids"]) <= returned,
+                      "related_evidence_group_ids": sorted({group_map[cid] for cid in path["support_chunk_ids"]
+                                                            if group_map.get(cid)})}
+                     for path in retrieval["association"]["paths"]]
+            retrieval = {**retrieval, "association": {**retrieval["association"], "paths": paths}}
+            meta = {**meta, "retrieval": retrieval}
+        if retrieval and retrieval.get("global", {}).get("derived_summaries"):
+            # chunk被返回也可能只剩片段；必须逐字找到支持引文，才向调用模型交付派生要点。
+            chunks = list(context_payload.get("chunks", []))
+            group_map = {}
+            for group in context_payload.get("groups", []):
+                chunks.extend(group.get("chunks", []))
+                for chunk in group.get("chunks", []):
+                    group_map[chunk.get("chunk_id")] = group.get("group_id")
+            summaries = []
+            original = retrieval["global"]["derived_summaries"]
+            for summary in original:
+                if not all(any(chunk.get("chunk_id") == cite.get("returned_chunk_id", cite["chunk_id"]) and
+                    cite["quote"] in str(chunk.get("content") or "") for chunk in chunks)
+                    for cite in summary["evidence"]):
+                    continue
+                summaries.append({**summary, "context_complete": True,
+                    "related_evidence_group_ids": sorted({group_map[cite.get("returned_chunk_id", cite["chunk_id"])]
+                        for cite in summary["evidence"] if group_map.get(cite.get("returned_chunk_id", cite["chunk_id"]))})})
+            withheld = len(original) - len(summaries)
+            retrieval = {**retrieval, "global": {**retrieval["global"], "derived_summaries": summaries,
+                "withheld_summaries": withheld,
+                "coverage_incomplete": bool(withheld or retrieval["global"]["coverage_incomplete"])}}
+            meta = {**meta, "retrieval": retrieval}
+            if withheld:
+                context_payload.setdefault("warnings", []).append("Global部分派生要点因支持引文未完整进入上下文而被移除")
+        context_payload["retrieval_meta"] = meta
+        if "retrieval" in meta:
+            context_payload.setdefault("meta", {})["retrieval"] = meta["retrieval"]
+        withheld = (context_payload.get("meta") or {}).get("background_withheld") or 0
+        if withheld:
+            context_payload.setdefault("warnings", []).append(
+                "背景摘要因支持引文未完整进入上下文而被移除"
+            )
 
     def _normalize_payload(self, payload: dict | None) -> dict[str, Any]:
         """Normalize defaults once for FastAPI, MCP and future chat adapters."""

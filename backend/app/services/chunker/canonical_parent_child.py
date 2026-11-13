@@ -1048,6 +1048,41 @@ def deduplicate_repeated_asset_children(
     return result
 
 
+def deduplicate_repeated_table_children(
+    children: list[CanonicalChildDraft], markdown: str,
+) -> list[CanonicalChildDraft]:
+    """同一 Canonical 区间的完整表格只物化一次，不合并独立位置或不同行组。"""
+    result: list[CanonicalChildDraft] = []
+    carriers: dict[tuple[int, int, str], CanonicalChildDraft] = {}
+    for child in children:
+        # 只有能与原文精确核对的整表副本才删除；区间不可靠时保持原草稿。
+        value = _preserve(child.content).strip()
+        if (
+            child.chunk_type != "table"
+            or not 0 <= child.start < child.end <= len(markdown)
+            or _preserve(markdown[child.start:child.end]).strip() != value
+        ):
+            result.append(child)
+            continue
+        key = (child.start, child.end, value)
+        carrier = carriers.get(key)
+        if carrier is None:
+            carriers[key] = child
+            result.append(child)
+            continue
+        # 输入按原文窗口顺序排列，稳定保留首个副本；其他窗口保留审计引用。
+        sequences = carrier.metadata.get("table_overlap_source_child_seqs", [carrier.source_child_seq])
+        parents = carrier.metadata.get("table_overlap_source_parent_indexes", [carrier.parent_index])
+        carrier.metadata.update({
+            "table_overlap_dedup_applied": True,
+            "table_overlap_dedup_count": int(carrier.metadata.get("table_overlap_dedup_count", 0)) + 1,
+            "table_overlap_source_child_seqs": list(dict.fromkeys([*sequences, child.source_child_seq])),
+            "table_overlap_source_parent_indexes": list(dict.fromkeys([*parents, child.parent_index])),
+        })
+        carrier.flags["table_overlap_dedup_applied"] = True
+    return result
+
+
 def _source_spans_overlap(
     left: CanonicalChildDraft, right: CanonicalChildDraft
 ) -> tuple[int, float, float]:
@@ -3669,6 +3704,7 @@ def build_canonical_parent_child_plan(
     #
     # 只对精确来源/文本重叠做修复，保留独立短结论和补充说明的原始边界。
     children = deduplicate_repeated_asset_children(children)
+    children = deduplicate_repeated_table_children(children, normalized_markdown)
     children = deduplicate_overlap_shadow_children(children)
     children = merge_overlap_tail_text_children(children, child_size=child_size)
     for child in children:
@@ -4016,6 +4052,12 @@ def build_canonical_parent_child_plan(
         page_ranges=page_ranges,
         policies=resolved_policies,
     )
+    # 必须在所有续接/重组之后投影位置，避免旧窗口或父块页码污染最终子块。
+    from app.services.source_location import project_source_location
+
+    source_nodes = [node.to_metadata() for node in provenance_nodes]
+    for draft in [*parents, *children]:
+        draft.metadata.update(project_source_location(draft.start, draft.end, source_nodes, normalized_markdown))
     return CanonicalChunkPlan(
         markdown_content=normalized_markdown,
         parents=parents,
@@ -4040,6 +4082,7 @@ __all__ = [
     "split_oversize_markdown_tables",
     "normalize_canonical_markdown",
     "deduplicate_repeated_asset_children",
+    "deduplicate_repeated_table_children",
     "deduplicate_overlap_shadow_children",
     "merge_overlap_tail_text_children",
     "merge_short_text_siblings",

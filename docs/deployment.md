@@ -1,5 +1,9 @@
 # Deployment
 
+独立新实例 `Know_RAG_new` 使用项目名 `know_rag_new` 与 `docker-compose.new.yml`，
+网页端口 5175、后端端口 8003。构建、隔离边界和启动方式见
+[deployment_new_instance.md](deployment_new_instance.md)。下文为默认旧端口部署方式。
+
 > 状态：Current
 > 维护日期：2026-08-05
 

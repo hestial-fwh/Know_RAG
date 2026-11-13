@@ -1,7 +1,7 @@
 # Know_RAG 文档索引
 
 > 状态：Current
-> 维护日期：2026-08-14（MCP 上下文返回 document_url 上移到 group 级）
+> 维护日期：2026-11-06（双模式检索P5自动选级与探索）
 > 适用范围：当前 `know_rag` 主分支
 
 ## 权威阅读顺序
@@ -15,6 +15,26 @@
 发生冲突时，以当前代码、自动化测试、上述 Current 文档的顺序为准。
 
 ## 当前文档
+
+- 2026-11-06派生索引增加实体名称/别名对齐、逐条校验与有界重试，详情页可重试未完成索引，见architecture.md与api.md。
+
+- 2026-11-06知识库详情新增知识图谱入口，可浏览当前有效实体、关系和事件，搜索名称、展开邻接并回查原文。接口与范围限制见api.md。
+
+- 2026-11-05 页码来源投影、占位图题恢复和精确图号关键词召回已接入源码；字段、旧数据补偿与
+  重新索引边界见 `architecture.md`、`api.md`、`image_chunk_binding_plan.md`。未据此宣称线上部署。
+
+- `deployment_new_instance.md`：Know_RAG_new 本机独立部署、端口、独立数据卷、启动与验证记录。
+
+- `dual_mode_retrieval_design.md`：双模式检索路线图；P0/P1 策略入口、KB 配置与诊断已接入源码，
+  P2共用底座、P3 Local/事件MVP、P4社区/Global及P5自动选级/DRIFT已接入，迁移0020。
+  独立新实例部署与迁移状态见 deployment_new_instance.md。
+- `graph_fusion_retrieval_modification_plan.md`：GraphRAG Local、SAG 事件与 Global 背景分层融合的分阶段修改方案（Planned），
+  按 M0–M5 给出文件级改动、测试矩阵、验收条件与回滚边界。
+- `retrieval_p4_implementation.md`：社区任务、带证据报告、Global预算和官方2.7.0隔离provider的实现边界及验证记录。
+- `retrieval_p5_implementation.md`：自动选级、共享预算探索、同题召回对比和人工标注评测工具的当前契约及验收。
+- `retrieval_p3_replay.md`：固定种子、同基础候选/最终上下文预算的四路线工程对照，包含适用边界。
+- 精确表格去重与四路线每路候选预算已接入源码；来源归一化、重排顺序和
+  `meta.retrieval.candidate_budget` 见 `architecture.md` 与 `api.md`。源码验证不等于运行实例已部署。
 
 - `architecture.md`：系统边界、服务拓扑、解析到检索的主链路。
 - `backend.md`：后端模块与兼容说明。
@@ -31,6 +51,8 @@
 - `document_processing_mode_plan.md`：文档处理模式双路径方案（Planned），标准模式信任 MinerU 信号、画册模式保留 pdfplumber 后处理，包含前端交互设计和完整测试矩阵。
 - `retrieval_context_building_plan.md`：检索上下文构建绑定感知改造方案（Planned），覆盖 `relation_chunks` 落盘、
   上下文构建器消费 binding 数据、拉取机制详述。Phase 1-4 分步实施。
+- `retrieval_context_overlap_normalization_plan.md`：召回上下文重叠归一化方案（Current），在展示/Context 层
+  消除相邻 Chunk 的 source span 重复，基于 `start_at`/`end_at` offset 去重，不动切块/索引/向量/BM25/RRF。
 - `document_profile_parse_chunk_plan.md`：多模态文档融合的权威路线图，覆盖页面主视觉、页内多作品
   区域与文本归属、内容来源、多轴画像、MinerU block 级 OCR 生产投影、差异化切分、字段级索引
   准入、前端验收和自动 replay；

@@ -26,6 +26,7 @@ from app.services.document_parser.image_relation_resolver import (
     SPATIAL_AMBIGUITY_MARGIN,
     SpatialRelationCandidate,
     normalize_bbox,
+    is_generic_image_caption,
     relation_text_key,
     resolve_image_relation,
     score_spatial_candidate,
@@ -81,6 +82,7 @@ class CanonicalSourceNode:
     normalized_start: int | None = None
     normalized_end: int | None = None
     resolution: str = "canonical_span"
+    page_label: str = ""
 
     def to_metadata(self) -> dict[str, Any]:
         return {
@@ -89,6 +91,7 @@ class CanonicalSourceNode:
             "source_order": self.source_order,
             "text_hash": self.text_hash,
             "page_no": self.page_no,
+            **({"page_label": self.page_label} if self.page_label else {}),
             "bbox": list(self.bbox) if self.bbox else None,
             "section_path": self.section_path,
             "semantic_role": self.semantic_role,
@@ -410,6 +413,58 @@ def _spatial_relation_candidates(
         if scored_images[0][1] == image_index:
             owned_candidates.append(candidate)
     return owned_candidates
+
+
+def _recover_reading_order_caption(blocks: list[ParsedBlock], index: int, relation):
+    """仅在几何信息缺失时，用同页、局部且唯一的阅读顺序关系补图题。"""
+    image = blocks[index]
+    if relation.caption or relation.caption_suppressed or relation.caption_ambiguous or image.page_no is None or valid_bbox(image.bbox):
+        return relation
+    candidates = []
+    for direction in (-1, 1):
+        for distance in range(1, 4):
+            position = index + direction * distance
+            if not 0 <= position < len(blocks):
+                break
+            block = blocks[position]
+            if block.page_no != image.page_no or block.block_type == "image" or _heading_level(block, block.text):
+                break
+            if _spatial_candidate_kind(block) != "caption":
+                continue
+            # 部分几何缺失仍交给空间诊断；顺序兜底只处理双方都无坐标的局部关系。
+            if valid_bbox(block.bbox):
+                continue
+            competitors = []
+            for other_index, other in enumerate(blocks):
+                if other.block_type != "image" or other.page_no != image.page_no or abs(other_index - position) > 3:
+                    continue
+                between = blocks[min(other_index, position) + 1:max(other_index, position)]
+                if not any(b.block_type == "image" or _heading_level(b, b.text) for b in between):
+                    competitors.append(other_index)
+            candidates.append((block, competitors))
+    if not candidates:
+        return relation
+    if len(candidates) != 1 or candidates[0][1] != [index]:
+        relation.caption_ambiguous = relation.ambiguous = True
+        relation.spatial_status = "ambiguous_reading_order"
+        relation.ambiguity_reasons.append("multiple_reading_order_caption_or_image_candidates")
+        return relation
+    caption = candidates[0][0]
+    recovered = resolve_image_relation(caption=caption.text, ocr_text=_block_ocr(image), footnote=relation.footnote)
+    if not recovered.caption:
+        return relation
+    # 保留原始几何/候选审计，顺序规则的分数不得冒充解析器显式绑定的分数。
+    relation.caption = recovered.caption
+    relation.original_caption = recovered.original_caption
+    relation.figure_ids = recovered.figure_ids
+    relation.caption_ambiguous = recovered.caption_ambiguous
+    relation.ambiguous = recovered.caption_ambiguous or relation.footnote_ambiguous
+    relation.deterministic_binding_allowed = recovered.deterministic_binding_allowed
+    relation.caption_method = "same_page_reading_order"
+    relation.binding_score = 0.65
+    relation.spatial_status = "reading_order_bound"
+    relation.selected_candidate_orders.append(caption.order_index)
+    return relation
 
 
 def _heading_level(block: ParsedBlock, text: str) -> int | None:
@@ -766,6 +821,7 @@ def _make_source_node(
         canonical_text=value,
         text_hash=hashlib.sha256(value.encode("utf-8", errors="ignore")).hexdigest(),
         page_no=block.page_no,
+        page_label=str(_block_meta(block).get("page_label") or ""),
         bbox=valid_bbox(block.bbox),
         section_path=_node_section_path(block),
         semantic_role=semantic_role,
@@ -801,6 +857,17 @@ def ground_canonical_provenance(
         position = text.find(needle, cursor) if needle else -1
         if position < 0 and needle and text.count(needle) == 1:
             position = text.find(needle)
+        # 长表规范化会重复插入表头；按原始数据行顺序核对全部内容，不能按表头相似猜来源。
+        table_match = None
+        if position < 0 and node.node_type == "table":
+            lines = needle.strip().splitlines()
+            if len(lines) > 2 and _looks_like_markdown_table(needle):
+                prefix = lines[0] + "\n" + lines[1] + "\n"
+                seam = r"\n(?:\n+" + re.escape(prefix) + r")?"
+                pattern = re.escape(prefix) + seam.join(re.escape(row) for row in lines[2:])
+                table_match = re.compile(pattern).search(text, cursor)
+                if table_match:
+                    position = table_match.start()
         if position < 0:
             grounded.append(
                 replace(
@@ -811,13 +878,13 @@ def ground_canonical_provenance(
                 )
             )
             continue
-        end = position + len(needle)
+        end = table_match.end() if table_match else position + len(needle)
         grounded.append(
             replace(
                 node,
                 normalized_start=position,
                 normalized_end=end,
-                resolution="normalized_span",
+                resolution="normalized_table_rows" if table_match else "normalized_span",
             )
         )
         cursor = end
@@ -961,11 +1028,15 @@ def build_canonical_document(
                 ),
                 enable_spatial=spatial_enabled,
             )
+            if spatial_enabled:
+                relation = _recover_reading_order_caption(blocks, index, relation)
             block_text = normalize_extracted_rich_text(block.text).strip()
             if relation.caption_suppressed and relation_text_key(block_text) == relation_text_key(raw_caption):
                 block_text = ""
             alt_text = relation.caption or block_text or f"图片 {image_ordinal}"
             context_header = normalize_extracted_rich_text(block.context_header).strip()
+            if is_generic_image_caption(context_header):
+                context_header = ""
             if (
                 relation.caption_suppressed
                 and relation_text_key(context_header) == relation_text_key(raw_caption)

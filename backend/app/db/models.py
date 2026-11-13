@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text, BigInteger, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, BigInteger, UniqueConstraint, func, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
 
@@ -32,6 +32,10 @@ class KnowledgeBase(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     embedding_model_id: Mapped[str] = mapped_column(String(128), default="")
     summary_model_id: Mapped[str] = mapped_column(String(128), default="")
+    # 旧库保持原行为；仅创建服务显式写入 v2 默认策略，避免升级时改变检索路线。
+    retrieval_profile: Mapped[dict] = mapped_column(
+        JSON, nullable=False, default=lambda: {"version": "legacy_v1"},
+    )
     document_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -137,6 +141,13 @@ class AuditLog(Base):
 
 class Document(Base):
     __tablename__ = "documents"
+    # 按知识库和原文件内容去重；旧记录缺失指纹时不把所有空值误判为同一文件。
+    __table_args__ = (
+        Index(
+            "uq_documents_kb_file_hash", "knowledge_base_id", "file_hash", unique=True,
+            postgresql_where=text("file_hash <> ''"), sqlite_where=text("file_hash <> ''"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     knowledge_base_id: Mapped[str] = mapped_column(
@@ -257,6 +268,159 @@ class Chunk(Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+
+
+class KnowledgeIndexJob(Base):
+    """与来源事务一起写入的 outbox；lease_token 阻止过期 worker 发布。"""
+
+    __tablename__ = "knowledge_index_jobs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    knowledge_base_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    input_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lease_token: Mapped[str] = mapped_column(String(36), nullable=False, default="")
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class KnowledgeIndexManifest(Base):
+    """发布的输入清单和覆盖率；不等同于图/事件检索就绪。"""
+
+    __tablename__ = "index_manifests"
+    id: Mapped[str] = mapped_column(ForeignKey("knowledge_index_jobs.id", ondelete="CASCADE"), primary_key=True)
+    knowledge_base_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    coverage_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class KnowledgeEntity(Base):
+    """同名不直接合并：身份键同时包含类型和有来源的 scope。"""
+
+    __tablename__ = "knowledge_entities"
+    __table_args__ = (UniqueConstraint("knowledge_base_id", "identity_key", name="uq_entity_identity"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    knowledge_base_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True)
+    identity_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    canonical_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope: Mapped[str] = mapped_column(String(512), nullable=False)
+
+
+class KnowledgeEvidence(Base):
+    """提及 span 属于准入投影，不能冒充 Canonical 原始偏移。"""
+
+    __tablename__ = "knowledge_evidence"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    manifest_id: Mapped[str] = mapped_column(ForeignKey("index_manifests.id", ondelete="CASCADE"), index=True)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("knowledge_entities.id", ondelete="CASCADE"), index=True)
+    knowledge_base_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
+    chunk_id: Mapped[str] = mapped_column(ForeignKey("chunks.id", ondelete="CASCADE"), index=True)
+    parse_revision: Mapped[str] = mapped_column(String(36), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    quote: Mapped[str] = mapped_column(Text, nullable=False)
+    start_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class EntityAlias(Base):
+    """别名必须有提及证据，查询时再次检查版本与准入。"""
+
+    __tablename__ = "entity_aliases"
+    __table_args__ = (UniqueConstraint("entity_id", "alias", "evidence_id", name="uq_entity_alias_evidence"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("knowledge_entities.id", ondelete="CASCADE"), index=True)
+    evidence_id: Mapped[str] = mapped_column(ForeignKey("knowledge_evidence.id", ondelete="CASCADE"), index=True)
+    alias: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+
+
+class KnowledgeRelation(Base):
+    """有支持引文的语义关系候选；保留否定、时间与条件，不从共现生成事实。"""
+    __tablename__ = "knowledge_relations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    manifest_id: Mapped[str] = mapped_column(ForeignKey("index_manifests.id", ondelete="CASCADE"), index=True)
+    knowledge_base_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
+    chunk_id: Mapped[str] = mapped_column(ForeignKey("chunks.id", ondelete="CASCADE"), index=True)
+    subject_id: Mapped[str] = mapped_column(ForeignKey("knowledge_entities.id", ondelete="CASCADE"), index=True)
+    object_id: Mapped[str] = mapped_column(ForeignKey("knowledge_entities.id", ondelete="CASCADE"), index=True)
+    predicate: Mapped[str] = mapped_column(String(255), nullable=False)
+    quote: Mapped[str] = mapped_column(Text, nullable=False)
+    start_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    qualifiers: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class KnowledgeEvent(Base):
+    """完整事件检索表示；生成的 text 与原文 quote 分开保存。"""
+    __tablename__ = "knowledge_events"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    manifest_id: Mapped[str] = mapped_column(ForeignKey("index_manifests.id", ondelete="CASCADE"), index=True)
+    knowledge_base_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
+    chunk_id: Mapped[str] = mapped_column(ForeignKey("chunks.id", ondelete="CASCADE"), index=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    quote: Mapped[str] = mapped_column(Text, nullable=False)
+    start_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    qualifiers: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class EventEntity(Base):
+    """事件参与者必须有同一切片、同一发布版本的实体证据。"""
+    __tablename__ = "event_entities"
+    event_id: Mapped[str] = mapped_column(ForeignKey("knowledge_events.id", ondelete="CASCADE"), primary_key=True)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("knowledge_entities.id", ondelete="CASCADE"), primary_key=True)
+    evidence_id: Mapped[str] = mapped_column(ForeignKey("knowledge_evidence.id", ondelete="CASCADE"), nullable=False)
+
+
+class KnowledgeGraphJob(Base):
+    """KB级图revision任务；与文档级抽取分开，拥有独立租约和输入清单。"""
+    __tablename__ = "knowledge_graph_jobs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    knowledge_base_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    input_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lease_token: Mapped[str] = mapped_column(String(36), nullable=False, default="")
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    coverage_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class GraphCommunity(Base):
+    """版本化社区成员及支持来源；不使用社区ID冒充原文chunkID。"""
+    __tablename__ = "graph_communities"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    graph_revision: Mapped[str] = mapped_column(ForeignKey("knowledge_graph_jobs.id", ondelete="CASCADE"), index=True)
+    knowledge_base_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True)
+    community_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    level: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    members_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    sources_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    provider_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class CommunityReport(Base):
+    """生成摘要和支持引文分离；每次读取必须核验整个图输入版本。"""
+    __tablename__ = "community_reports"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    community_id: Mapped[str] = mapped_column(ForeignKey("graph_communities.id", ondelete="CASCADE"), nullable=False, unique=True)
+    graph_revision: Mapped[str] = mapped_column(ForeignKey("knowledge_graph_jobs.id", ondelete="CASCADE"), index=True)
+    knowledge_base_id: Mapped[str] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    findings_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
 
 class ParseTask(Base):

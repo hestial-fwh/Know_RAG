@@ -68,3 +68,48 @@
   改为公网地址，否则远程 agent 拿到的链接不可达。
 - 部分 figure_binding 图片 chunk（如 2-M3 图6）`document_id` 为空——属数据层差异，非本轮引入。
   `document_url` 已上移到 group 级，条目级 `document_id` 为空不影响 group 级主文档链接。
+
+## 召回上下文重叠归一化（消除相邻 Chunk 重复展示）
+
+### 问题与根因
+
+索引/向量化允许 chunk overlap（`chunk_overlap` + `source_child_overlap` /
+`continuation_across_floating_blocks`），同 parent 下相邻子块 source span 重叠；两个相邻
+chunk 同时被召回时，context/MCP 会把同一段文本展示两遍（如 `[0027][0028]` 与 `[0027][0028][0029]`）。
+
+DB 实测：文本子块 3034 个，`source_position_is_exact=true` 100%，`len(content)` 与
+`end-start` 相差 ≤10 的占 99.8%。相邻对 2452 组中 1819 组（74%）存在重叠，其中 ≥80% 高重叠 27 组、
+30%~80% 中等重叠 807 组。确认是切块真实 overlap，非数据库重复写入。
+
+### 改动（只加一层，不动切块/索引/向量/BM25/RRF/rerank/FigureLinker/Relation Graph）
+
+- 新增 `app/services/retrieval_context_normalizer.py`：纯函数 `normalize_spans`，按
+  `start_at`/`end_at` offset 去重。direct hit 为 anchor 永不裁，低优先级 chunk 裁掉与已认领
+  span 的前缀/后缀重叠；完全包含则 content 置空但保留 chunk_id/evidence。按 `group_key`
+  （document+parent）隔离，跨 parent 与 standalone root 不归一化；非 text 不参与。
+- `llm_context_builder.py`：`build_evidence_groups_payload` 与 `build_cloud_flat_chunks_payload`
+  在输出前按 group 调用归一化，把裁后的 content 写入 chunk，并附加 `overlap_trimmed` /
+  `trimmed_chars` / `overlap_source_chunk_ids` 标记。
+- `retrieval_service.py`：`_row_child_summary` / `_compact_child_from_result` 补 `start_at`/
+  `end_at`（parent_children / matched_children 透传 offset），供归一化读 offset。
+- `schemas/evidence_groups.py`：`EvidenceChunkPayload` 增 `overlap_trimmed`/`trimmed_chars`/
+  `overlap_source_chunk_ids` 三字段（默认 False/0/[]，向后兼容）。
+- 新增 `scripts/analyze_retrieval_overlap.py` 诊断脚本（`--kb`/`--document-id`/
+  `--min-overlap-ratio`/`--show-content`），用于 baseline 与回归。
+- 文档：`docs/api.md`、`docs/index.md`、`docs/mcp-client-guide.md`、
+  `docs/retrieval_context_overlap_normalization_plan.md`。
+
+### 验证
+
+- 专项：`tests/test_retrieval_context_normalizer.py` 17 例全通过（覆盖 12 case + 集成）。
+- 全量：1122 passed，3 failed（chunker/pipeline 先存失败，与本轮无关）。
+- ruff：改动文件全部通过。
+- 真实库回归：查询「自动清洁设备 清洁刷」返回的 evidence group 中，相邻 hit
+  `9ac194b7` 被裁 240 字符（`overlap_source_chunk_ids=[28263738]`），重复 span 只保留一次。
+
+### 范围约束（未修改）
+
+Chunk overlap 参数、Canonical Parent-Child 切分、Embedding、ES 索引、BM25、Vector Search、
+RRF、Rerank、FigureLinker、Relation Graph、Media Parent Assignment、图片绑定——均未修改。
+`hybrid-search` 的 `results`（raw retrieval hit）保持原样；只在 llm-context / MCP context
+展示层归一化。

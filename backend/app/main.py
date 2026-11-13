@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 
 from app.api import (
     routes_auth,
@@ -14,6 +15,7 @@ from app.api import (
     routes_files,
     routes_initialization,
     routes_knowledge_base,
+    routes_knowledge_index,
     routes_mcp_access,
     routes_mcp_clients,
     routes_mcp_placeholder,
@@ -58,7 +60,8 @@ async def http_exception_handler(_: Request, exc: HTTPException):
 async def validation_exception_handler(_: Request, exc: RequestValidationError):
     return JSONResponse(
         status_code=422,
-        content=error_response("request validation failed", exc.errors()),
+        # Pydantic模型级依赖校验的ctx含ValueError对象，需编码后才能稳定返回422。
+        content=error_response("request validation failed", jsonable_encoder(exc.errors(), custom_encoder={Exception: str})),
     )
 
 
@@ -131,6 +134,7 @@ async def health():
 API_PREFIX = "/api/v1"
 app.include_router(routes_auth.router, prefix=API_PREFIX)
 app.include_router(routes_knowledge_base.router, prefix=API_PREFIX)
+app.include_router(routes_knowledge_index.router, prefix=API_PREFIX)
 app.include_router(routes_documents.router, prefix=API_PREFIX)
 app.include_router(routes_chunks.router, prefix=API_PREFIX)
 app.include_router(routes_faq.router, prefix=API_PREFIX)

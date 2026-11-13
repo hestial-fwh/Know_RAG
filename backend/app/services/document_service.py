@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import BackgroundTasks, UploadFile
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -22,6 +23,7 @@ from app.services.chunk_service import rebuild_document_chunks, update_knowledge
 from app.services.parser_service import parse_local_document
 from app.services.storage import delete_document_objects, object_key_for_source, save_upload_file as save_upload_file_to_minio
 from app.services.storage import delete_document_cache
+from app.services.storage import fingerprint_upload_file
 
 from app.services.document_parser.block_reflow import reflow_parsed_document
 from app.services.document_parser.mineru_ocr_admission import (
@@ -189,6 +191,14 @@ def mark_document_failed(db: Session, doc_id: str, message: str) -> None:
     db.commit()
 
 
+def _duplicate_upload_response(existing: Document) -> dict:
+    """同库相同内容不新建文档，也不重启既有文档的解析任务。"""
+    return error_response(
+        f"文件内容已存在于当前知识库：{existing.file_name}，请使用已有文档",
+        {"existing_document_id": existing.id, "file_name": existing.file_name},
+    )
+
+
 async def upload_document(
     db: Session,
     actor: User,
@@ -214,10 +224,24 @@ async def upload_document(
     if file_type is None:
         return error_response("暂不支持该文件类型或该文件类型存在安全风险")
 
+    try:
+        file_size, file_hash = fingerprint_upload_file(upload)
+    except Exception:
+        return error_response("读取上传文件失败")
+    duplicate_query = select(Document).where(
+        Document.knowledge_base_id == knowledge_base_id,
+        Document.file_hash == file_hash,
+    ).limit(1)
+    existing = db.scalar(duplicate_query)
+    if existing is not None:
+        return _duplicate_upload_response(existing)
+
     document_id = new_id()
     object_key = object_key_for_source(knowledge_base_id, document_id, filename)
     try:
-        stored = save_upload_file_to_minio(upload, object_key)
+        stored = save_upload_file_to_minio(
+            upload, object_key, fingerprint=(file_size, file_hash),
+        )
         file_size, file_hash = stored.size, stored.sha256
     except ValueError as exc:
         return error_response(str(exc))
@@ -284,12 +308,17 @@ async def upload_document(
         )
         db.commit()
         db.refresh(document)
-    except Exception:
+    except Exception as exc:
         db.rollback()
         try:
             delete_document_objects(knowledge_base_id, document_id)
         except Exception:
             pass
+        # 两个请求可能同时通过预检查；唯一索引裁决，失败方只清理自己的对象。
+        if isinstance(exc, IntegrityError):
+            existing = db.scalar(duplicate_query)
+            if existing is not None:
+                return _duplicate_upload_response(existing)
         return error_response("文档上传入库失败")
 
     data = document_to_dict(db, document)
@@ -576,6 +605,9 @@ def delete_document(db: Session, actor: User, doc_id: str):
 
     # 3. 再删除数据库中的 chunk / document
     try:
+        from app.services.knowledge_index.service import lock_source_scope
+
+        lock_source_scope(db, knowledge_base_id)
         db.query(Chunk).filter(Chunk.document_id == document.id).delete(synchronize_session=False)
         db.delete(document)
 

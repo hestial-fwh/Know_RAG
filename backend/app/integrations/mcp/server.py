@@ -93,7 +93,7 @@ async def know_rag_list_knowledge_bases(page: int = 1, page_size: int = 20) -> d
 async def know_rag_search_context(
     query_text: str,
     knowledge_base_id: str,
-    retrieval_mode: str = "hybrid",
+    retrieval_mode: str = "",
     match_count: int = 10,
     score_threshold: float = -1.0,
     vector_threshold: float = -1.0,
@@ -111,16 +111,23 @@ async def know_rag_search_context(
     include_image_urls: bool = False,
     include_tables: bool = True,
     include_equations: bool = True,
+    strategy: dict = {},
+    rerank_enabled: int = -1,
 ) -> dict:
     """Search Know_RAG and return clean LLM/MCP-ready context.
 
     Threshold parameters use -1.0 as the "not provided" sentinel because
     FastMCP tool parameters should avoid Optional/Union annotations.
+    strategy 使用空对象表示继承知识库配置；rerank_enabled 为 -1 继承、0 关闭、1 开启。
     """
+    if rerank_enabled not in (-1, 0, 1):
+        return {"success": False, "message": "rerank_enabled 只允许 -1、0 或 1", "data": None}
     return await tools.search_context(
         query_text=query_text,
         knowledge_base_id=knowledge_base_id,
-        retrieval_mode=retrieval_mode,
+        retrieval_mode=retrieval_mode or None,
+        strategy=strategy or None,
+        rerank_enabled=None if rerank_enabled == -1 else bool(rerank_enabled),
         match_count=match_count,
         score_threshold=None if score_threshold is None or score_threshold < 0 else score_threshold,
         vector_threshold=None if vector_threshold is None or vector_threshold < 0 else vector_threshold,

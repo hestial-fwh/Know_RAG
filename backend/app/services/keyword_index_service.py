@@ -22,6 +22,8 @@ from app.db.models import Chunk, Document
 from app.utils.text import sanitize_text_for_postgres
 from app.services.content_cleaning import clean_text_for_embedding
 from app.services.embedding.embedding_content_builder import build_content_admission
+from app.services.document_parser.image_relation_resolver import extract_figure_ids
+from app.services.source_location import location_fields
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +256,13 @@ def build_bm25_search_body(
             if ngram_query:
                 should.append(_multi_match(ngram_query, NGRAM_SEARCH_FIELDS))
             must = [{"bool": {"should": should, "minimum_should_match": 1}}]
+    figure_ids = extract_figure_ids(prepared.query_text)[:8]
+    if figure_ids:
+        # 复用现有 keyword 子字段；明确图号可单独召回可靠图片，仍受 KB/启用/状态过滤。
+        must = [{"bool": {"should": [
+            {"bool": {"must": must}},
+            {"terms": {"keywords.keyword": figure_ids, "boost": 20.0}},
+        ], "minimum_should_match": 1}}]
     return {
         "size": size,
         "query": {
@@ -447,20 +456,7 @@ def _metadata_text(metadata: dict | None, keys: list[str]) -> str:
 
 
 def _page_no(metadata: dict | None) -> int | None:
-    if not isinstance(metadata, dict):
-        return None
-    for key in ("page_no", "source_page", "page", "page_idx"):
-        value = metadata.get(key)
-        try:
-            if value is None or value == "":
-                continue
-            page = int(value)
-            if key == "page_idx" and page >= 0:
-                page += 1
-            return page
-        except Exception:
-            continue
-    return None
+    return location_fields({"metadata": metadata or {}})["page_no"]
 
 
 _TERM_RE = re.compile(r"[\u4e00-\u9fff]{2,}|[A-Za-z][A-Za-z0-9_\-]{1,}|\d+(?:\.\d+)?")
@@ -523,6 +519,10 @@ def chunk_to_es_doc(chunk: Chunk, document: Document) -> dict:
         vlm_description,
         table_text,
     )
+    # 仅索引已准入 caption 中真实存在的图号；歧义绑定和被排除字段不能绕过准入。
+    if chunk.chunk_type == "image" and metadata.get("deterministic_binding_allowed") is True:
+        admitted_ids = extract_figure_ids(admission.channel_text("caption")) if "caption" in admission.index_sources else []
+        keywords = list(dict.fromkeys([*keywords, *(fid for fid in metadata.get("figure_ids", []) if fid in admitted_ids)]))
     return {
         "chunk_id": chunk.id,
         "document_id": document.id,

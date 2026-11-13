@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends
+import json
+
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user
@@ -54,12 +56,23 @@ async def hybrid_search_get(
     rrf_keyword_weight: float | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    strategy: str | None = None,
+    retrieval_mode: str | None = None,
+    rerank_enabled: bool | None = None,
 ):
+    # GET 使用 JSON 编码的同一 strategy 对象，避免建立第二套级别映射规则。
+    try:
+        strategy_payload = json.loads(strategy) if strategy is not None else None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="strategy 必须是 JSON 对象") from exc
     return await service.hybrid_search(
         db,
         current_user,
         kb_id,
         {
+            "strategy": strategy_payload,
+            "retrieval_mode": retrieval_mode,
+            "rerank_enabled": rerank_enabled,
             "query": query,
             "query_text": query_text,
             "top_k": top_k,

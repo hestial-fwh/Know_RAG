@@ -51,6 +51,14 @@ def relation_text_key(value: str) -> str:
     return _normalize_text(value).casefold()
 
 
+def is_generic_image_caption(value: str) -> bool:
+    """解析器占位标题不构成图题证据，不能阻止后续真实图题恢复。"""
+    # Figure 2 是明确图号，不能被当成 image 2 一类占位标题清除。
+    return not extract_figure_ids(value) and bool(re.fullmatch(
+        r"(?:pdf\s*)?(?:图片|图像|image|picture|figure)(?:\s*\d+)?", _normalize_text(value), re.I,
+    ))
+
+
 def _chinese_number_to_int(value: str) -> int | None:
     digits = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
     if value in digits:
@@ -337,8 +345,8 @@ def resolve_image_relation(
     enable_spatial: bool = False,
 ) -> ImageRelation:
     original_caption = str(caption or "").strip()
-    clean_caption = original_caption
-    figure_ids = extract_figure_ids(original_caption)
+    clean_caption = "" if is_generic_image_caption(original_caption) else original_caption
+    figure_ids = extract_figure_ids(clean_caption)
     relation = ImageRelation(
         caption=clean_caption,
         original_caption=original_caption,
@@ -378,6 +386,8 @@ def resolve_image_relation(
                     shared_between_images = False
                     for candidate in candidates:
                         if candidate.kind != kind or candidate.page_no != page_no:
+                            continue
+                        if kind == "caption" and is_generic_image_caption(candidate.text):
                             continue
                         metrics = score_spatial_candidate(
                             relation.normalized_bbox,
@@ -480,6 +490,7 @@ __all__ = [
     "SPATIAL_AMBIGUITY_MARGIN",
     "SpatialRelationCandidate",
     "extract_figure_ids",
+    "is_generic_image_caption",
     "normalize_bbox",
     "normalize_figure_token",
     "relation_text_key",

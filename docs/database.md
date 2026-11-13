@@ -1,5 +1,53 @@
 # Database
 
+## P4 KB社区和派生报告（0020）
+
+0020_graph_communities在0019之后新增knowledge_graph_jobs、graph_communities、community_reports。
+图任务按完整输入指纹幂等，保存KB范围快照、租约令牌、重试次数与覆盖；graph_revision指向任务ID。
+社区记录成员/来源ID、层级与provider版本；每个社区唯一报告保存生成要点和逐字引文，明确derived_summary。
+KB/图任务/社区删除按外键级联清理；原文变更后读取端重验图指纹，不能依赖异步物理清理保证有效性。
+降级0020仅删除这三张派生表，不改原文、P2/P3证据及向量。
+
+## P3 关系和事件（0019）
+
+0019_relation_event_retrieval新增 knowledge_relations、knowledge_events和event_entities。
+关系和事件均指向版本化manifest及原文chunk，包含支持引文的投影范围和时间/否定/条件限定。
+关系两端引用实体；事件参与者引用实体及本块有效KnowledgeEvidence。生成的事件text与quote分开。
+来源、manifest或实体删除时级联清理；查询再核对当前输入和原文，不能只信任外键存在。
+按KB、manifest、chunk和邻接端点建立索引，首期无需图数据库或新的Python依赖。
+
+## P2 共用派生索引（0018）
+
+迁移链为 0016 KB profile → 0017 上传查重 → 0018 派生索引。0018 新增：
+
+- knowledge_index_jobs：唯一幂等键、输入快照、状态、尝试次数、租约与令牌。
+- index_manifests：发布版本、覆盖率与失败切片清单；ID 对应一次任务。
+- knowledge_entities：KB 范围身份键（规范名/类型/scope）；无 scope 时按文档隔离。
+- knowledge_evidence：实体提及的当前文档/切片/revision/hash 与投影引文。
+- entity_aliases：必须绑定实体和支持证据，不存在无来源别名。
+
+FK 在 KB/文档/切片/manifest 删除时级联清理相关产物；实体物理孤儿由补偿扫描清理。
+更新文本、禁用或准入变化不会只依赖后台物理清理：所有读取都验证当前输入清单。
+降级 0018 会删除上述五张派生表，不影响原文件、chunks 或 embedding。
+
+## 知识库内文件内容唯一（0017）
+
+`0017_document_file_dedup` 添加 `documents(knowledge_base_id, file_hash)` 部分唯一索引
+`uq_documents_kb_file_hash`，仅覆盖 `file_hash <> ''` 的记录，防止并发上传相同原文件。
+不同知识库可保存相同指纹；历史空指纹保留兼容。应用上传入口始终计算完整原文件 SHA-256。
+迁移前先检查已有非空指纹重复，发现冲突时中止，不自动删除文档、切片或对象；需选择保留版本
+后再迁移。降级只移除唯一索引，不修改原文件与文档。
+
+## 知识库检索策略（0016）
+
+2026-11-06 P5将tier=auto、graph_method=drift与共享探索budget保存在同一retrieval_profile JSON。
+旧记录缺少的新预算字段由schema默认补全，数据库迁移版本仍为0020_graph_communities。
+
+`0016_kb_retrieval_profile` 为 knowledge_bases 增加非空 JSON `retrieval_profile`。
+数据库默认值为 `{"version":"legacy_v1"}`，保持已有记录和直接 SQL 创建记录的旧行为；
+应用创建服务明确写入 new_profile_v2 与默认 tiered/hybrid。暂不引入独立一对一 profile 表。
+降级迁移仅删除该列，失去知识库策略设置；原文、chunks 和向量不受影响。
+
 > 状态：Current（后续 Phase 小节为历史增量记录）
 > 维护日期：2026-08-13
 

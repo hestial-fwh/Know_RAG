@@ -15,6 +15,7 @@ def knowledge_base_to_dict(kb: KnowledgeBase) -> dict:
         "description": kb.description,
         "embedding_model_id": kb.embedding_model_id,
         "summary_model_id": kb.summary_model_id,
+        "retrieval_profile": kb.retrieval_profile or {"version": "legacy_v1"},
         "document_count": kb.document_count,
         "chunk_count": kb.chunk_count,
         "created_at": kb.created_at,
@@ -52,6 +53,11 @@ def create_knowledge_base(db: Session, actor: User, payload: dict):
         description=payload.get("description") or "",
         embedding_model_id=payload.get("embedding_model_id") or "",
         summary_model_id=payload.get("summary_model_id") or "",
+        retrieval_profile=payload.get("retrieval_profile") or {
+            "version": "new_profile_v2",
+            "strategy": {"family": "tiered", "tier": "auto"},
+            "build_indexes": ["entities", "relations", "events", "communities"],
+        },
     )
     db.add(kb)
     db.flush()
@@ -91,6 +97,13 @@ def update_knowledge_base(db: Session, actor: User, kb_id: str, payload: dict):
         kb.embedding_model_id = payload.get("embedding_model_id") or ""
     if "summary_model_id" in payload:
         kb.summary_model_id = payload.get("summary_model_id") or ""
+    if "retrieval_profile" in payload:
+        kb.retrieval_profile = payload["retrieval_profile"]
+        # 开启能力时同事务补偿已有文档；只写持久任务，不在设置请求内调用模型。
+        from app.services.knowledge_index.service import reconcile
+
+        if set(kb.retrieval_profile.get("build_indexes", [])) & {"entities", "relations", "events"}:
+            reconcile(db, kb_id)
     record_audit(
         db,
         actor,

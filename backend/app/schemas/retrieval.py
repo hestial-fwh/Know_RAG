@@ -1,5 +1,7 @@
 from pydantic import BaseModel
 
+from app.schemas.retrieval_strategy import RetrievalStrategy
+
 
 class RetrievalConfig(BaseModel):
     embedding_top_k: int = 5
@@ -15,6 +17,9 @@ class RetrievalConfig(BaseModel):
 
 
 class HybridSearchRequest(BaseModel):
+    strategy: RetrievalStrategy | None = None
+    retrieval_mode: str | None = None
+    rerank_enabled: bool | None = None
     query: str | None = None
     query_text: str | None = None
     top_k: int | None = None

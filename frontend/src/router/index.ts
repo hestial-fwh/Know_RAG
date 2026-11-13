@@ -5,6 +5,7 @@ import LoginView from '../views/LoginView.vue'
 import KnowledgeBaseListView from '../views/KnowledgeBaseListView.vue'
 import KnowledgeBaseFormView from '../views/KnowledgeBaseFormView.vue'
 import KnowledgeBaseDetailView from '../views/KnowledgeBaseDetailView.vue'
+import KnowledgeGraphView from '../views/KnowledgeGraphView.vue'
 import DocumentUploadView from '../views/DocumentUploadView.vue'
 import DocumentListView from '../views/DocumentListView.vue'
 import DocumentDetailView from '../views/DocumentDetailView.vue'
@@ -32,6 +33,7 @@ const router = createRouter({
         { path: 'knowledge-bases', component: KnowledgeBaseListView, meta: { title: '知识库' } },
         { path: 'knowledge-bases/new', component: KnowledgeBaseFormView, meta: { title: '新建知识库' } },
         { path: 'knowledge-bases/:id/edit', component: KnowledgeBaseFormView, meta: { title: '编辑知识库' } },
+        { path: 'knowledge-bases/:id/graph', component: KnowledgeGraphView, meta: { title: '知识图谱', graphWorkspace: true } },
         { path: 'knowledge-bases/:id', component: KnowledgeBaseDetailView, meta: { title: '知识库详情' } },
         { path: 'documents/upload', component: DocumentUploadView, meta: { title: '文档上传' } },
         { path: 'documents', component: DocumentListView, meta: { title: '文档管理' } },

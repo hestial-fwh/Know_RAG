@@ -3057,6 +3057,9 @@ def rebuild_document_chunks(
     # Replacement starts only after the complete new chunk set has passed all
     # quality and parent/child integrity checks.  The caller owns the DB
     # transaction, so any later failure restores the previous rows.
+    from app.services.knowledge_index.service import lock_source_scope
+
+    lock_source_scope(db, document.knowledge_base_id)
     db.query(ChunkEmbedding).filter(ChunkEmbedding.document_id == document.id).delete(synchronize_session=False)
     db.query(Chunk).filter(Chunk.document_id == document.id).delete(synchronize_session=False)
     _replace_canonical_artifact(db, document, canonical_artifact)
@@ -3068,6 +3071,10 @@ def rebuild_document_chunks(
     db.flush()
 
     update_knowledge_base_chunk_count(db, document.knowledge_base_id)
+    # 同事务 outbox：只有知识库主动开启实体索引时才写任务，模型抽取交给独立 worker。
+    from app.services.knowledge_index.service import enqueue_document
+
+    enqueue_document(db, document)
     return inserted
 
 
@@ -3223,6 +3230,9 @@ def set_chunk_enabled(db: Session, actor: User, chunk_id: str, enabled: bool):
     if chunk is None:
         return error_response(f"切片不存在：{chunk_id}")
     try:
+        from app.services.knowledge_index.service import lock_source_scope
+
+        lock_source_scope(db, chunk.knowledge_base_id)
         chunk.is_enabled = enabled
         chunk.status = "ready" if enabled else "disabled"
         db.query(ChunkEmbedding).filter(ChunkEmbedding.chunk_id == chunk.id).update(
@@ -3257,6 +3267,9 @@ def delete_chunk(db: Session, actor: User, chunk_id: str):
     knowledge_base_id = chunk.knowledge_base_id
     document_id = chunk.document_id
     try:
+        from app.services.knowledge_index.service import lock_source_scope
+
+        lock_source_scope(db, knowledge_base_id)
         db.delete(chunk)
         record_audit(
             db,

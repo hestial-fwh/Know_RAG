@@ -1,8 +1,9 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html import unescape
 import logging
 from math import log1p
 import re
+from time import perf_counter
 from typing import Any
 
 from sqlalchemy import text
@@ -15,6 +16,7 @@ from app.services.audit_service import record_audit
 from app.services.embedding_service import embed_text, embedding_to_vector_literal, get_embedding_runtime
 from app.services.document_relation_expansion_service import expand_figure_bindings
 from app.services.keyword_index_service import ElasticsearchQueryComplexityError
+from app.services.source_location import location_fields
 from app.services.vector_store_adapters import get_active_vector_config, is_external_provider, search_external_vector
 from app.utils.ids import new_id
 
@@ -64,6 +66,7 @@ class SearchOptions:
     vector_weight: float = 1.0
     keyword_weight: float = 1.0
     rerank_enabled: bool = False
+    candidate_k: int | None = None
 
 
 def retrieval_config_to_dict(config: RetrievalConfig) -> dict:
@@ -291,6 +294,7 @@ def normalize_options(db, payload: dict) -> tuple[SearchOptions | None, str | No
         vector_weight=vector_weight,
         keyword_weight=keyword_weight,
         rerank_enabled=rerank_enabled,
+        candidate_k=payload.get("_candidate_k"),
     ), None
 
 
@@ -330,6 +334,7 @@ def _row_to_result(row, match_type: str, include_content: bool, score_key: str) 
         "metadata": metadata,
         "metadata_json": metadata,
         "chunk_metadata": metadata,
+        **location_fields({"metadata": metadata, "image_info": image_info}),
         "image_info": image_info,
         "image_url": _image_url_from_info(image_info, metadata),
         "relation_chunks": getattr(row, "relation_chunks", None) or [],
@@ -1081,7 +1086,7 @@ def _chunk_preview(db, chunk_id: str | None, *, max_chars: int = 300, include_me
     row = db.execute(
         text(
             """
-            SELECT id, content, chunk_type, context_header, chunk_index,
+            SELECT id, content, chunk_type, context_header, chunk_index, start_at, end_at,
                    parent_chunk_id, image_info, metadata_json
             FROM chunks
             WHERE id = :id
@@ -1099,6 +1104,8 @@ def _chunk_preview(db, chunk_id: str | None, *, max_chars: int = 300, include_me
         "chunk_type": row.chunk_type,
         "chunk_index": row.chunk_index,
         "parent_chunk_id": row.parent_chunk_id,
+        "start_at": getattr(row, "start_at", None),
+        "end_at": getattr(row, "end_at", None),
         "context_header": row.context_header or "",
         "content": clipped,
         "content_preview": clipped[:300],
@@ -1130,6 +1137,8 @@ def _compact_child_from_result(item: dict) -> dict:
         "document_id": item.get("document_id"),
         "chunk_type": item.get("chunk_type"),
         "chunk_index": item.get("chunk_index"),
+        "start_at": item.get("start_at"),
+        "end_at": item.get("end_at"),
         "context_header": item.get("context_header") or "",
         "matched_content": raw_content,
         "content_preview": raw_content[:300],
@@ -1159,6 +1168,8 @@ def _row_child_summary(row, *, relation: str = "related", is_matched: bool = Fal
         "chunk_id": row.id,
         "chunk_type": row.chunk_type,
         "chunk_index": row.chunk_index,
+        "start_at": getattr(row, "start_at", None),
+        "end_at": getattr(row, "end_at", None),
         "context_header": row.context_header or "",
         "content_preview": content[:300],
         "display_preview": display_content[:300],
@@ -1211,7 +1222,7 @@ def _parent_children_summary(
     rows = db.execute(
         text(
             """
-            SELECT id, content, chunk_type, chunk_index, context_header, image_info, metadata_json
+            SELECT id, content, chunk_type, chunk_index, start_at, end_at, context_header, image_info, metadata_json
             FROM chunks
             WHERE parent_chunk_id = :parent_id
               AND is_enabled = true
@@ -1533,6 +1544,12 @@ def _expand_figure_bindings(
 
 
 async def hybrid_search(db, actor: User | None, kb_id: str, payload: dict):
+    from app.services.retrieval.orchestrator import execute_search
+
+    return await execute_search(db, actor, kb_id, payload)
+
+
+async def _execute_chunk_search(db, actor: User | None, kb_id: str, payload: dict):
     kb = db.get(KnowledgeBase, kb_id)
     if kb is None:
         return error_response("知识库不存在")
@@ -1540,15 +1557,23 @@ async def hybrid_search(db, actor: User | None, kb_id: str, payload: dict):
     if error:
         return error_response(error)
 
+    association_kind = payload.get("_association_kind")
+    association_kinds = payload.get("_association_kinds") or []
+    fusion_settings = payload.get("_fusion_settings") or {}
+    final_top_k = options.top_k
+    # candidate_k 是每路召回上限，top_k 仅限制最后输出；legacy 保持原有执行行为。
+    use_candidate_pool = options.candidate_k is not None
+    recall_k = options.candidate_k if use_candidate_pool else final_top_k
     vector_results: list[dict] = []
     keyword_results: list[dict] = []
     vector_message = ""
     vector_available = False
+    keyword_available = False
     degradation_messages: list[str] = []
     if options.use_vector:
         try:
             vector_results, vector_message = await vector_search(
-                db, kb_id, options.query, options.top_k, options.vector_threshold, options.include_content
+                db, kb_id, options.query, recall_k, options.vector_threshold, options.include_content
             )
             # An empty result with a message means the vector path was not
             # available (for example, the knowledge base has no embeddings or
@@ -1560,12 +1585,21 @@ async def hybrid_search(db, actor: User | None, kb_id: str, payload: dict):
                 return error_response(str(exc) or "向量检索失败")
             degradation_messages.append(f"向量检索失败，已继续使用关键词检索：{exc}")
 
+    if payload.get("_v2") and options.use_vector and not vector_available:
+        if payload.get("_strict_channels") or not options.use_keyword:
+            return error_response(vector_message or "向量检索不可用")
+        if vector_message:
+            degradation_messages.append(vector_message)
+
     if options.use_keyword:
         try:
             keyword_results = keyword_search(
-                db, kb_id, options.query, options.top_k, options.keyword_threshold, options.include_content
+                db, kb_id, options.query, recall_k, options.keyword_threshold, options.include_content
             )
+            keyword_available = True
         except ElasticsearchQueryComplexityError as exc:
+            if payload.get("_strict_channels"):
+                return error_response(f"关键词检索不可用：{exc}")
             if not (options.use_vector and vector_available):
                 vector_detail = f"；{vector_message}" if vector_message else ""
                 return error_response(f"Elasticsearch BM25 查询过于复杂：{exc}{vector_detail}")
@@ -1579,19 +1613,295 @@ async def hybrid_search(db, actor: User | None, kb_id: str, payload: dict):
         except Exception as exc:
             return error_response(str(exc) or "关键词检索失败")
 
-    results = merge_results(vector_results, keyword_results, options)
+    raw_counts = {"vector": len(vector_results), "keyword": len(keyword_results)}
+    unique_counts = raw_counts.copy()
+    if use_candidate_pool:
+        from app.services.retrieval.source_dedup import normalize_channels, remap_path
+
+        (vector_results, keyword_results), _ = normalize_channels(vector_results, keyword_results)
+        unique_counts = {"vector": len(vector_results), "keyword": len(keyword_results)}
+        # 底层沿用最多5倍预取以容纳过滤/副本；去重后必须显式执行每路入池上限。
+        vector_results = vector_results[:recall_k]
+        keyword_results = keyword_results[:recall_k]
+        for channel, rows in (("vector", vector_results), ("keyword", keyword_results)):
+            for rank, item in enumerate(rows, 1):
+                item[f"{channel}_original_rank"] = item.get(f"{channel}_rank")
+                item[f"{channel}_rank"] = rank
+    candidate_counts = {"vector": len(vector_results), "keyword": len(keyword_results)}
+    # 两通道候选并集至多 2*candidate_k，不能在融合后提前截到最终 top_k。
+    pool_options = replace(options, top_k=max(1, sum(candidate_counts.values()))) if use_candidate_pool else options
+    results = merge_results(vector_results, keyword_results, pool_options)
+    base_count = len(results)
+    association_meta = None
+    fusion_meta = None
+    executed_association_channels: list[str] = []
+    event_pool: list[dict] = []
+    relation_pool: list[dict] = []
+    event_threshold = 0.0
+    relation_reserved_slots = 0
+    base_ids: set[str] = set()
+    if association_kind:
+        from app.services.retrieval.associations import rank_associations, search_associations
+
+        try:
+            candidates, association_meta = search_associations(
+                payload["_association_reader"], options.query, results, association_kind,
+                payload["_association_budget"], options.include_content,
+            )
+            (results, candidates), aliases = normalize_channels(results, candidates)
+            for item in candidates:
+                item["association_paths"] = [remap_path(path, aliases) for path in item.get("association_paths", [])]
+            association_meta["paths"] = [remap_path(path, aliases) for path in association_meta["paths"]]
+            base_ids = {item["chunk_id"] for item in results}
+            results = rank_associations(results, candidates, options.rrf_k)
+            association_meta["executed"] = True
+            executed_association_channels = [association_kind]
+        except Exception as exc:
+            logger.warning("Association retrieval failed: kb_id=%s type=%s", kb_id, type(exc).__name__)
+            if payload.get("_strict_channels"):
+                return error_response("关联检索失败，严格策略禁止回退")
+            degradation_messages.append("关联检索失败，已回退混合检索")
+            association_meta = {"executed": False, "kind": association_kind}
+    elif association_kinds:
+        from app.services.retrieval.associations import (
+            apply_graph_features, rank_fusion_channels, rank_structure_channels,
+            search_structure_channels, select_fusion_evidence,
+        )
+        from app.services.retrieval.source_dedup import normalize_channels, remap_path
+
+        event_policy = fusion_settings.get("event_policy", "independent")
+        event_threshold = float(fusion_settings.get("event_relevance_threshold", 0.5))
+        kinds = [
+            kind for kind in association_kinds
+            if not (kind == "events" and event_policy == "off")
+        ]
+        channel_status = {"relation": "skipped_not_requested", "event": "skipped_not_requested"}
+        candidate_counts = {"relation": 0, "event": 0}
+        channel_metas: dict[str, dict] = {}
+        relation_candidates: list[dict] = []
+        event_candidates: list[dict] = []
+        event_pool: list[dict] = []
+        base_ids: set[str] = set()
+        started_structure = perf_counter()
+        try:
+            if kinds:
+                batches, channel_metas, _seeds = search_structure_channels(
+                    payload["_association_reader"], options.query, results, kinds,
+                    payload["_association_budget"], options.include_content,
+                    event_threshold=event_threshold,
+                )
+                relation_candidates = batches.get("relations", [])
+                event_candidates = batches.get("events", [])
+            for label, key in (("relation", "relations"), ("event", "events")):
+                if key not in kinds:
+                    continue
+                meta = channel_metas.get(key, {})
+                channel_status[label] = (
+                    "failed" if meta.get("failed")
+                    else "skipped_budget" if meta.get("budget_exhausted")
+                    else "timeout" if meta.get("timeout")
+                    else "ready"
+                )
+                candidate_counts[label] = len(
+                    relation_candidates if key == "relations" else event_candidates
+                )
+            if "events" in association_kinds and event_policy == "off":
+                channel_status["event"] = "skipped_policy_off"
+            if payload.get("_strict_channels") and any(
+                status == "failed" for status in channel_status.values()
+            ):
+                return error_response("融合结构通道失败，严格策略禁止部分降级")
+            if not relation_candidates and not event_candidates:
+                raise ValueError("fusion 没有可用于证据排序的结构候选")
+            (results, relation_candidates, event_candidates), aliases = normalize_channels(
+                results, relation_candidates, event_candidates,
+            )
+            for rows in (relation_candidates, event_candidates):
+                for item in rows:
+                    item["association_paths"] = [
+                        remap_path(path, aliases) for path in item.get("association_paths", [])
+                    ]
+            for meta in channel_metas.values():
+                meta["paths"] = [remap_path(path, aliases) for path in meta.get("paths", [])]
+            base_ids = {item["chunk_id"] for item in results}
+            relation_ids = {item["chunk_id"] for item in relation_candidates}
+            relation_only = [
+                item for item in relation_candidates if item["chunk_id"] not in base_ids
+            ]
+            for item in relation_only:
+                item["relation_score"] = len(item.get("association_paths", []))
+            # 事件保留位只给事件独有证据；与基础/关系重合的候选已可通过主排名进入。
+            event_only = [
+                item for item in event_candidates
+                if item["chunk_id"] not in base_ids and item["chunk_id"] not in relation_ids
+            ]
+            rank_mode = fusion_settings.get("rank_mode", "rrf")
+            if rank_mode == "feature":
+                results = apply_graph_features(
+                    results, relation_candidates, event_candidates,
+                    graph_weight=float(fusion_settings.get("graph_feature_weight", 0.15)),
+                    event_weight=float(fusion_settings.get("event_feature_weight", 0.25)),
+                    rrf_k=options.rrf_k,
+                )
+                event_pool, relation_pool = event_only, relation_only
+            elif event_policy == "fused":
+                structure = rank_structure_channels(
+                    relation_candidates, event_candidates, options.rrf_k,
+                )
+                results = rank_fusion_channels(results, structure, options.rrf_k)
+                event_pool, relation_pool = [], []
+            else:
+                structure = rank_structure_channels(
+                    relation_candidates, [], options.rrf_k,
+                )
+                results = rank_fusion_channels(results, structure, options.rrf_k)
+                event_pool, relation_pool = event_only, []
+            executed_association_channels = [
+                label for label in ("relation", "event") if channel_status[label] == "ready"
+            ]
+            merged_paths = [path for meta in channel_metas.values() for path in meta.get("paths", [])]
+            association_meta = {
+                **next(iter(channel_metas.values()), {}),
+                "executed": True, "kind": "fusion", "paths": merged_paths,
+                "coverage_incomplete": any(
+                    meta.get("coverage_incomplete") for meta in channel_metas.values()
+                ) or any(status == "timeout" for status in channel_status.values()),
+            }
+            fusion_meta = {
+                "mode": {
+                    "rank_mode": rank_mode,
+                    "event_policy": event_policy,
+                },
+                "executed": [
+                    channel for channel, ok in (
+                        ("vector", vector_available), ("keyword", keyword_available),
+                        ("relation", channel_status["relation"] == "ready"),
+                        ("event", channel_status["event"] == "ready"),
+                    ) if ok
+                ],
+                "channel_status": {**channel_status, "global": "skipped_not_requested"},
+                "candidate_counts": {
+                    "relation": len(relation_candidates), "event": len(event_candidates),
+                    "event_only": len(event_only), "relation_only": len(relation_only),
+                    "vector": len(vector_results), "keyword": len(keyword_results),
+                },
+                "event": {
+                    "policy": event_policy,
+                    "seeds": channel_metas.get("events", {}).get("seed_count", 0),
+                    "events_scored": channel_metas.get("events", {}).get("events_scored", 0),
+                    "direct_overlap_count": channel_metas.get("events", {}).get("direct_overlap_count", 0),
+                    "top_event_relevance": channel_metas.get("events", {}).get("top_event_relevance", 0.0),
+                    "reserved_slots_used": 0,
+                },
+                "weights": {
+                    "base": 1.0, "structure": 0.8, "relation": 1.0, "event": 1.0,
+                },
+                "features": {
+                    "graph_feature_weight": float(fusion_settings.get("graph_feature_weight", 0.15)),
+                    "event_feature_weight": float(fusion_settings.get("event_feature_weight", 0.25)),
+                } if rank_mode == "feature" else None,
+                "structure_paths": {
+                    label: len(channel_metas.get(key, {}).get("paths", []))
+                    for label, key in (("relation", "relations"), ("event", "events"))
+                },
+                "quota": {
+                    "relation": payload["_association_budget"].get("relation_quota"),
+                    "event": payload["_association_budget"].get("event_quota"),
+                    "max_structure_candidates": payload["_association_budget"].get("max_structure_candidates"),
+                    "event_reserved_slots": int(fusion_settings.get("event_reserved_slots", 2)),
+                    "relation_reserved_slots": (
+                        int(fusion_settings.get("relation_reserved_slots", 2))
+                        if rank_mode == "feature" else 0
+                    ),
+                },
+                "elapsed_ms": {
+                    "relation": channel_metas.get("relations", {}).get("elapsed_ms", 0.0),
+                    "event": channel_metas.get("events", {}).get("elapsed_ms", 0.0),
+                    "structure": round((perf_counter() - started_structure) * 1000, 2),
+                },
+                "coverage_incomplete": association_meta["coverage_incomplete"],
+            }
+        except Exception as exc:
+            logger.warning("Fusion retrieval failed: kb_id=%s type=%s", kb_id, type(exc).__name__)
+            if payload.get("_strict_channels"):
+                return error_response("融合检索失败，严格策略禁止回退")
+            degradation_messages.append("融合检索失败，已回退混合检索")
+            association_meta = {"executed": False, "kind": "fusion"}
+            fusion_meta = {
+                "mode": {
+                    "rank_mode": fusion_settings.get("rank_mode", "rrf"),
+                    "event_policy": event_policy,
+                },
+                "executed": [channel for channel, ok in (
+                    ("vector", vector_available), ("keyword", keyword_available)) if ok],
+                "channel_status": {**channel_status, "global": "skipped_not_requested"},
+                "candidate_counts": {
+                    **candidate_counts, "vector": len(vector_results), "keyword": len(keyword_results),
+                },
+                "coverage_incomplete": True,
+            }
+    merged_count = len(results)
     if options.rerank_enabled:
-        results = await rerank_results(db, options.query, results, options.top_k)
+        results = await rerank_results(
+            db, options.query, results, len(results) if use_candidate_pool else final_top_k,
+        )
+    if association_kinds and association_meta and association_meta.get("executed"):
+        from app.services.retrieval.associations import select_fusion_evidence
+
+        results, reserved_used = select_fusion_evidence(
+            results, final_top_k, base_ids,
+            event_pool=event_pool,
+            relation_pool=relation_pool,
+            event_reserved_slots=int(fusion_settings.get("event_reserved_slots", 2)),
+            relation_reserved_slots=(
+                int(fusion_settings.get("relation_reserved_slots", 2))
+                if rank_mode == "feature" else 0
+            ),
+            event_threshold=event_threshold,
+            relation_threshold=1.0,
+        )
+        if fusion_meta is not None:
+            fusion_meta["event"]["reserved_slots_used"] = reserved_used["event"]
+            fusion_meta["relation_reserved_slots_used"] = reserved_used["relation"]
+    elif association_meta and association_meta.get("executed"):
+        from app.services.retrieval.associations import select_association_evidence
+
+        results = select_association_evidence(results, final_top_k, base_ids)
+    elif use_candidate_pool:
+        results = results[:final_top_k]
+    selected_count = len(results)
+    if association_meta and association_meta.get("executed"):
+        returned = {item["chunk_id"] for item in results}
+        original_paths = len(association_meta["paths"])
+        association_meta["paths"] = [path for path in association_meta["paths"]
+                                     if set(path["support_chunk_ids"]) <= returned]
+        association_meta["evidence_budget_truncated"] = len(association_meta["paths"]) != original_paths
+        association_meta["coverage_incomplete"] |= association_meta["evidence_budget_truncated"] or bool(
+            re.search(r"所有|全部|总计|总数|多少", options.query)
+        )
+        if fusion_meta is not None:
+            fusion_meta["coverage_incomplete"] = association_meta["coverage_incomplete"]
+        for item in results:
+            if "association_paths" in item:
+                item["association_paths"] = [path for path in item["association_paths"]
+                                             if set(path["support_chunk_ids"]) <= returned]
     results = _expand_figure_bindings(
         db,
         results,
-        enabled=settings.document_relation_retrieval_expansion_enabled,
+        enabled=(
+            settings.document_relation_retrieval_expansion_enabled
+            and not payload.get("_semantic_only", False)
+            and not payload.get("_defer_presentation", False)
+        ),
         degradation_messages=degradation_messages,
     )
     parent_groups: list[dict] = []
     if options.include_context:
         attach_context(db, results, options)
         parent_groups = build_parent_groups(db, results, options) if options.merge_hits_by_parent else []
+    from app.services.source_location import enrich_existing_locations
+
+    enrich_existing_locations(db, kb_id, results, parent_groups)
     if degradation_messages:
         message = "；".join(degradation_messages)
     elif options.use_vector and not vector_results and not keyword_results and vector_message:
@@ -1630,6 +1940,23 @@ async def hybrid_search(db, actor: User | None, kb_id: str, payload: dict):
             "parent_groups": parent_groups,
             "grouped_results": parent_groups,
             "meta": {
+                "_candidate_budget": ({
+                    "basis": "per_channel", "candidate_k": recall_k, "final_top_k": final_top_k,
+                    "raw_counts": raw_counts, "unique_counts": unique_counts,
+                    "candidate_counts": candidate_counts,
+                    "base_fused_count": base_count, "merged_count_before_rerank": merged_count,
+                    "selected_count": selected_count,
+                } if use_candidate_pool else None),
+                "_association": association_meta,
+                "_fusion": fusion_meta,
+                "_executed_channels": (
+                    (["vector"] if vector_available else [])
+                    + (["keyword"] if keyword_available else [])
+                    + (
+                        executed_association_channels
+                        if association_meta and association_meta.get("executed") else []
+                    )
+                ),
                 "top_k": options.top_k,
                 "match_count": options.top_k,
                 "fusion_strategy": options.fusion_strategy,

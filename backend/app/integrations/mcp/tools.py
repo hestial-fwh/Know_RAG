@@ -53,7 +53,7 @@ async def search_context(
     # ── Return mode ────────────────────────────────────────────────────────
     return_mode: str = "evidence_groups",
     # ── Retrieval ──────────────────────────────────────────────────────────
-    retrieval_mode: str = "hybrid",
+    retrieval_mode: str | None = None,
     match_count: int = 10,
     score_threshold: float | None = None,
     vector_threshold: float | None = None,
@@ -83,6 +83,8 @@ async def search_context(
     include_image_urls: bool = False,
     include_tables: bool = True,
     include_equations: bool = True,
+    strategy: dict[str, Any] | None = None,
+    rerank_enabled: bool | None = None,
 ) -> dict[str, Any]:
     """Search Know_RAG and return structured evidence groups.
 
@@ -101,7 +103,6 @@ async def search_context(
     payload: dict[str, Any] = {
         "query_text": query_text,
         "return_mode": return_mode or "evidence_groups",
-        "retrieval_mode": retrieval_mode or "hybrid",
         "match_count": int(match_count or 10),
         "include_parent_context": bool(include_parent_context),
         "parent_context_mode": parent_context_mode or "standard",
@@ -128,6 +129,13 @@ async def search_context(
         "include_tables": bool(include_tables),
         "include_equations": bool(include_equations),
     }
+    # 不再默认注入旧 retrieval_mode，避免它覆盖知识库策略或制造新契约冲突。
+    if retrieval_mode is not None:
+        payload["retrieval_mode"] = retrieval_mode
+    if strategy is not None:
+        payload["strategy"] = strategy
+    if rerank_enabled is not None:
+        payload["rerank_enabled"] = rerank_enabled
     if score_threshold is not None:
         payload["score_threshold"] = float(score_threshold)
     if vector_threshold is not None:
@@ -140,6 +148,8 @@ async def search_context(
             knowledge_base_id=knowledge_base_id,
             payload=payload,
         )
+        if not response.get("success"):
+            return _safe_error(response.get("message") or "检索失败")
         data = _unwrap_data(response)
 
         # Primary output: groups[] for evidence-groups mode; chunks[]/media[]

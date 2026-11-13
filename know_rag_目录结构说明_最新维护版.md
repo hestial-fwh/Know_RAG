@@ -9,6 +9,56 @@
 
 ## 0. 文档使用约定
 
+### 页码与图片图题补充（2026-11-05）
+
+`services/source_location.py`负责规范化区间→来源节点的页码/块级bbox投影、跨页显示和当前版本旧数据
+只读补偿。`canonical_parent_child.py`在最终草稿阶段注入位置；`canonical_document.py`补长表重复表头
+来源映射及无坐标的保守图题兜底；`image_relation_resolver.py`识别通用占位图题。
+`keyword_index_service.py`复用keywords.keyword索引可靠图号；`llm_context_builder.py`统一输出位置，
+保留可靠短图题并透传直接图片命中的图号。`schemas/evidence_groups.py`和前端API类型同步契约。
+专项测试在 `backend/tests/test_source_location_and_caption.py`。不新增迁移、不改变运行开关。
+
+### 双模式检索入口补充（2026-11-03）
+
+2026-11-06图谱浏览补充，`knowledge_index/graph_view.py`提供当前有效KB子图，
+`KnowledgeGraphView.vue`为知识库详情的图谱页面，`knowledgeGraphLayout.ts`提供有界确定性布局。
+
+2026-11-06本机抽取补充，`retrieval_profile.index_model`可为单个知识库指定Ollama模型。
+`knowledge_index/table_claims.py`在names关系模式下恢复规范Markdown表格的同一行属性关系，
+其余内容由`claims.py`调用模型，发布仍复用原文引文、参与者与解析版本校验。
+
+2026-11-04 P2 补充：`services/knowledge_index/service.py` 管理快照、outbox、补偿和
+有效来源回查；`worker.py` 负责租约、重试、staging 与发布；`extractor.py` 只调用已有本机
+Ollama 并校验引文；`cli.py` 提供独立消费者。`api/routes_knowledge_index.py` 提供构建、
+状态、任务和实体证据接口。迁移 0018 新增五张派生表。重建切片、禁用/删除切片和删除文档
+与 worker 发布共用 KB 锁顺序。
+
+P3补充：`services/knowledge_index/claims.py`负责有原文引文的关系/事件校验及物化，迁移0019
+增加三张派生表。`services/retrieval/associations.py`负责current manifest覆盖、受限邻接/事件SQL、
+来源回查、证据链预算与排名融合。`policy_resolver`按能力选择Local/事件或显式回退，
+`_execute_chunk_search`在重排/上下文前接入关联候选。Context经meta返回路径和跨文档分组链接。
+
+2026-11-06补充，`knowledge_index/entity_resolution.py`负责格式归一化及同类型、同scope的有证据别名复用，
+`claims.py`负责名称端点对齐和逐条校验；`worker.py`保存固定拒绝码，恢复完整切片并合并重试有效条目，
+partial自动重试有次数上限。`service.retry_incomplete`及详情页按钮提供有界的未完成任务重试。
+
+- `backend/app/schemas/retrieval_strategy.py`：[主链路] 显式策略、知识库 profile 与参数互斥校验。
+- `backend/app/services/retrieval/policy_resolver.py`：[核心算法] 请求/KB 优先级、旧契约保持及能力回退。
+- `backend/app/services/retrieval/orchestrator.py`：[主链路] 调用原切片检索，统一返回实际通道和降级诊断。
+- `retrieval_service.hybrid_search` 保留兼容 facade；`_execute_chunk_search` 承接原有召回、融合和上下文。
+- 迁移 `0016_kb_retrieval_profile` 增加 KB JSON profile；旧库 legacy，新库默认 hybrid。
+- P0/P1、P2、P3 Local/事件、P4社区/Global与P5自动选级/DRIFT已接入。
+- P5 `services/retrieval/auto_router.py`负责家族内意图规则，`drift_search.py`负责共享预算的社区引导Local补查与来源重验，`scripts/evaluate_retrieval.py`负责人工标注同题评测。前端`utils/retrievalStrategy.ts`统一策略映射，`components/RetrievalGraph.vue`展示查询证据路径。Context的debug模式包含同次召回数据，供调试页复用。
+- P4 `knowledge_index/communities.py`负责KB图revision任务、报告与依赖重验；`community_provider.py`区分native与隔离官方Leiden，`graphrag_runner.py`负责固定2.7.0/Parquet适配；`retrieval/global_search.py`负责有预算的报告map-reduce和原文回查。迁移0020增加社区任务/社区/报告三表，官方依赖不进入主后端解释器。
+
+2026-11-04 去重/预算补充：`chunker/canonical_parent_child.py` 的
+`deduplicate_repeated_table_children` 在物化前消除同原文区间的完整表格副本；
+`retrieval/source_dedup.py` 为既有表格提供 v2 召回归一化、原 ID 审计与路径映射。
+`policy_resolver.py` 将四条新路线的每路 candidate_k 传入 `retrieval_service.py`，后者保留
+完整融合候选到重排，再按最终 Top K 选证据；`associations.py` 分离排名与完整链选择。
+`orchestrator.py` 统一返回 `meta.retrieval.candidate_budget`。旧策略保持原行为；新逻辑不自动
+删除旧切片或触发高级索引重建。契约见 `docs/api.md`，流程见 `docs/architecture.md`。
+
 ### 0.1 文件状态标记
 
 | 标记 | 含义 |
@@ -570,7 +620,7 @@ frontend/src/
 ## 6.1 总链路树
 
 ```text
-POST /api/v1/knowledge-bases/{kb_id}/documents
+POST /api/v1/documents/upload
 │
 ├─ api/routes_documents.py
 │  └─ upload_document()
@@ -578,10 +628,11 @@ POST /api/v1/knowledge-bases/{kb_id}/documents
 ├─ services/document_service.py
 │  └─ upload_document()
 │     ├─ 校验知识库/文件类型
+│     ├─ 流式计算 SHA-256，拒绝同知识库相同内容（不依赖文件名或解析状态）
 │     ├─ 生成源文件 object_key
 │     ├─ storage/minio_storage.py 保存原文件
 │     ├─ 保存 parse options 到 document.metadata_json
-│     ├─ 创建 Document
+│     ├─ 创建 Document；唯一索引兜底并发查重，冲突时只清理本请求对象
 │     └─ parse_immediately=true 时创建后台解析任务
 │
 ├─ services/parse_task_service.py

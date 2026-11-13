@@ -11,6 +11,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.schemas.retrieval_strategy import RetrievalStrategy
+
 
 class KnowledgeContextRequest(BaseModel):
     query: str | None = None
@@ -19,7 +21,9 @@ class KnowledgeContextRequest(BaseModel):
     knowledge_base_id: str | None = None
     knowledge_base_ids: list[str] = Field(default_factory=list)
 
-    retrieval_mode: str = "hybrid"
+    retrieval_mode: str | None = None
+    strategy: RetrievalStrategy | None = None
+    rerank_enabled: bool | None = None
     top_k: int | None = None
     match_count: int | None = None
 

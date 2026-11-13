@@ -27,12 +27,18 @@ class EvidenceChunkPayload(BaseModel):
     file_name: str = ""
     page_no: int | None = None
     page_range: str = ""
+    source_pages: list[int] = Field(default_factory=list)
+    source_spans: list[dict[str, Any]] = Field(default_factory=list)
+    page_location_status: str = "unavailable"
     chunk_type: str = "text"
     context_header: str = ""
     content: str = ""
     direct_hit: bool
     context_reason: str
     retrieval_score: float | None = None
+    overlap_trimmed: bool = False
+    trimmed_chars: int = 0
+    overlap_source_chunk_ids: list[str] = Field(default_factory=list)
 
 
 class EvidenceMediaPayload(BaseModel):
@@ -49,6 +55,10 @@ class EvidenceMediaPayload(BaseModel):
     document_title: str = ""
     file_name: str = ""
     page_no: int | None = None
+    page_range: str = ""
+    source_pages: list[int] = Field(default_factory=list)
+    source_spans: list[dict[str, Any]] = Field(default_factory=list)
+    page_location_status: str = "unavailable"
     chunk_type: str = "image"
     context_header: str = ""
     content: str = ""
@@ -92,6 +102,37 @@ class EvidenceGroupsMeta(BaseModel):
     include_context_window: bool = True
     include_media_chunks: bool = True
     hit_count: int = 0
+    retrieval: dict[str, Any] | None = None
+    background_withheld: int = 0
+
+
+class BackgroundSummary(BaseModel):
+    """Global 派生摘要：只作背景，不占用证据编号，不允许伪装成原文引用。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    summary_id: str
+    text: str
+    report_ids: list[str] = Field(default_factory=list)
+    evidence_chunk_ids: list[str] = Field(default_factory=list)
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    score: int = 0
+    derived: bool = True
+    citation_allowed: bool = False
+
+
+class EventLineItem(BaseModel):
+    """事件线：由已返回证据的事件路径派生，仅用于组织上下文。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    event_id: str
+    text: str
+    time: str = ""
+    chunk_id: str = ""
+    support_chunk_ids: list[str] = Field(default_factory=list)
+    derived: bool = True
+    citation_allowed: bool = False
 
 
 class EvidenceGroupsResponse(BaseModel):
@@ -110,6 +151,8 @@ class EvidenceGroupsResponse(BaseModel):
     groups: list[EvidenceGroup] = Field(default_factory=list)
     chunks: list[EvidenceChunkPayload] = Field(default_factory=list)
     media: list[EvidenceMediaPayload] = Field(default_factory=list)
+    background: list[BackgroundSummary] = Field(default_factory=list)
+    event_lines: list[EventLineItem] = Field(default_factory=list)
     meta: EvidenceGroupsMeta = Field(default_factory=EvidenceGroupsMeta)
     retrieval_meta: dict[str, Any] | None = None
     warnings: list[Any] = Field(default_factory=list)
