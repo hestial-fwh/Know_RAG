@@ -120,6 +120,24 @@ async def startup_initialize_services():
             "Milvus collection initialization skipped: %s", exc
         )
 
+    try:
+        from app.services.retrieval.intent_resolver import schedule_warmup
+
+        schedule_warmup()
+    except Exception as exc:
+        logger.warning("Jev intent warmup skipped: %s", exc)
+
+
+@app.on_event("shutdown")
+async def shutdown_intent_resolver():
+    try:
+        from app.services.retrieval.intent_resolver import close
+
+        await close()
+    except Exception as exc:
+        logger.warning("Jev intent shutdown skipped: %s", exc)
+
+
 @app.get("/health")
 async def health():
     return success_response(

@@ -1,12 +1,16 @@
 """统一入口负责策略和执行诊断；原切片召回继续由兼容服务维护。"""
 
+import logging
 from time import perf_counter
 
 from pydantic import ValidationError
 
+from app.core.config import settings
 from app.core.response import error_response
 from app.db.models import KnowledgeBase
 from app.services.retrieval.policy_resolver import resolve_policy
+
+logger = logging.getLogger(__name__)
 
 
 async def execute_search(db, actor, kb_id: str, payload: dict):
@@ -18,9 +22,17 @@ async def execute_search(db, actor, kb_id: str, payload: dict):
         return error_response("知识库不存在")
     profile = getattr(kb, "retrieval_profile", None)
     capabilities, reader = {}, None
+    query = str(payload.get("query_text") or payload.get("query") or "")
     selected = payload.get("strategy") or (
         profile.get("strategy") if isinstance(profile, dict) and profile.get("version") == "new_profile_v2" else None
     )
+    is_auto = isinstance(selected, dict) and selected.get("tier") == "auto"
+    if isinstance(profile, dict):
+        from app.schemas.retrieval_strategy import family_scope_of
+
+        scope = family_scope_of(profile)
+        if scope in {"a", "b"}:
+            capabilities["family_scope"] = scope
     if isinstance(selected, dict) and (selected.get("family") == "event_graph" or selected.get("tier") in {"graph", "fusion", "auto"}):
         from app.services.retrieval.associations import EvidenceReader
 
@@ -31,7 +43,6 @@ async def execute_search(db, actor, kb_id: str, payload: dict):
         if reader is not None and selected.get("tier") == "auto":
             from app.services.retrieval.associations import _seeds
 
-            query = str(payload.get("query_text") or payload.get("query") or "")
             capabilities["entity_matches"] = len(_seeds(reader, query, [], 20))
         wants_global = selected.get("graph_method") in {"global", "drift"} or selected.get("tier") == "auto" or (
             selected.get("tier") == "fusion" and bool((selected.get("fusion") or {}).get("include_global"))
@@ -41,6 +52,17 @@ async def execute_search(db, actor, kb_id: str, payload: dict):
 
             reports, _ = current_reports(db, kb_id)
             capabilities["global"] = bool(reports)
+    # 只对自动策略、且显式开启的 KB 做意图解析；显式策略不为意图付费。
+    if is_auto and query and (settings.intent_provider or "rules").lower() != "rules":
+        try:
+            from app.services.retrieval.intent_resolver import resolve_intent
+
+            decision = await resolve_intent(query, kb_id)
+            capabilities.update(decision.meta())
+            if decision.use_hint:
+                capabilities["intent_hint"] = decision.intent
+        except Exception as exc:  # intent must never fail the search
+            logger.warning("intent resolution skipped: %s", exc)
     try:
         plan = resolve_policy(payload, profile if isinstance(profile, dict) else None, capabilities)
     except (ValueError, ValidationError) as exc:

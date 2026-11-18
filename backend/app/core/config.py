@@ -266,6 +266,36 @@ class Settings(BaseSettings):
         alias="FRONTEND_BASE_URL",
     )
 
+    # ── Intent resolver (rules baseline + optional Jev fallback) ─────────
+    # rules: current behaviour; shadow: log-only; hybrid: apply Jev on gated queries.
+    intent_provider: str = Field("rules", alias="INTENT_PROVIDER")
+    intent_jev_kb_ids: str = Field("", alias="INTENT_JEV_KB_IDS")
+    intent_jev_shadow_rate: float = Field(0.1, alias="INTENT_JEV_SHADOW_RATE")
+    intent_jev_base_url: str = Field(
+        "https://api.302ai.com/typesafeai", alias="INTENT_JEV_BASE_URL"
+    )
+    intent_jev_api_key: str = Field("", alias="INTENT_JEV_API_KEY")
+    intent_jev_model: str = Field(
+        "typesafe/jev-1.14-20261014", alias="INTENT_JEV_MODEL"
+    )
+    intent_jev_timeout_ms: int = Field(1500, alias="INTENT_JEV_TIMEOUT_MS")
+    intent_jev_min_confidence: float = Field(
+        0.40, alias="INTENT_JEV_MIN_CONFIDENCE"
+    )
+    intent_jev_min_margin: float = Field(0.05, alias="INTENT_JEV_MIN_MARGIN")
+    intent_jev_cache_ttl_s: int = Field(604800, alias="INTENT_JEV_CACHE_TTL_S")
+    intent_jev_concurrency: int = Field(8, alias="INTENT_JEV_CONCURRENCY")
+    intent_jev_breaker_failures: int = Field(
+        5, alias="INTENT_JEV_BREAKER_FAILURES"
+    )
+    intent_jev_breaker_cooldown_s: int = Field(
+        300, alias="INTENT_JEV_BREAKER_COOLDOWN_S"
+    )
+    intent_dual_signal_to_rules: bool = Field(
+        False, alias="INTENT_DUAL_SIGNAL_TO_RULES"
+    )
+    intent_jev_warmup: bool = Field(True, alias="INTENT_JEV_WARMUP")
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

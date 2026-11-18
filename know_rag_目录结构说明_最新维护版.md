@@ -49,6 +49,7 @@ partial自动重试有次数上限。`service.retry_incomplete`及详情页按�
 - 迁移 `0016_kb_retrieval_profile` 增加 KB JSON profile；旧库 legacy，新库默认 hybrid。
 - P0/P1、P2、P3 Local/事件、P4社区/Global与P5自动选级/DRIFT已接入。
 - P5 `services/retrieval/auto_router.py`负责家族内意图规则，`drift_search.py`负责共享预算的社区引导Local补查与来源重验，`scripts/evaluate_retrieval.py`负责人工标注同题评测。前端`utils/retrievalStrategy.ts`统一策略映射，`components/RetrievalGraph.vue`展示查询证据路径。Context的debug模式包含同次召回数据，供调试页复用。
+- `services/retrieval/intent_resolver.py`：[新增] 规则强单信号保底，零信号/多信号/过宽触发才调 Jev；`integrations/jev/`封装 `system_one`、超时、响应校验和提示词版本。默认`INTENT_PROVIDER=rules`，按 KB 白名单启用 shadow/hybrid，Jev 异常一律回退规则。
 - P4 `knowledge_index/communities.py`负责KB图revision任务、报告与依赖重验；`community_provider.py`区分native与隔离官方Leiden，`graphrag_runner.py`负责固定2.7.0/Parquet适配；`retrieval/global_search.py`负责有预算的报告map-reduce和原文回查。迁移0020增加社区任务/社区/报告三表，官方依赖不进入主后端解释器。
 
 2026-11-04 去重/预算补充：`chunker/canonical_parent_child.py` 的

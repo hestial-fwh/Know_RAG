@@ -1,5 +1,17 @@
 # Architecture
 
+## 意图识别：规则保底 + Jev 兜底（2026-11-18）
+
+自动策略（`strategy.tier=auto`）的意图判定分两层：
+
+1. `auto_router.classify_rule_signals()` 先算全部命中意图、优先级 winner、过宽触发和短查询。
+2. `intent_resolver` 只在强单信号时直接采用规则；零信号、多信号、过宽单信号交给 Jev。
+   Jev 返回非法标签、低置信、超时或服务错误时一律回退规则。
+
+默认 `INTENT_PROVIDER=rules`，不产生外部请求。`shadow` 只把抽样结果写日志，不影响请求；`hybrid` 才把 Jev 结论作为 `capabilities["intent_hint"]` 传给 `route_auto`。外部调用按 `INTENT_JEV_KB_IDS` 白名单启用，只发送问题文本，不发送知识库内容。
+
+意图只决定策略标签；A/B 家族隔离和降级逻辑不变。即使意图是 `fusion`，家族 A 仍然只执行关系、家族 B 仍然只执行事件，不会因为 Jev 接入而变成真正的双通道融合。
+
 > 状态：Current
 > 维护日期：2026-08-13
 
@@ -164,9 +176,11 @@ Global 在 fusion 中退化为背景层：摘要只写入 `background`（`derive
 支持 chunk 仅在未被基础/结构覆盖时低权重并入；Global 失败或超时不影响证据。`include_event_timeline`
 从已返回证据的事件路径生成事件线，同样不占引用编号。`meta.retrieval.fusion` 返回通道状态、候选数、
 结构路径、权重、配额、超时与覆盖；旧 `association` 投影保留，融合时 `kind="fusion"`。新增预算字段全部
-存于 `retrieval_profile` JSON，无数据库迁移。fusion 只显式开启；auto 路由在关系/事件双意图时选 fusion，
-overview 且社区+关系就绪时选 fusion+背景，短查询、枚举、无实体链接或覆盖不足时保持 hybrid。
-新建知识库默认 `tier="auto"` 且构建 entities/relations/events/communities 四类索引，检索时按意图路由；
+存于 `retrieval_profile` JSON，无数据库迁移。A 家族的 fusion 只组合关系与背景；关系/事件双意图在 A
+走 Local、在 B 走事件关联。auto 在家族作用域内路由，overview 且社区+关系就绪时选 fusion+背景；
+短查询、枚举、无实体链接或覆盖不足时保持 hybrid。
+新建知识库必须显式选择检索家族且创建后不可更改：A 构建 entities/relations/communities，
+B 构建 entities/events；A 禁用事件通道，B 禁用关系与社区通道，跨家族问题降级 hybrid。
 独立 `index-worker` 服务消费文档任务与 KB 级社区任务。
 
 ## 服务拓扑

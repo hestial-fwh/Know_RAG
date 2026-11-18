@@ -1,5 +1,24 @@
 # API
 
+## 意图路由诊断字段（2026-11-18）
+
+自动策略的 `meta.retrieval.routing` 增加：
+
+| 字段 | 含义 |
+| --- | --- |
+| `intent_source` | `rules` / `jev` / `jev_cache` / `rules_fallback` / `rules_shadow` |
+| `intent_confidence` | Jev top1 概率；规则路径为 null |
+| `intent_margin` | Jev top1 与 top2 差值 |
+| `intent_signals` | `matched`（全部命中意图）、`weak`（过宽触发）、`short`（短查询） |
+| `intent_latency_ms` | Jev 调用耗时；缓存命中为 0 |
+| `intent_model` | 实际返回模型 |
+| `intent_fallback_reason` | 超时/低置信/熔断/缺 key 等回退原因 |
+| `intent_shadow` | 是否 shadow 模式 |
+| `intent_cache_hit` | 是否命中 Redis 意图缓存 |
+| `model_calls` | 实际 Jev 请求数；缓存命中为 0 |
+
+配置见 `.env.example` 的 `INTENT_*`。`INTENT_PROVIDER` 默认 `rules`；`hybrid` 只对白名单 KB 生效。
+
 ## 知识库独立抽取模型（2026-11-06）
 
 retrieval_profile.index_model可指定本机Ollama的provider、model_name、base_url，以及可选think和
@@ -171,11 +190,13 @@ legacy_v1 的旧 retrieval_mode 仍兼容接收但不改变路线；新 MCP 不�
 知识库创建/更新接受 `retrieval_profile`：
 
 ```json
-{"version":"new_profile_v2","strategy":{"family":"tiered","tier":"auto"},
- "build_indexes":["entities","relations","events","communities"]}
+{"version":"new_profile_v2","family_scope":"a","strategy":{"family":"tiered","tier":"auto"},
+ "build_indexes":["entities","relations","communities"]}
 ```
 
-新建库未显式提供 `retrieval_profile` 时默认此配置：检索按意图路由，文档解析后排队构建四类派生索引。
+新建库必须显式提供 `family_scope`：`a` 构建实体、关系、社区；`b` 构建实体、事件。
+`build_indexes` 由家族推导，客户端传入值会被覆盖；创建后家族不可更改，需要更换时删除并按新家族重建。
+A 家族禁用事件通道，B 家族禁用关系与社区通道；跨家族意图降级 hybrid 并在 routing 中说明。
 旧库迁移后为 `{"version":"legacy_v1"}`，继续采用全局与请求旧开关。
 优先级为请求 strategy > KB profile > 全局旧配置；切回 legacy_v1 可恢复旧配置选择方式。
 首阶段 profile 物理存储为 knowledge_bases.retrieval_profile JSON 列，需迁移 0016。
