@@ -32,14 +32,25 @@ const communityReports = ref<CommunityReportItem[]>([])
 const communityStatus = ref<Record<string, unknown> | null>(null)
 const communityLoading = ref(false)
 
-const tabs: Array<{ id: TabId; label: string }> = [
+// 历史库没有 family_scope，按 A 展示，避免详情页出现空白；保存时仍要求显式选择。
+const familyScopeRaw = computed(() => kb.value?.retrieval_profile?.family_scope)
+const familyScope = computed(() => familyScopeRaw.value === 'b' ? 'b' : 'a')
+const familyTitle = computed(() => familyScopeRaw.value === 'b'
+  ? '事件型（B）'
+  : familyScopeRaw.value === 'a'
+    ? '关系型（A）'
+    : '历史库（未设置家族）')
+const BASE_TABS: Array<{ id: TabId; label: string }> = [
   { id: 'overview', label: '概览' },
   { id: 'index', label: '索引' },
   { id: 'graph', label: '图谱' },
   { id: 'summaries', label: '主题摘要' },
   { id: 'settings', label: '检索设置' },
 ]
-
+// B 家族不构建社区，因此隐藏只对社区报告有意义的“主题摘要”页签。
+const tabs = computed(() => familyScope.value === 'b'
+  ? BASE_TABS.filter((tab) => tab.id !== 'summaries')
+  : BASE_TABS)
 const buildIndexes = computed(() => kb.value?.retrieval_profile?.build_indexes || [])
 const hasIndexes = computed(() => buildIndexes.value.length > 0)
 const hasCommunities = computed(() => buildIndexes.value.includes('communities'))
@@ -50,11 +61,11 @@ const STRATEGY_NAMES: Record<string, string> = {
   semantic: '仅语义检索',
   hybrid: '标准混合检索',
   auto: '自动选择',
-  fusion: '融合检索：关系 + 事件',
-  local: 'Local 图增强',
+  fusion: '关系 + 主题背景',
+  local: 'Local 关系增强',
   global: 'Global 主题综合',
   drift: 'DRIFT 有界探索',
-  event_graph: '旧事件关联路径',
+  event_graph: '事件关联',
 }
 
 const strategyTitle = computed(() => {
@@ -68,17 +79,15 @@ const strategyTitle = computed(() => {
 const strategyEntries = computed(() => {
   const value = strategy.value
   if (!value) return []
-  const rows: Array<{ label: string; value: string }> = [{ label: '家族', value: value.family }]
+  const rows: Array<{ label: string; value: string }> = [{ label: '知识库家族', value: familyTitle.value }]
   if (value.family === 'event_graph') {
-    rows.push({ label: '档位', value: 'event_graph' })
+    rows.push({ label: '策略家族', value: 'event_graph' })
   } else {
-    rows.push({ label: '档位', value: value.tier })
+    rows.push({ label: '策略级别', value: value.tier })
     if (value.graph_method) rows.push({ label: '图方法', value: value.graph_method })
     if (value.tier === 'fusion' && value.fusion) {
       rows.push({ label: '排序模式', value: value.fusion.rank_mode || 'rrf' })
-      rows.push({ label: '事件政策', value: value.fusion.event_policy || 'independent' })
       rows.push({ label: 'Global 背景', value: value.fusion.include_global ? '开启' : '关闭' })
-      rows.push({ label: '事件线', value: value.fusion.include_event_timeline ? '开启' : '关闭' })
     }
   }
   rows.push({ label: '回退策略', value: value.fallback_policy || 'hybrid' })
@@ -229,12 +238,15 @@ onMounted(async () => {
           <div class="stat-card"><span class="stat-label">切片</span><span class="stat-value">{{ kb.chunk_count }}</span></div>
           <div class="stat-card"><span class="stat-label">已向量化</span><span class="stat-value">{{ embeddingStatus ? `${embeddingStatus.embedded_chunks}/${embeddingStatus.total_chunks}` : '-' }}</span></div>
           <div class="stat-card"><span class="stat-label">实体</span><span class="stat-value">{{ counts?.entities ?? '-' }}</span></div>
-          <div class="stat-card"><span class="stat-label">关系</span><span class="stat-value">{{ counts?.relations ?? '-' }}</span></div>
-          <div class="stat-card"><span class="stat-label">事件</span><span class="stat-value">{{ counts?.events ?? '-' }}</span></div>
-          <div class="stat-card"><span class="stat-label">社区</span><span class="stat-value">{{ counts?.communities ?? '-' }}</span></div>
-          <div class="stat-card"><span class="stat-label">可用报告</span><span class="stat-value">{{ counts?.reports ?? '-' }}</span></div>
+          <template v-if="familyScope === 'a'">
+            <div class="stat-card"><span class="stat-label">关系</span><span class="stat-value">{{ counts?.relations ?? '-' }}</span></div>
+            <div class="stat-card"><span class="stat-label">社区</span><span class="stat-value">{{ counts?.communities ?? '-' }}</span></div>
+            <div class="stat-card"><span class="stat-label">可用报告</span><span class="stat-value">{{ counts?.reports ?? '-' }}</span></div>
+          </template>
+          <div v-else class="stat-card"><span class="stat-label">事件</span><span class="stat-value">{{ counts?.events ?? '-' }}</span></div>
         </div>
         <dl class="details">
+          <dt>检索家族</dt><dd>{{ familyTitle }}</dd>
           <dt>ID</dt><dd>{{ kb.id }}</dd>
           <dt>规则跳过</dt><dd>{{ embeddingStatus?.skipped_chunks ?? '-' }}</dd>
           <dt>异常未向量化</dt><dd>{{ embeddingStatus?.pending_chunks ?? embeddingStatus?.real_missing_chunks ?? '-' }}</dd>
@@ -257,16 +269,19 @@ onMounted(async () => {
 
       <section v-else-if="activeTab === 'index'" role="tabpanel" class="kb-panel">
         <template v-if="hasIndexes">
-          <h2>派生检索索引</h2>
+          <h2>派生检索索引 · {{ familyTitle }}</h2>
           <div class="stat-grid compact">
             <div class="stat-card"><span class="stat-label">实体</span><span class="stat-value">{{ counts?.entities ?? 0 }}</span></div>
-            <div class="stat-card"><span class="stat-label">关系</span><span class="stat-value">{{ counts?.relations ?? 0 }}</span></div>
-            <div class="stat-card"><span class="stat-label">事件</span><span class="stat-value">{{ counts?.events ?? 0 }}</span></div>
-            <div class="stat-card"><span class="stat-label">社区</span><span class="stat-value">{{ counts?.communities ?? 0 }}</span></div>
-            <div class="stat-card"><span class="stat-label">可用报告</span><span class="stat-value">{{ counts?.reports ?? 0 }}</span></div>
+            <template v-if="familyScope === 'a'">
+              <div class="stat-card"><span class="stat-label">关系</span><span class="stat-value">{{ counts?.relations ?? 0 }}</span></div>
+              <div class="stat-card"><span class="stat-label">社区</span><span class="stat-value">{{ counts?.communities ?? 0 }}</span></div>
+              <div class="stat-card"><span class="stat-label">可用报告</span><span class="stat-value">{{ counts?.reports ?? 0 }}</span></div>
+            </template>
+            <div v-else class="stat-card"><span class="stat-label">事件</span><span class="stat-value">{{ counts?.events ?? 0 }}</span></div>
           </div>
           <p v-if="entityStatus" class="text-muted">{{ coverageText }}</p>
-          <p v-if="entityStatus">Local 图增强：{{ entityStatus.graph_retrieval_ready ? '可用' : '未就绪' }}；事件关联：{{ entityStatus.event_retrieval_ready ? '可用' : '未就绪' }}。</p>
+          <p v-if="entityStatus && familyScope === 'a'">Local 关系增强：{{ entityStatus.graph_retrieval_ready ? '可用' : '未就绪' }}。</p>
+          <p v-if="entityStatus && familyScope === 'b'">事件关联：{{ entityStatus.event_retrieval_ready ? '可用' : '未就绪' }}。</p>
           <p v-if="hasCommunities && entityStatus">Global：{{ entityStatus.global_retrieval_ready ? '可用' : '未就绪' }} · 社区报告状态：{{ entityStatus.community_status?.state || '等待构建' }}。</p>
           <div class="actions">
             <button type="button" :disabled="entityLoading" @click="loadEntityStatus(true)">补建缺失索引</button>
@@ -275,9 +290,9 @@ onMounted(async () => {
             <button type="button" class="secondary" :disabled="entityLoading" @click="loadEntityStatus()">{{ entityLoading ? '处理中...' : '刷新索引状态' }}</button>
           </div>
         </template>
-        <p v-else class="text-muted">尚未开启派生索引。编辑并保存知识库后会自动构建实体、关系、事件和社区四类索引。</p>
+        <p v-else class="text-muted">该知识库尚未构建派生索引。编辑并保存后会按所选家族自动补建：关系型构建实体、关系和社区报告，事件型构建实体和事件。</p>
         <div v-if="!hasIndexes" class="actions">
-          <button type="button" @click="router.push(`/knowledge-bases/${kb.id}/edit`)">编辑并启用全部索引</button>
+          <button type="button" @click="router.push(`/knowledge-bases/${kb.id}/edit`)">编辑知识库</button>
         </div>
       </section>
 
@@ -333,7 +348,7 @@ onMounted(async () => {
             </template>
           </dl>
         </template>
-        <p class="text-muted">融合检索的排序模式、事件政策、背景与事件线在编辑页配置；索引依赖会随预设自动勾选。</p>
+        <p class="text-muted">检索家族创建后不可更改；需要更换时请删除知识库并按新家族重建。索引依赖由家族自动推导，不需要手动勾选。</p>
         <div class="actions">
           <button type="button" @click="router.push(`/knowledge-bases/${kb.id}/edit`)">编辑检索设置</button>
         </div>

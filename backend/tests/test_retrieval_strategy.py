@@ -47,7 +47,7 @@ def test_request_overrides_kb_default_without_mutating_input():
     assert plan.payload["use_vector"] is True
     assert plan.payload["use_keyword"] is False
     assert payload == {"strategy": strategy("semantic")}
-    assert profile["strategy"]["tier"] == "hybrid"
+    assert profile["strategy"]["tier"] == "auto"
 
 
 def test_v2_kb_supplies_default_strategy():
@@ -207,7 +207,7 @@ def test_profile_persists_and_old_records_remain_legacy():
         db.add(KnowledgeBase(id="new", name="新库", retrieval_profile=RetrievalProfile().model_dump()))
         db.commit()
         assert db.get(KnowledgeBase, "old").retrieval_profile["version"] == "legacy_v1"
-        assert db.get(KnowledgeBase, "new").retrieval_profile["strategy"]["tier"] == "hybrid"
+        assert db.get(KnowledgeBase, "new").retrieval_profile["strategy"]["tier"] == "auto"
 
 
 @pytest.mark.asyncio
@@ -294,14 +294,14 @@ def test_fusion_contract_forces_base_channels_and_rejects_conflicts():
     with pytest.raises(ValidationError):
         TieredStrategy(tier="hybrid", fusion={"include_global": True})
     # 新增字段全部有默认值，旧 profile 仍可通过校验。
-    assert RetrievalProfile.model_validate({"version": "new_profile_v2"}).strategy.tier == "hybrid"
+    assert RetrievalProfile.model_validate({"version": "new_profile_v2"}).strategy.tier == "auto"
 
 
 def test_fusion_requires_at_least_one_structural_channel():
     plan = resolve_policy({"strategy": strategy("fusion")}, capabilities={})
     assert plan.degraded and plan.executed["tier"] == "hybrid"
     assert "未就绪" in plan.reason
-    with pytest.raises(ValueError, match="fusion 需要"):
+    with pytest.raises(ValueError, match="未就绪"):
         resolve_policy({"strategy": strategy("fusion", fallback_policy="error")}, capabilities={})
     # 事件通道显式关闭时，只有事件就绪也不能进入 fusion。
     plan = resolve_policy(
@@ -324,17 +324,27 @@ def test_fusion_global_background_requires_request_and_capability():
     assert "_global_background" not in plan.payload
 
 
-def test_new_knowledge_base_defaults_to_intent_routing_and_all_indexes(monkeypatch):
+def test_new_knowledge_base_requires_family_and_derives_indexes(monkeypatch):
     from app.services import knowledge_base_service as kb_service
 
     engine = create_engine("sqlite://")
     KnowledgeBase.__table__.create(engine)
     monkeypatch.setattr(kb_service, "record_audit", lambda *args, **kwargs: None)
     with Session(engine) as db:
-        response = kb_service.create_knowledge_base(db, None, {"name": "新库"})
-        assert response["success"], response
-        profile = response["data"]["retrieval_profile"]
+        missing = kb_service.create_knowledge_base(db, None, {"name": "未选家族"})
+        assert not missing["success"]
+
+        family_a = kb_service.create_knowledge_base(
+            db, None, {"name": "关系库", "retrieval_profile": {"family_scope": "a"}}
+        )
+        assert family_a["success"], family_a
+        profile = family_a["data"]["retrieval_profile"]
+        assert profile["family_scope"] == "a"
         assert profile["strategy"]["tier"] == "auto"
-        assert set(profile["build_indexes"]) == {
-            "entities", "relations", "events", "communities",
-        }
+        assert set(profile["build_indexes"]) == {"entities", "relations", "communities"}
+
+        family_b = kb_service.create_knowledge_base(
+            db, None, {"name": "事件库", "retrieval_profile": {"family_scope": "b"}}
+        )
+        assert family_b["success"], family_b
+        assert set(family_b["data"]["retrieval_profile"]["build_indexes"]) == {"entities", "events"}

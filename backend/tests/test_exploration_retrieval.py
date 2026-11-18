@@ -52,19 +52,19 @@ async def exploration(community_db, monkeypatch):
 
 
 @pytest.mark.parametrize("query,caps,tier,method,intent", [
-    ("人工智能的含义是什么", {}, "semantic", None, "definition"),
-    ("ISO9001的定义", {}, "hybrid", None, "definition"),
-    ("甲校和实验室有什么合作关系", {"relations": True, "entity_matches": 2}, "graph", "local", "relationship"),
-    ("甲校和实验室有什么合作关系", {"relations": True, "entity_matches": 0}, "hybrid", None, "relationship"),
-    ("资料的主要主题", {"global": True}, "graph", "global", "overview"),
-    ("资料的主要主题", {"global": True, "relations": True}, "fusion", None, "overview"),
-    ("甲校的合作事件有哪些", {"relations": True, "events": True, "entity_matches": 2}, "fusion", None, "fusion"),
-    ("甲校的合作事件有哪些", {"relations": True, "entity_matches": 2}, "graph", "local", "fusion"),
-    ("资料的主要主题", {}, "hybrid", None, "overview"),
-    ("深入探索甲校实践合作", {"relations": True, "global": True}, "graph", "drift", "exploration"),
-    ("深入探索甲校实践合作", {"relations": True}, "hybrid", None, "exploration"),
-    ("所有学校有多少专业", {"relations": True, "global": True}, "hybrid", None, "aggregation"),
-    ("短问题", {}, "hybrid", None, "general"),
+    ("人工智能的含义是什么", {"family_scope": "a"}, "semantic", None, "definition"),
+    ("ISO9001的定义", {"family_scope": "a"}, "hybrid", None, "definition"),
+    ("甲校和实验室有什么合作关系", {"family_scope": "a", "relations": True, "entity_matches": 2}, "graph", "local", "relationship"),
+    ("甲校和实验室有什么合作关系", {"family_scope": "a", "relations": True, "entity_matches": 0}, "hybrid", None, "relationship"),
+    ("资料的主要主题", {"family_scope": "a", "global": True}, "graph", "global", "overview"),
+    ("资料的主要主题", {"family_scope": "a", "global": True, "relations": True}, "fusion", None, "overview"),
+    ("甲校的合作事件有哪些", {"family_scope": "a", "relations": True, "events": True, "entity_matches": 2}, "graph", "local", "fusion"),
+    ("甲校的合作事件有哪些", {"family_scope": "a", "relations": True, "entity_matches": 2}, "graph", "local", "fusion"),
+    ("资料的主要主题", {"family_scope": "a"}, "hybrid", None, "overview"),
+    ("深入探索甲校实践合作", {"family_scope": "a", "relations": True, "global": True}, "graph", "drift", "exploration"),
+    ("深入探索甲校实践合作", {"family_scope": "a", "relations": True}, "hybrid", None, "exploration"),
+    ("所有学校有多少专业", {"family_scope": "a", "relations": True, "global": True}, "hybrid", None, "aggregation"),
+    ("短问题", {"family_scope": "a"}, "hybrid", None, "general"),
 ])
 def test_auto_routes_within_family_and_explains_ready_capabilities(query, caps, tier, method, intent):
     plan = resolve_policy({"strategy": strategy("auto"), "query": query}, capabilities=caps)
@@ -292,7 +292,7 @@ async def test_source_change_while_reranking_cannot_publish_results(exploration,
 def test_auto_routes_event_only_to_event_graph():
     plan = resolve_policy(
         {"strategy": strategy("auto"), "query": "甲校签订了什么事件"},
-        capabilities={"events": True},
+        capabilities={"family_scope": "b", "events": True},
     )
     assert plan.executed["family"] == "event_graph"
     assert plan.routing["intent"] == "event"

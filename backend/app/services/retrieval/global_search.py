@@ -27,7 +27,8 @@ class QueryPoint(BaseModel):
 
 class QueryOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    points: list[QueryPoint] = Field(max_length=12)
+    # 空对象表示“没有可用要点”，不应让背景层因校验失败拖慢主检索。
+    points: list[QueryPoint] = Field(default_factory=list, max_length=12)
 
 
 def supported_points(raw, available):

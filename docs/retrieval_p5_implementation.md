@@ -21,25 +21,30 @@ HTTP hybrid-search GET/POST、llm-context及MCP使用相同strategy契约。
            "timeout_seconds":120,"max_context_chars":12000}}
 ```
 
-auto属于tiered家族。事件家族仍通过family=event_graph显式选择。
+auto属于tiered策略家族；KB 级 family_scope 决定 auto 可选通道，B 家族的事件题由 auto 产出 event_graph。
 KB可保存auto或drift默认策略，旧legacy配置保持兼容入口。
 auto与底层use_vector/use_keyword/disable_*及retrieval_mode互斥。
 graph_method适用于tier=graph，DRIFT的max_candidates至少为3。
 
 ## 自动路由
 
-| 意图 | 需要的条件 | 选择 |
+家族作用域先于索引就绪检查：A 只允许关系与社区通道，B 只允许事件通道。
+
+| 意图 | A 家族 | B 家族 |
 |---|---|---|
-| 全量、总数或计数 | 识别到完整性要求 | 混合候选，附覆盖不足与聚合限制 |
-| 深入探索或追问 | 社区、关系可用且候选额度足够 | DRIFT |
-| 全库主题、概览或共性 | 社区报告可用 | Global |
-| 关系、合作或比较 | 关系可用且存在有效实体匹配 | Local |
-| 概念释义 | 规则匹配且无编号/精确术语提示 | semantic |
-| 其他及高级条件不足 | 通用路径 | hybrid |
+| 全量、总数或计数 | hybrid + 覆盖不足 | hybrid + 覆盖不足 |
+| 深入探索或追问 | 社区、关系可用且预算足够时 DRIFT | hybrid |
+| 全库主题、概览或共性 | 社区+关系可用时 fusion+背景，否则 Global 或 hybrid | hybrid |
+| 关系、合作或比较 | 关系可用且存在有效实体匹配时 Local | hybrid |
+| 事件、时间线、参与者 | hybrid | 事件索引可用时 event_graph |
+| 关系+事件双意图 | Local | event_graph |
+| 概念释义 | 无编号/术语提示时 semantic | semantic / hybrid |
+| 其他及高级条件不足 | hybrid | hybrid |
 
 规则按表中优先级执行，实体匹配复用当前有效提及与别名证据。
 路由model_calls为0。基础向量与关键词的实际可用情况由执行端继续检查并记录。
-meta.retrieval.routing保存provider、intent、reason、capabilities与chosen_strategy。
+跨家族降级理由区分“家族未启用”和“索引未就绪”，显式请求同样受家族边界约束。
+meta.retrieval.routing保存provider、family_scope、intent、reason、capabilities与chosen_strategy。
 requested_strategy保留auto，executed_strategy记录实际路线及通道降级。
 全量问题在Context warnings中提示范围完整性要求。
 

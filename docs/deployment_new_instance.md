@@ -11,7 +11,8 @@
 实体开关仍由用户按库启用；不因 worker 运行而自动开启已有知识库。
 
 2026-11-11 新增 `Know_RAG_new-index-worker` compose 服务（`docker-compose.new.yml`），
-常驻消费文档级实体/关系/事件任务和 KB 级社区任务；新建知识库默认自动选择策略并构建全部四类索引。
+常驻消费文档级实体/关系/事件任务和 KB 级社区任务；新建知识库必须选择检索家族：
+关系型（A）构建实体、关系、社区，事件型（B）构建实体、事件。
 worker 与后端共用镜像，通过 `know-rag-net` 访问 postgres，并通过 host-gateway 访问本机 Ollama。
 
 ## 访问入口

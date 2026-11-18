@@ -4,7 +4,7 @@ from app.schemas.retrieval_strategy import RetrievalProfile
 
 
 class KnowledgeBaseCreate(BaseModel):
-    # 未显式提供时由服务层应用新库默认：auto + 全量派生索引。
+    # 新建库必须显式提供 family_scope：a 关系/社区，b 事件。
     retrieval_profile: RetrievalProfile | None = None
     name: str
     description: str = ""

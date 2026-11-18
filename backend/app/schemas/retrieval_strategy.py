@@ -111,20 +111,61 @@ class EventStrategy(BaseModel):
 RetrievalStrategy = Annotated[TieredStrategy | EventStrategy, Field(discriminator="family")]
 
 
+# 家族是建库时的一次性选择：索引集合由家族推导，避免客户端传入不一致的组合。
+FAMILY_BUILD_INDEXES: dict[str, tuple[str, ...]] = {
+    "a": ("entities", "relations", "communities"),
+    "b": ("entities", "events"),
+}
+
+
+def indexes_for_family(scope: str) -> list[str]:
+    if scope not in FAMILY_BUILD_INDEXES:
+        raise ValueError(f"未知检索家族：{scope}")
+    return list(FAMILY_BUILD_INDEXES[scope])
+
+
 class RetrievalProfile(BaseModel):
-    """知识库显式迁移标记；旧库留在 legacy，新建库采用混合检索。"""
+    """知识库检索家族契约：A 走关系与社区，B 走事件；家族创建后不可更改。"""
 
     model_config = ConfigDict(extra="forbid")
 
     version: Literal["legacy_v1", "new_profile_v2"] = "new_profile_v2"
-    strategy: RetrievalStrategy = Field(default_factory=TieredStrategy)
-    # 默认不构建，避免混合检索产生额外模型成本。
+    # None 只用于历史 v1 数据；新建知识库必须显式选择 a 或 b。
+    family_scope: Literal["a", "b"] | None = None
+    strategy: RetrievalStrategy = Field(default_factory=lambda: TieredStrategy(tier="auto"))
+    # 由 family_scope 推导，客户端传入值会被覆盖。
     build_indexes: list[Literal["entities", "relations", "events", "communities"]] = Field(default_factory=list)
     community: CommunitySettings = Field(default_factory=CommunitySettings)
     index_model: LocalIndexModel | None = None
+
+    @model_validator(mode="after")
+    def validate_family_scope(self):
+        if self.family_scope is None:
+            return self
+        # 客户端传入的 build_indexes 不参与决策，始终按家族覆盖。
+        self.build_indexes = indexes_for_family(self.family_scope)
+        if isinstance(self.strategy, EventStrategy) and self.family_scope != "b":
+            raise ValueError("关系型知识库不能使用事件家族策略")
+        if isinstance(self.strategy, TieredStrategy):
+            if self.family_scope == "b" and self.strategy.tier in {"graph", "fusion"}:
+                raise ValueError("事件型知识库不能使用图或融合策略")
+            if self.family_scope == "a" and self.strategy.tier == "fusion":
+                # A 家族没有事件通道，融合只保留关系与背景。
+                self.strategy.fusion.event_policy = "off"
+                self.strategy.fusion.include_event_timeline = False
+        return self
 
     @model_validator(mode="after")
     def validate_community_dependencies(self):
         if "communities" in self.build_indexes and "relations" not in self.build_indexes:
             raise ValueError("社区索引需要同时开启relations索引")
         return self
+
+
+def family_scope_of(profile: dict | RetrievalProfile | None) -> str | None:
+    if isinstance(profile, RetrievalProfile):
+        return profile.family_scope
+    if isinstance(profile, dict):
+        scope = profile.get("family_scope")
+        return scope if scope in FAMILY_BUILD_INDEXES else None
+    return None

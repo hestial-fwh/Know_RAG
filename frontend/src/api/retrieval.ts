@@ -18,6 +18,7 @@ export type RetrievalStrategy =
 
 export interface RetrievalProfile {
   index_model?: { provider: 'ollama'; model_name: string; base_url: string; think?: boolean | null; reference_mode?: 'indices' | 'names' } | null
+  family_scope?: 'a' | 'b'
   build_indexes?: Array<'entities' | 'relations' | 'events' | 'communities'>
   community?: {
     provider: 'native' | 'microsoft_graphrag_2_7_0'
@@ -41,6 +42,7 @@ export interface RetrievalDiagnostics {
   result_count: number
   routing?: {
     provider: string
+    family_scope?: 'a' | 'b'
     intent: string
     reason: string
     chosen_strategy: RetrievalStrategy

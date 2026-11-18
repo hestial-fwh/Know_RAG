@@ -1,12 +1,33 @@
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from pydantic import ValidationError
 
 from app.core.response import error_response, success_response
 from app.db.models import Document, KnowledgeBase, User
+from app.schemas.retrieval_strategy import (
+    FAMILY_BUILD_INDEXES,
+    RetrievalProfile,
+    indexes_for_family,
+)
 from app.services.audit_service import record_audit
 from app.services.storage import delete_knowledge_base_objects
 from app.utils.ids import new_id
 from app.services.storage import delete_knowledge_base_cache
+
+
+def normalize_retrieval_profile(profile: dict | None, existing: dict | None = None) -> dict:
+    """家族必填、索引由家族推导；更新时未显式给家族则继承原值。"""
+    incoming = dict(profile or {})
+    base = dict(existing or {})
+    scope = incoming.get("family_scope") or base.get("family_scope")
+    if scope not in FAMILY_BUILD_INDEXES:
+        raise ValueError("必须选择检索家族 A 或 B")
+    merged = {**base, **incoming}
+    merged["version"] = "new_profile_v2"
+    merged["family_scope"] = scope
+    merged["build_indexes"] = indexes_for_family(scope)
+    merged.setdefault("strategy", {"family": "tiered", "tier": "auto"})
+    return RetrievalProfile.model_validate(merged).model_dump(exclude_none=True)
 
 def knowledge_base_to_dict(kb: KnowledgeBase) -> dict:
     return {
@@ -47,17 +68,17 @@ def create_knowledge_base(db: Session, actor: User, payload: dict):
     name = (payload.get("name") or "").strip()
     if not name:
         return error_response("知识库名称不能为空")
+    try:
+        profile = normalize_retrieval_profile(payload.get("retrieval_profile"))
+    except (ValueError, ValidationError) as exc:
+        return error_response(str(exc))
     kb = KnowledgeBase(
         id=new_id(),
         name=name,
         description=payload.get("description") or "",
         embedding_model_id=payload.get("embedding_model_id") or "",
         summary_model_id=payload.get("summary_model_id") or "",
-        retrieval_profile=payload.get("retrieval_profile") or {
-            "version": "new_profile_v2",
-            "strategy": {"family": "tiered", "tier": "auto"},
-            "build_indexes": ["entities", "relations", "events", "communities"],
-        },
+        retrieval_profile=profile,
     )
     db.add(kb)
     db.flush()
@@ -98,7 +119,17 @@ def update_knowledge_base(db: Session, actor: User, kb_id: str, payload: dict):
     if "summary_model_id" in payload:
         kb.summary_model_id = payload.get("summary_model_id") or ""
     if "retrieval_profile" in payload:
-        kb.retrieval_profile = payload["retrieval_profile"]
+        existing = kb.retrieval_profile if isinstance(kb.retrieval_profile, dict) else {}
+        incoming = payload["retrieval_profile"] or {}
+        old_scope = existing.get("family_scope")
+        new_scope = incoming.get("family_scope") or old_scope
+        # 家族决定已有索引的语义；原地切换会让旧索引失效，只能删库重建。
+        if old_scope and new_scope != old_scope:
+            return error_response("检索家族创建后不可更改；请删除知识库后按新家族重建")
+        try:
+            kb.retrieval_profile = normalize_retrieval_profile(incoming, existing)
+        except (ValueError, ValidationError) as exc:
+            return error_response(str(exc))
         # 开启能力时同事务补偿已有文档；只写持久任务，不在设置请求内调用模型。
         from app.services.knowledge_index.service import reconcile
 
